@@ -693,6 +693,36 @@ assert.equal(s.sent.at(-1), 'held then failed')
 res = await s.fire('prompt.submit', { text: 'after the failure', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
 
+// handoff pressed while Claude works: what arrives inside that running turn
+// (not the handoff's) goes in at once, it starts no turn that could block the clear
+s = await boot('/w/race-busy-inside', 'rc1', { working: true })
+await s.press('handoff')
+for (const kind of ['task-notification', 'composer']) {
+  res = await s.fire('prompt.submit', { text: 'inside busy', origin: { kind }, turnId: 'busy', wait: false })
+  assert.ok(!(res && res.drop), kind)
+}
+// one that would start a turn of its own is still held
+res = await s.fire('prompt.submit', { text: 'a new turn', origin: { kind: 'task-notification' }, wait: false })
+assert.ok(res && res.drop)
+
+// Claude calls the skill with args "clear" (the 250k Stop hook asks for it):
+// the chat clears and continues with the handoff, as the band's button does
+s = await boot('/w/skill-clear', 'rc2', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+res = await s.fire('prompt.submit', { text: 'held for the new chat', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'held for the new chat')
+
+// called without args, the skill leaves the chat as it is
+s = await boot('/w/skill-plain', 'rc3', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(!cleared(s))
+assert.equal(latestText('rc3'), body)
+
 // The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
 for (const surface of ['terminal', 'desktop']) {
   s = await boot('/w/menu-' + surface, 'mn-' + surface)

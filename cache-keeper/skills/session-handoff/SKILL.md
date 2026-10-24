@@ -9,7 +9,7 @@ Produce a repeatable end-of-session summary so the user can `/clear` and start a
 
 This is a **context-handoff artifact**, not a status report. The audience is a future instance of you, not a stakeholder.
 
-Cache Keeper's `handoff` button and `/handoff` command run this skill. Once the handoff is in, the button clears the chat and sends the handoff as the fresh chat's first prompt on its own; `/handoff` asks first in a terminal; otherwise, or if the user keeps the chat, `/handoff continue` or the band's clear-and-continue button does it. Cache Keeper keeps the answer with the `# Session Handoff` heading, so always start the handoff with it. A later answer without the heading (a reply to a Stop hook, say) leaves the handoff as it was; a rewritten handoff replaces it.
+Cache Keeper's `handoff` button and `/handoff` command run this skill. Once the handoff is in, the button clears the chat and sends the handoff as the fresh chat's first prompt on its own; `/handoff` asks first in a terminal; otherwise, or if the user keeps the chat, `/handoff continue` or the band's clear-and-continue button does it. Called with the Skill tool and args `clear` (a Stop hook may ask for that), the chat clears and continues on its own once the handoff is in, as with the button; without args it stays as it is. Cache Keeper keeps the answer with the `# Session Handoff` heading, so always start the handoff with it. A later answer without the heading (a reply to a Stop hook, say) leaves the handoff as it was; a rewritten handoff replaces it.
 
 ## When to invoke
 

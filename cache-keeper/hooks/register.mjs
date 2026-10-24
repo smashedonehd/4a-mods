@@ -167,6 +167,12 @@ function canHold(e) {
   return !/(^|\s)@\S/.test(String(e.text || ''))
 }
 
+// A prompt that goes into the running turn starts no turn, so it cannot keep
+// /clear from running. Only the handoff's own turn must not take one in.
+function joinsOtherTurn(e) {
+  return !!e.turnId && S.working && e.turnId === S.turnId && !(H.armed && S.turnId !== H.notTurn)
+}
+
 // Sends the held prompts in the order they came; one that cannot be sent goes
 // to the prompt box rather than being lost. Never throws.
 async function releaseHeld($) {
@@ -968,7 +974,7 @@ export function register(on) {
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
-    if (holdsPrompts() && canHold(e)) {
+    if (holdsPrompts() && canHold(e) && !joinsOtherTurn(e)) {
       held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
       $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
@@ -1113,10 +1119,13 @@ export function register(on) {
 
   on('tool.call', async ($, e, next) => {
     if (!e.agentId) S.tool = e.tool
-    // Claude calling the handoff skill itself: this turn's answer is the handoff
-    if (!e.agentId && e.tool === 'Skill' && HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true)
     if (!e.agentId && e.tool === 'Skill') {
-      await noteAndSave($, e.skill, e.args || (e.input && e.input.args))
+      const args = e.args || (e.input && e.input.args)
+      // Claude calling the handoff skill itself: this turn's answer is the
+      // handoff. With args "clear" (the 250k Stop hook asks for it) the chat
+      // then clears and continues, as with the band's button.
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, String(args || '').trim().toLowerCase() === 'clear' ? 'clear' : 'none')
+      await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
       now = await $.clock.now()
