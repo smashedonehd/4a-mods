@@ -769,10 +769,13 @@ s = await boot('/w/skill-clear', 'rc2', { working: true })
 await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: ' Clear\n', turnId: 'busy' })
 res = await s.fire('prompt.submit', { text: 'held for the new chat', origin: { kind: 'composer' }, wait: false })
 assert.ok(res && res.drop)
+// busy is the handoff's own turn now: a notification into it is held too
+res = await s.fire('prompt.submit', { text: 'note into the handoff', origin: { kind: 'task-notification' }, turnId: 'busy', wait: false })
+assert.ok(res && res.drop)
 await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.ok(cleared(s))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
-assert.equal(s.sent.at(-1), 'held for the new chat')
+assert.ok(s.sent.at(-3).endsWith('\n\n' + body))
+assert.deepEqual(s.sent.slice(-2), ['held for the new chat', 'note into the handoff'])
 
 // called without args, the skill leaves the chat as it is
 s = await boot('/w/skill-plain', 'rc3', { working: true })
