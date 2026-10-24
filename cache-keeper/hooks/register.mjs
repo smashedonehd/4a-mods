@@ -145,6 +145,33 @@ const H = {
   at: 0, // when it was made
   fromDisk: false, // loaded from latest-*.json, not made in this chat
   continuing: false,
+  clearDue: false, // the handoff is in and this chat clears and continues next
+}
+
+// Prompts that came while the chat was about to clear: a turn they started in
+// this chat would keep /clear from running. They go on after the handoff.
+const held = []
+
+function holdsPrompts() {
+  return (H.armed && H.after === 'clear') || H.clearDue
+}
+
+// Sends the held prompts in the order they came; one that cannot be sent goes
+// to the prompt box rather than being lost. Never throws.
+async function releaseHeld($) {
+  for (const p of held.splice(0)) {
+    try {
+      await $.prompt.submit(p.asUser ? { text: p.text, asUser: true } : { text: p.text })
+    } catch {
+      let filled = false
+      try {
+        filled = !!(await $.prompt.fill({ text: p.text, mode: 'append' })).isFilled
+      } catch {
+        filled = false
+      }
+      $.ui.toast(filled ? 'A held message is in the prompt box: press Enter to send it.' : 'A held message could not be sent: ' + clip(p.text, 80), { timeoutMs: 10000 })
+    }
+  }
 }
 
 function armHandoff(insideTurn, after = 'none') {
@@ -291,8 +318,12 @@ async function captureHandoff($, e) {
   // a leftover arm caught) never replaces a saved handoff
   if (!isHandoff(body)) {
     $.ui.toast('The handoff turn ended without a handoff, so nothing was saved.', { timeoutMs: 8000 })
+    await releaseHeld($)
     return
   }
+  const clearing = ended && after === 'clear'
+  // Set before the first await: the hold must not lapse while the files are written
+  if (clearing) H.clearDue = true
   H.text = body
   H.fromDisk = false
   H.at = now
@@ -301,12 +332,14 @@ async function captureHandoff($, e) {
   H.fid = saved.fid
   const where = saved.path ? `Handoff saved to ${saved.path}.` : 'Handoff captured (the backup file could not be written).'
   const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
-  if (ended && after === 'clear') {
+  if (clearing) {
     // Off the hook too: /clear must not run inside the ending turn
     $.ui.toast(`${where}${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
     clearAndContinueLater($, 300)
     return
   }
+  // Nothing clears: what was held while the handoff ran goes on in this chat
+  await releaseHeld($)
   $.ui.toast(`${where}${lost} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
   // Off the hook: the turn is ending, and a dialog would hold it open. The
   // Desktop app shows no dialog asked between turns, so there the band's
@@ -363,6 +396,12 @@ async function handoffReady($) {
 
 async function clearAndContinue($) {
   if (H.continuing) return
+  // A turn began before the clear (one the hold could not stop): the clear
+  // waits for it, and turn.complete calls again
+  if (H.clearDue && S.working) {
+    $.ui.toast('Clear and continue waits for this turn to end.', { timeoutMs: 8000 })
+    return
+  }
   // Claimed before the first await: two presses must not both get past the check
   H.continuing = true
   $.ui.invalidate('ui.render')
@@ -375,7 +414,11 @@ async function clearAndContinue($) {
       $.ui.invalidate('ui.render')
     }
   }
-  if (!ready) return
+  if (!ready) {
+    H.clearDue = false
+    await releaseHeld($)
+    return
+  }
   const text = continuationPrompt()
   const path = H.path
   const fid = H.fid
@@ -384,8 +427,10 @@ async function clearAndContinue($) {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
     H.continuing = false
+    H.clearDue = false
     $.ui.invalidate('ui.render')
     $.ui.toast('Could not run /clear: ' + clip(String((err && err.message) || err), 100) + (path ? ` The handoff is saved at ${path}.` : ''), { timeoutMs: 10000 })
+    await releaseHeld($)
     return
   }
   H.text = ''
@@ -413,7 +458,10 @@ async function clearAndContinue($) {
     $.ui.toast(filled ? 'Cleared. The handoff is in the prompt box: press Enter to send it.' : `Cleared, but the handoff could not be sent.${path ? ` It's saved at ${path}.` : ''}`, { timeoutMs: 10000 })
   } finally {
     H.continuing = false
+    H.clearDue = false
     $.ui.invalidate('ui.render')
+    // After the handoff, so the fresh chat reads it first
+    await releaseHeld($)
   }
 }
 
@@ -898,6 +946,15 @@ export function register(on) {
 
   // The first prompt names the session on the board
   on('prompt.submit', async ($, e, next) => {
+    // Clear and continue is on its way: a prompt that would start a turn here
+    // (typed while the handoff ran, a notification, a peer) waits and is sent
+    // after the handoff. A command or attachments cannot be sent again as they
+    // came: those pass, and the clear waits for their turn.
+    if (holdsPrompts() && e.origin && e.origin.kind !== 'plugin' && !e.command && !(e.attachments && e.attachments.length)) {
+      held.push({ text: e.text, asUser: e.origin.kind === 'composer' || e.origin.kind === 'bridge' })
+      $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
+      return { drop: 'Held by cache-keeper until clear and continue is done' }
+    }
     now = await $.clock.now()
     if (S.label === basename(S.cwd) && e.origin && e.origin.kind === 'composer' && e.text) {
       S.label = basename(S.cwd) + ' · ' + clip(e.text, 40)
@@ -1007,6 +1064,7 @@ export function register(on) {
       // usage unavailable: keep the per-request figures
     }
     if (H.armed && e.turnId !== H.notTurn) await captureHandoff($, e)
+    else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
     return r

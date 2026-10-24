@@ -9,14 +9,16 @@ const HOUR = 3600e3
 let instance = 0
 let failWrites = [] // substrings of paths whose write rejects
 
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'] } = {}) {
+// timers: an array to collect $.clock.after callbacks in, run by the test, so
+// it can start a turn before the scheduled clear; absent, they run at once
+async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
   const log = []
   const sent = [] // full texts of the prompts submitted
   const $ = {
-    clock: { now: async () => T, after: (_ms, f) => void queueMicrotask(f), every: () => {} },
+    clock: { now: async () => T, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
     fs: {
       exists: async (p) => files.has(p),
       read: async (p) => files.get(p),
@@ -486,5 +488,64 @@ await s.step('t2', plain)
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.equal(dated('sh6'), undefined)
 assert.ok(!cleared(s))
+
+// Runs the callbacks the module scheduled so far, then lets them settle
+const runTimers = async (timers) => {
+  for (const f of timers.splice(0)) f()
+  await new Promise((r) => setTimeout(r, 20))
+}
+
+// the band's button: a message typed while the handoff runs would start a turn
+// before the clear; it is held, the chat clears, and it is sent after the handoff
+s = await boot('/w/race-typed', 'ra1')
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't1' })
+res = await s.fire('prompt.submit', { text: 'and then fix the tests', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+assert.ok(res && res.drop)
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'and then fix the tests')
+
+// a notification that arrives between the handoff and the clear is held too
+let timers = []
+s = await boot('/w/race-note', 'ra2', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+res = await s.fire('prompt.submit', { text: 'task finished', origin: { kind: 'task-notification' }, wait: false })
+assert.ok(res && res.drop)
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.equal(s.sent.at(-1), 'task finished')
+
+// a turn begins anyway before the clear (a command passes the hold): the clear
+// waits for it to end instead of giving up
+timers = []
+s = await boot('/w/race-turn', 'ra3', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// the handoff turn wrote no handoff: nothing clears, the held message goes on here
+s = await boot('/w/race-none', 'ra4')
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't1' })
+await s.fire('prompt.submit', { text: 'next question', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
+assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'next question')
+
+// /handoff typed (it only asks): a message typed meanwhile is not held
+s = await boot('/w/race-ask', 'ra5')
+await s.run('handoff', '')
+res = await s.fire('prompt.submit', { text: 'go on', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+assert.ok(!(res && res.drop))
 
 console.log('handoff-continue: ok')
