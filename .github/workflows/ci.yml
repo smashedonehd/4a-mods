@@ -55,7 +55,7 @@ jobs:
           exit $fail
 
   # The mods are plain ES modules loaded by Claude Code's hooks engine (no package.json,
-  # one plain node test script for cache-keeper's handoff continue, no test framework).
+  # plain node test scripts for cache-keeper's handoff continue and model-router's table, no test framework).
   # CI checks syntax, runs that script, and that every marketplace entry points at a plugin
   # with a manifest and the hooks modules it names. `claude plugin validate` is not run:
   # it needs the Claude Code CLI and a login.
@@ -73,6 +73,9 @@ jobs:
       - name: cache-keeper tests
         shell: bash
         run: node cache-keeper/test/handoff-continue.mjs
+      - name: model-router table and decisions
+        shell: bash
+        run: node model-router/test/route.test.mjs
       - name: Marketplace entries resolve
         shell: bash
         run: |
