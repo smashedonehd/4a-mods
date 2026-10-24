@@ -767,12 +767,13 @@ function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figu
       Button({ key: 'handoff', label, plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, handoffAfter) }),
       Select({
         key: 'handoff-after',
-        value: handoffAfter,
+        // An armed handoff shows what follows it, whoever started it (/handoff, Claude)
+        value: handoffPending || running ? (H.after === 'clear' ? 'clear' : 'none') : handoffAfter,
         options: [{ value: 'clear', label: 'then clear' }, { value: 'none', label: 'keep chat' }],
         onSelect: (v) => {
           handoffAfter = v === 'none' ? 'none' : 'clear'
           // A handoff already queued or running follows the new pick, as a second press would
-          if (handoffPending || running) H.after = handoffAfter
+          if (handoffPending || (H.armed && S.working)) H.after = handoffAfter
           $.ui.invalidate('ui.render')
         },
       }),

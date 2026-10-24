@@ -1129,6 +1129,17 @@ s.selects.get('handoff-after').onSelect('clear')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(cleared(s))
 
+// /handoff typed shows what follows it: nothing clears on its own
+s = await boot('/w/desk-typed', 'ds13', { select: true })
+await s.step()
+await s.run('handoff', '')
+await s.fire('turn.start', { turnId: 't1' })
+await s.render('desktop')
+assert.equal(s.selects.get('handoff-after').value, 'none')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.render('desktop')
+assert.ok(!s.selects.has('handoff-after'))
+
 // a handoff from an earlier chat goes beside the pair: this chat can still hand off
 await makeHandoff('/w/desk-disk', 'ds9')
 s = await boot('/w/desk-disk', 'ds10', { select: true })
