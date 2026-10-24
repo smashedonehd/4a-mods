@@ -135,6 +135,7 @@ const HANDOFF_MIN = 200 // characters: a shorter text cannot hold the skill's se
 const H = {
   armed: false,
   notTurn: '', // a turn already running when the handoff was queued: not the handoff's
+  inTurn: '', // the turn Claude called the skill in
   draft: '', // the last handoff a response of the armed turn ended with
   // once the handoff is in: 'ask' (/handoff) offers to clear and continue,
   // 'clear' (the band's button) does it, 'none' leaves the chat as it is
@@ -167,10 +168,11 @@ function canHold(e) {
   return !/(^|\s)@\S/.test(String(e.text || ''))
 }
 
-// A prompt that goes into the running turn starts no turn, so it cannot keep
-// /clear from running. Only the handoff's own turn must not take one in.
-function joinsOtherTurn(e) {
-  return !!e.turnId && S.working && e.turnId === S.turnId && !(H.armed && S.turnId !== H.notTurn)
+// A notification delivered into the running turn starts no turn, so it cannot
+// keep /clear from running. Only the handoff's own turn must not take one in.
+// What the person typed over a turn may still wait for a turn of its own.
+function joinsOtherTurn(e, fromUser) {
+  return !fromUser && !!e.turnId && S.working && e.turnId === S.turnId && !(H.armed && S.turnId !== H.notTurn)
 }
 
 // Sends the held prompts in the order they came; one that cannot be sent goes
@@ -197,11 +199,16 @@ async function settleHold($) {
   if (!holdsPrompts() && held.length) await releaseHeld($)
 }
 
+// Armed again for the running turn (the skill called twice in it, or after the
+// band's handoff queued behind it), the arm keeps a clear it already had, and
+// the handoff this turn already wrote
 function armHandoff(insideTurn, after = 'none') {
+  const sameTurn = insideTurn && H.armed && S.working && (H.inTurn === S.turnId || H.notTurn === S.turnId)
   H.armed = true
-  H.after = after
+  H.after = sameTurn && H.after === 'clear' ? 'clear' : after
+  if (!(sameTurn && H.inTurn === S.turnId)) H.draft = ''
+  H.inTurn = insideTurn ? S.turnId : ''
   H.notTurn = insideTurn ? '' : S.working ? S.turnId : ''
-  H.draft = ''
 }
 
 // The handoff without any preamble Claude put before its heading. The heading
@@ -331,6 +338,7 @@ async function loadLatestHandoff($) {
 async function captureHandoff($, e) {
   H.armed = false
   H.notTurn = ''
+  H.inTurn = ''
   const after = H.after
   H.after = 'none'
   // An interrupted turn keeps its handoff, but nothing follows on its own
@@ -974,7 +982,7 @@ export function register(on) {
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
-    if (holdsPrompts() && canHold(e) && !joinsOtherTurn(e)) {
+    if (holdsPrompts() && canHold(e) && !joinsOtherTurn(e, fromUser)) {
       held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
       $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
@@ -1024,6 +1032,8 @@ export function register(on) {
   })
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's turn is not the main loop's, and its turn.complete is skipped too
+    if (e.agentId) return next(e)
     now = await $.clock.now()
     S.working = true
     if (e.turnId) S.turnId = e.turnId
