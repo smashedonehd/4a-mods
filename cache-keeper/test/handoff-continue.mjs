@@ -17,7 +17,8 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
 // it can start a turn before the scheduled clear; absent, they run at once
 // onRun: called with each command the module runs, before it is logged
 // select: the host has Select, as the desktop app and the terminal do
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers, onRun, select = false } = {}) {
+// skill: the session has the /session-handoff skill
+async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers, onRun, select = false, skill = true } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -41,7 +42,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}), surfaces: async () => surfaces },
     state: { get: async () => ({ value: states.get(id) }), set: async (_ref, v) => void states.set(id, v) },
     store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
-    command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
+    command: { register: async () => {}, list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
     turn: { abort: async (x) => void log.push('abort:' + x.turnId) },
     prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
     ui: {
@@ -556,19 +557,61 @@ assert.equal(s.sent.at(-1), 'task finished')
 assert.ok(!s.submits.at(-1).asUser)
 
 // a turn begins anyway before the clear (a command passes the hold): the clear
-// waits for it to end instead of giving up
-timers = []
-s = await boot('/w/race-turn', 'ra3', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
+// waits for it to end, and its handoff is out of date by then. One fresh
+// handoff is written, and the chat clears with that one.
+const fresh = '# Session Handoff\n' + 'z'.repeat(300)
+// The band's handoff is in and the chat clears next, but turn t2 began first
+async function overtaken(cwd, id) {
+  timers = []
+  const s = await boot(cwd, id, { timers })
+  await s.press('handoff')
+  await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+  await s.fire('turn.start', { turnId: 't2' })
+  return s
+}
+s = await overtaken('/w/race-turn', 'ra3')
 await runTimers(timers)
 assert.ok(!cleared(s))
 assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 await runTimers(timers)
+assert.ok(!cleared(s))
+assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
+assert.ok(s.log.some((l) => l.includes('out of date')))
+// the band shows it running, and a message typed meanwhile waits for the clear
+await s.fire('turn.start', { turnId: 't3' })
+res = await s.fire('prompt.submit', { text: 'after the fresh one', origin: { kind: 'composer' }, turnId: 't3', wait: false })
+assert.ok(res && res.drop)
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await runTimers(timers)
 assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + fresh))
+assert.equal(s.sent.at(-1), 'after the fresh one')
+
+// overtaken again before the fresh handoff's clear: no second fresh handoff,
+// the chat stays and what was held goes on here
+s = await overtaken('/w/race-turn-again', 'ra3b')
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await s.fire('turn.start', { turnId: 't4' })
+await s.fire('prompt.submit', { text: 'held over t4', origin: { kind: 'composer' }, wait: false })
+await runTimers(timers)
+await s.end({ reason: 'answer', answer: plain, turnId: 't4' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.ok(!s.log.includes('run:' + SKILL))
+assert.ok(s.log.some((l) => l.includes('The chat stays')))
+assert.equal(s.sent.at(-1), 'held over t4')
+res = await s.fire('prompt.submit', { text: 'free again', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+// the next overtaken clear may write a fresh handoff again
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't5' })
+await s.fire('turn.start', { turnId: 't6' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't6' })
+await runTimers(timers)
+assert.ok(s.log.includes('run:' + SKILL))
 
 // the handoff turn wrote no handoff: nothing clears, the held message goes on here
 s = await boot('/w/race-none', 'ra4')
@@ -629,30 +672,29 @@ for (const p of [{ text: 'look at this', attachments: [{ kind: 'image' }] }, { t
 await runTimers(timers)
 assert.ok(cleared(s))
 
-// a turn that starts and ends before the scheduled clear: the chat clears once,
-// and the second scheduled run finds nothing left to do
-timers = []
-s = await boot('/w/race-twice', 'ra9', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
+// a turn that starts and ends before the scheduled clear: one fresh handoff,
+// whichever scheduled run comes first, and no clear with the old one
+s = await overtaken('/w/race-twice', 'ra9')
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.equal(timers.length, 2)
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
+assert.ok(!s.log.some((l) => l.includes('The chat stays')))
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
 // One at a time, unlike runTimers: the second must find the first done
 for (const f of timers.splice(0)) {
   f()
   await settle()
 }
 assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
+assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
 assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
 
-// a second handoff, pressed while the clear waited, is interrupted: the chat
-// still clears with the first one, and the held message follows it
-timers = []
-s = await boot('/w/race-second', 'rb1', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
+// a second handoff, pressed while the clear waited, is interrupted: the first
+// one is out of date after t2, so nothing clears, and the held message goes on
+// here. No fresh handoff of the plugin's own runs over it.
+s = await overtaken('/w/race-second', 'rb1')
 await s.press('handoff')
 await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
@@ -660,9 +702,82 @@ await s.fire('turn.start', { turnId: 't3' })
 await runTimers(timers)
 await s.end({ reason: 'aborted', turnId: 't3' })
 await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.ok(!cleared(s))
+assert.ok(!s.log.includes('run:' + SKILL))
 assert.equal(s.sent.at(-1), 'held meanwhile')
+
+// the same, with the second handoff turn over before the scheduled clear ran:
+// still no clear with the first one, and no fresh handoff over the interrupted one
+s = await overtaken('/w/race-second-fast', 'rb1c')
+await s.press('handoff')
+await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await s.end({ reason: 'aborted', turnId: 't3' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.ok(!s.log.includes('run:' + SKILL))
+assert.equal(s.sent.at(-1), 'held meanwhile')
+// completed instead: the chat clears with it
+s = await overtaken('/w/race-second-fast-ok', 'rb1d')
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(!s.log.includes('run:' + SKILL))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
+
+// cleared by hand while the fresh handoff ran: the next overtaken clear may
+// write a fresh handoff again
+s = await overtaken('/w/race-refresh-cleared', 'rb1e')
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+await s.fire('classic.SessionStart', { source: 'clear' })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't3' })
+await s.fire('turn.start', { turnId: 't4' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't4' })
+await runTimers(timers)
+assert.ok(s.log.includes('run:' + SKILL))
+assert.ok(!s.log.some((l) => l.includes('The chat stays')))
+
+// a message that comes while the fresh handoff is being started is held too
+s = await overtaken('/w/race-refresh-gap', 'rb1f')
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+for (const f of timers.splice(0)) f()
+res = await s.fire('prompt.submit', { text: 'typed in the gap', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
+await settle()
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.equal(s.sent.at(-1), 'typed in the gap')
+
+// a second handoff pressed while idle with the clear due is no turn that makes
+// the first out of date: it ends without a handoff, and the chat clears with the first
+timers = []
+s = await boot('/w/race-second-idle', 'rb1g', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+timers.length = 0
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'aborted', turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// the same second handoff completes: the chat clears with it, not the first
+s = await overtaken('/w/race-second-ok', 'rb1b')
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
 
 // cleared another way while prompts were held: they go to the new chat, and
 // nothing is held after it
@@ -704,6 +819,23 @@ s = await boot('/w/race-start-fails', 'rb4', {
 await s.press('handoff')
 assert.ok(s.log.some((l) => l.startsWith('toast:Held until')))
 assert.equal(s.sent.at(-1), 'held while queued')
+
+// no handoff skill in the session: the arm is undone and what was held while
+// the press looked for it goes on here
+s = await boot('/w/race-no-skill', 'rb6', { skill: false })
+await s.step()
+await s.render()
+await s.fire('turn.start', { turnId: 't1' })
+const looking = s.buttons.get('handoff').onPress()
+res = await s.fire('prompt.submit', { text: 'held while looking', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+assert.ok(res && res.drop)
+await looking
+await settle()
+assert.ok(s.log.some((l) => l.includes('no such skill')))
+assert.ok(!s.log.includes('run:' + SKILL))
+assert.equal(s.sent.at(-1), 'held while looking')
+await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
+assert.ok(!cleared(s))
 
 // the scheduled clear fails outright: the hold ends and held prompts go on here
 timers = []
