@@ -68,11 +68,11 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     await settle()
     return { log: [...log], text: r && r.text }
   }
-  // One main-loop response of a turn, as the engine streamed it
+  // One main-loop response of a turn, as the engine streamed it; read null: no usage
   const step = async (turnId = 't0', answer = '', stopReason = 'end_turn', agentId, read = 1000) => {
     for (const h of hs.filter((x) => x.name === 'turn.step')) {
       const it = h.fn($, { turnId, agentId }, function* () {
-        return { turnId, answer, stopReason, usage: { input_tokens: 10, cache_read_input_tokens: read } }
+        return { turnId, answer, stopReason, usage: read === null ? undefined : { input_tokens: 10, cache_read_input_tokens: read } }
       })
       while (!(await it.next()).done);
     }
@@ -808,6 +808,10 @@ s = await boot('/w/land-idle', 'sl2')
 await s.press('handoff')
 await s.fire('turn.start', { turnId: 't1' })
 assert.equal(await batch(s), '')
+// and with no landing a request does not redraw the band
+let marked = s.marks.invalidated
+await s.step('t1')
+assert.equal(s.marks.invalidated, marked)
 
 // the band shows the landing; once it runs long it offers to stop the turn,
 // which only a press does
@@ -820,14 +824,18 @@ assert.ok(!s.buttons.has('stop'))
 await s.step('busy')
 await s.step('busy')
 await s.step('busy')
-let marked = s.marks.invalidated
+marked = s.marks.invalidated
 await batch(s)
-// the band redraws when the note goes out, and after each request that follows
+// the band redraws when the note goes out
 assert.ok(s.marks.invalidated > marked)
 await s.step('busy')
 await s.step('busy')
 await s.render()
 assert.ok(!s.buttons.has('stop'))
+// and after each request that follows, also one that came back without usage
+marked = s.marks.invalidated
+await s.step('busy', '', 'end_turn', undefined, null)
+assert.ok(s.marks.invalidated > marked)
 marked = s.marks.invalidated
 await s.step('busy')
 assert.ok(s.marks.invalidated > marked)
