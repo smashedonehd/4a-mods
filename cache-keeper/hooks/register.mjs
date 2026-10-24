@@ -146,8 +146,9 @@ const H = {
   at: 0, // when it was made
   fromDisk: false, // loaded from latest-*.json, not made in this chat
   continuing: false,
-  clearDue: false, // the handoff is in and this chat clears and continues next
-  stale: false, // a turn ran while the clear was due: its handoff is out of date
+  // the handoff is in and this chat clears and continues next; 'stale': a turn
+  // ran since, so that handoff is out of date
+  clearDue: false,
   refreshed: false, // the due clear already wrote one fresh handoff of its own
 }
 
@@ -397,13 +398,12 @@ async function captureHandoff($, e) {
   if (!isHandoff(body)) {
     // A clear an earlier handoff made due still happens, with that handoff,
     // unless a turn since made it out of date
-    if (H.clearDue && !H.stale) {
+    if (H.clearDue === true) {
       $.ui.toast('The handoff turn ended without a handoff. Clearing this chat and continuing with the earlier one.', { timeoutMs: 8000 })
       clearAndContinueLater($, 300, true)
       return
     }
     H.clearDue = false
-    H.stale = false
     $.ui.toast('The handoff turn ended without a handoff, so nothing was saved.', { timeoutMs: 8000 })
     await settleHold($)
     return
@@ -412,7 +412,6 @@ async function captureHandoff($, e) {
   // Set before the first await: the hold must not lapse while the files are
   // written. A later /handoff decides too: one that only asks ends the hold.
   H.clearDue = clearing
-  H.stale = false
   H.text = body
   H.fromDisk = false
   H.at = now
@@ -569,7 +568,7 @@ async function continueRequest($) {
 function clearAndContinueLater($, ms, due = false) {
   $.clock.after(ms, () => {
     if (due && !H.clearDue) return
-    const go = due && H.stale ? refreshHandoff($) : clearAndContinue($)
+    const go = due && H.clearDue === 'stale' ? refreshHandoff($) : clearAndContinue($)
     go.catch((err) => $.ui.toast('Could not clear and continue: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 }))
   })
 }
@@ -582,7 +581,6 @@ async function refreshHandoff($) {
   // Waits for this turn: turn.complete calls again
   if (S.working && !H.armed) return clearAndContinue($)
   H.clearDue = false
-  H.stale = false
   if (H.armed) return
   if (H.refreshed) {
     $.ui.toast(`Claude worked on again before the chat could clear. The chat stays as it is: press h on the band or type /${names.handoff} for a fresh handoff.`, { timeoutMs: 10000 })
@@ -628,12 +626,7 @@ async function runHandoff($, after = 'none') {
   try {
     const commands = await $.command.list()
     const cmd = commands.find((c) => c.name === 'session-handoff') || commands.find((c) => HANDOFF_SKILL.test(c.name))
-    if (!cmd) {
-      H.armed = false
-      $.ui.toast('No /session-handoff skill in this session.', { timeoutMs: 8000 })
-      await settleHold($)
-      return
-    }
+    if (!cmd) throw new Error('no such skill in this session')
     now = await $.clock.now()
     startLanding()
     $.ui.invalidate('ui.render')
@@ -1270,7 +1263,7 @@ export function register(on) {
     if (e.turnId) S.turnId = e.turnId
     // A turn other than a handoff's own, before the due clear: what it does is
     // not in the handoff the chat would clear with
-    if (H.clearDue && !isHandoffTurn(S.turnId)) H.stale = true
+    if (H.clearDue && !isHandoffTurn(S.turnId)) H.clearDue = 'stale'
     await heartbeat($, true)
     return next(e)
   })
