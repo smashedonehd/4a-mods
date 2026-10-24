@@ -1,0 +1,10 @@
+{
+  "name": "cache-keeper",
+  "version": "1.2.5",
+  "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a chat off to a fresh one (/handoff); amounts shown as plan-limit percent (5h, week) instead of dollars",
+  "author": {
+    "name": "Filip Novotny"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

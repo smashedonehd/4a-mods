@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: secrets
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+      - name: Hardcoded secret patterns
+        shell: bash
+        run: |
+          fail=0
+          declare -A patterns=(
+            ["GitHub token"]='gh[opsu]_[A-Za-z0-9]{36}'
+            ["OpenAI/Anthropic key"]='sk-(ant-)?[A-Za-z0-9_-]{32,}'
+            ["AWS access key"]='AKIA[0-9A-Z]{16}'
+            ["Google API key"]='AIza[0-9A-Za-z_-]{35}'
+            ["Private key block"]='-----BEGIN [A-Z ]*PRIVATE KEY-----'
+          )
+          for label in "${!patterns[@]}"; do
+            if git grep -nE -e "${patterns[$label]}" -- ':!*.md'; then echo "  ^ $label"; fail=1; fi
+          done
+          exit $fail
+
+  hygiene:
+    name: hygiene
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+      - name: Files that must not be tracked
+        shell: bash
+        run: |
+          hits=$(git ls-files | grep -E '(^|/)(\.env(\..+)?|.*\.pem|id_rsa[^/]*)$' || true)
+          if [ -n "$hits" ]; then echo "Tracked secrets:"; echo "$hits"; exit 1; fi
+      - name: JSON is valid
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            python3 -m json.tool "$f" > /dev/null || { echo "INVALID: $f"; fail=1; }
+          done < <(git ls-files -z '*.json')
+          exit $fail
+
+  # The mods are plain ES modules loaded by Claude Code's hooks engine (no package.json,
+  # one plain node test script for cache-keeper's handoff continue, no test framework).
+  # CI checks syntax, runs that script, and that every marketplace entry points at a plugin
+  # with a manifest and the hooks modules it names. `claude plugin validate` is not run:
+  # it needs the Claude Code CLI and a login.
+  mods:
+    name: mods
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Module syntax
+        shell: bash
+        run: git ls-files -z '*.mjs' | xargs -0 -r -n1 node --check
+      - name: cache-keeper tests
+        shell: bash
+        run: node cache-keeper/test/handoff-continue.mjs
+      - name: Marketplace entries resolve
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+          m = json.loads(Path(".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+          bad = []
+          for p in m["plugins"]:
+              root = Path(p["source"])
+              man = root / ".claude-plugin" / "plugin.json"
+              if not man.is_file():
+                  bad.append(f"{p['name']}: missing {man}"); continue
+              if json.loads(man.read_text(encoding="utf-8")).get("name") != p["name"]:
+                  bad.append(f"{p['name']}: plugin.json name differs")
+              hooks = root / "hooks" / "hooks.json"
+              if hooks.is_file():
+                  for mod in json.loads(hooks.read_text(encoding="utf-8")).get("modules", []):
+                      if not (hooks.parent / mod).is_file():
+                          bad.append(f"{p['name']}: hooks module {mod} missing")
+          print("\n".join(bad) or f"{len(m['plugins'])} plugins resolve")
+          sys.exit(1 if bad else 0)
+          PY
