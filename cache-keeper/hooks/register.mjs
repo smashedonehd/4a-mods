@@ -546,7 +546,8 @@ function ctxTone(n, extra = {}) {
   return { ...extra, color: ['green', 'yellow', '#ff8700', 'red', 'red'][level], ...(level === 4 ? { bold: true } : {}) }
 }
 
-// Desktop band: one SVG strip with a status dot, a context gauge and limit gauges
+// Desktop band: native text, each figure with a small gauge beside it, so a
+// narrow window wraps the band instead of shrinking it to an unreadable strip
 const HUE = { green: '#3fb950', yellow: '#d29922', orange: '#f0883e', red: '#f85149', cyan: '#39c5cf', gray: '#8b949e' }
 const CTX_MAX = 1000000
 function ctxHue(n) {
@@ -555,53 +556,34 @@ function ctxHue(n) {
 function limitHue(p) {
   return p >= 95 ? HUE.red : p >= 80 ? HUE.yellow : p >= 50 ? HUE.cyan : HUE.green
 }
-function esc(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+function gaugeSvg(Svg, frac, fill, alt, ticks = []) {
+  const w = 64, h = 8
+  const f = Math.max(0, Math.min(1, frac))
+  const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
+  if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(6, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
+  for (const t of ticks) out.push(`<rect x="${(w * t).toFixed(1)}" y="0" width="1" height="8" fill="#8b949e" fill-opacity=".45"/>`)
+  return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${out.join('')}</svg>`, width: w, height: h, alt })
 }
-function bandSvg(st, ctx, limits, rewrite, session, big) {
-  const H = 28, Y = 18, CW = 6.1
-  const out = []
-  let x = 4
-  const text = (s, cls, fill) => {
-    out.push(`<text x="${x}" y="${Y}" class="${cls}"${fill ? ` fill="${fill}"` : ''}>${esc(s)}</text>`)
-    x += s.length * CW
+
+// The menu the band's cache chip opens: keep warm for a while, or stop it
+let cacheMenu = false
+const KEEP_WARM_PICKS = [1, 4, 8]
+
+function cacheMenuRow($, { Box, Text, Button }) {
+  const pick = (fn) => async () => {
+    now = await $.clock.now()
+    fn()
+    cacheMenu = false
+    await heartbeat($, true)
+    $.ui.invalidate('ui.render')
   }
-  const gap = (w = 18) => { x += w }
-  const gauge = (w, frac, fill, ticks = []) => {
-    const f = Math.max(0, Math.min(1, frac))
-    out.push(`<rect x="${x}" y="${Y - 7}" width="${w}" height="6" rx="3" class="track"/>`)
-    if (f > 0) out.push(`<rect x="${x}" y="${Y - 7}" width="${Math.max(6, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
-    for (const t of ticks) out.push(`<rect x="${(x + w * t).toFixed(1)}" y="${Y - 8}" width="1" height="8" class="tick"/>`)
-    x += w + 6
-  }
-  const dot = { kept: HUE.cyan, warm: HUE.green, cooling: HUE.yellow, cold: big ? HUE.red : HUE.gray }[st.kind] || HUE.gray
-  const label = st.kind === 'kept' ? 'kept warm' : st.kind === 'warm' ? `warm ${minutes(st.left)}` : st.kind === 'cooling' ? `cools in ${minutes(st.left)}` : st.kind === 'cold' ? `cold ${minutes(-st.left)}` : 'cache'
-  out.push(`<circle cx="${x + 4}" cy="${Y - 4}" r="4" fill="${dot}"${st.kind === 'cooling' ? '><animate attributeName="opacity" values="1;.3;1" dur="1.6s" repeatCount="indefinite"/></circle>' : '/>'}`)
-  x += 14
-  text(label, 'v', dot)
-  gap()
-  const c = ctxHue(ctx)
-  text('ctx', 'k'); x += 4
-  gauge(120, ctx / CTX_MAX, c, [0.2, 0.4, 0.6, 0.8])
-  text(tokens(ctx), ctx >= 800000 ? 'v b' : 'v', c)
-  for (const l of limits) {
-    gap()
-    const p = l.percentUsed || 0
-    text(LIMIT_LABEL[l.kind] || l.kind, 'k'); x += 4
-    gauge(56, p / 100, limitHue(p))
-    text(`${Math.round(p)}%`, 'v', limitHue(p))
-  }
-  gap()
-  text('rewrite', 'k'); x += 4
-  text(rewrite, st.kind === 'cold' && big ? 'v' : 'm', st.kind === 'cold' && big ? HUE.red : '')
-  gap()
-  text('session', 'k'); x += 4
-  text(session, 'm')
-  const w = Math.ceil(x + 4)
-  const css = '.k{fill:#8b949e}.v{fill:#c9d1d9}.m{fill:#adbac7}.b{font-weight:700}.track{fill:#8b949e;fill-opacity:.22}.tick{fill:#8b949e;fill-opacity:.45}' +
-    '@media (prefers-color-scheme: light){.k{fill:#57606a}.v{fill:#24292f}.m{fill:#424a53}}'
-  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${H}" viewBox="0 0 ${w} ${H}"><style>text{font:12px ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}${css}</style>${out.join('')}</svg>`
-  return { source, width: w, height: H }
+  const items = KEEP_WARM_PICKS.map((h, i) =>
+    Button({ key: 'kw-' + h, label: `${S.keepWarm ? 'warm until' : 'keep warm'} ${h} h`, hotkey: String(i + 1), plain: true, onPress: pick(() => startKeepWarm($, h)) }),
+  )
+  if (S.keepWarm) items.push(Button({ key: 'kw-off', label: 'stop keep warm', hotkey: '0', plain: true, onPress: pick(() => stopKeepWarm($, 'turned off')) }))
+  items.push(Text({ dimColor: true, children: [`window ${ttlMin()} min · a ping costs a cache read`] }))
+  items.push(Button({ key: 'cache-close', label: 'close', plain: true, dimColor: true, onPress: () => { cacheMenu = false; $.ui.invalidate('ui.render') } }))
+  return Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, children: items })
 }
 
 // Dollars shown as plan-limit percent. The API reports only how full each limit
@@ -1194,35 +1176,41 @@ export function register(on) {
     const below = await next(e)
     if (e.props && e.props.hasSurvey) return below
     if (!S.lastActivity && !S.keepWarm) return below
-    const { Box, Text, Button, Svg } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    // The terminal has no Svg: there the figures go without gauges
+    const Svg = e.surface !== 'terminal' ? els.Svg : null
     const hb = myHeartbeat()
     const st = cacheState(hb)
     const ttl = ttlMin()
     const big = S.ctx >= settings.bigTokens
-    const parts = []
-    if (st.kind === 'kept') parts.push(Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] }))
-    else if (st.kind === 'warm') parts.push(Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] }))
-    else if (st.kind === 'cooling') parts.push(Text({ color: 'yellow', bold: true, children: [`◐ cache cools in ${minutes(st.left)}`] }))
-    else if (st.kind === 'cold') parts.push(Text(big ? { color: 'red', bold: true, children: [`○ cache cold ${minutes(-st.left)}`] } : { dimColor: true, children: [`○ cache cold ${minutes(-st.left)}`] }))
-    parts.push(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })))
+    // A figure as text, with its gauge beside it where the surface draws one
+    const figure = (text, gauge) => (Svg && gauge ? Box({ flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [text, gauge] }) : text)
+    let cache
+    if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] })
+    else if (st.kind === 'warm') cache = Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] })
+    else if (st.kind === 'cooling') cache = Text({ color: 'yellow', bold: true, children: [`◐ cache cools in ${minutes(st.left)}`] })
+    else if (st.kind === 'cold') cache = Text(big ? { color: 'red', bold: true, children: [`○ cache cold ${minutes(-st.left)}`] } : { dimColor: true, children: [`○ cache cold ${minutes(-st.left)}`] })
+    else cache = Text({ dimColor: true, children: ['○ cache'] })
+    // The cache chip opens the keep-warm menu (w while the band has the focus)
+    const parts = [Button({ key: 'cache', hotkey: 'w', plain: true, onPress: () => { cacheMenu = !cacheMenu; $.ui.invalidate('ui.render') }, children: [cache, Text({ dimColor: true, children: [cacheMenu ? ' ▴' : ' ▾'] })] })]
+    parts.push(figure(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8])))
     if (st.kind === 'cold' && big) parts.push(Text({ color: 'red', children: [`next send rewrites it ≈ ${money(rewriteCost(S.ctx, S.model, ttl))}`] }))
     else parts.push(Text({ dimColor: true, children: [`rewrite ≈ ${money(rewriteCost(S.ctx, S.model, ttl))}`] }))
-    if (S.rateLimits.length) parts.push(Text(limitTone(S.rateLimits, { children: [limitsText(S.rateLimits)] })))
+    if (Svg) {
+      for (const l of S.rateLimits) {
+        const p = l.percentUsed || 0
+        const name = LIMIT_LABEL[l.kind] || l.kind
+        parts.push(figure(Text(limitTone([l], { children: [`${name} ${Math.round(p)}%`] })), gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
+      }
+    } else if (S.rateLimits.length) parts.push(Text(limitTone(S.rateLimits, { children: [limitsText(S.rateLimits)] })))
     parts.push(Text({ dimColor: true, children: [`session ${money(S.costUsd)}`] }))
     if (S.coldRestarts.length) parts.push(Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0))}`] }))
-    let row
-    if (e.surface === 'desktop' && Svg) {
-      const g = bandSvg(st, S.ctx, S.rateLimits, money(rewriteCost(S.ctx, S.model, ttl), true), money(S.costUsd, true), big)
-      row = [Svg({ source: g.source, width: g.width, height: g.height, alt: `cache ${st.kind}, ctx ${tokens(S.ctx)}, ${limitsText(S.rateLimits)}` })]
-    } else {
-      row = [Box({ flexDirection: 'row', flexWrap: 'wrap', columnGap: 3, flexShrink: 1, children: parts.map((x, i) => Box({ key: 'p' + i, flexShrink: 0, children: [x] })) })]
+    // One-press shortcut while the menu is shut; its 1 is the menu's first pick otherwise
+    if (!cacheMenu && st.kind === 'cooling' && big) {
+      parts.push(Button({ key: 'keepwarm', label: 'keep warm', hotkey: '1', plain: true, onPress: async () => { now = await $.clock.now(); startKeepWarm($, settings.keepWarmHours); await heartbeat($, true); $.ui.invalidate('ui.render') } }))
     }
-    if (st.kind === 'cooling' && big) {
-      row.push(Button({ key: 'keepwarm', label: 'keep warm', hotkey: '1', plain: true, onPress: async () => { now = await $.clock.now(); startKeepWarm($, settings.keepWarmHours); await heartbeat($, true); $.ui.invalidate('ui.render') } }))
-    } else if (st.kind === 'kept') {
-      row.push(Button({ key: 'keepwarm', label: 'stop warm', hotkey: '1', plain: true, onPress: async () => { now = await $.clock.now(); stopKeepWarm($, 'turned off'); await heartbeat($, true); $.ui.invalidate('ui.render') } }))
-    }
-    const left = Box({ flexDirection: 'row', alignItems: 'center', columnGap: 2, children: row })
+    const left = Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, flexShrink: 1, children: parts.map((x, i) => Box({ key: 'p' + i, flexShrink: 0, children: [x] })) })
     // Right edge: one click runs /session-handoff (h while the band has the focus;
     // a letter never fires from the prompt box, unlike a digit), then clears this
     // chat and sends the handoff as the fresh chat's first prompt. c does that
@@ -1234,8 +1222,11 @@ export function register(on) {
       const go = Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) })
       right = Box({ flexDirection: 'row', columnGap: 2, children: [go, handoff] })
     }
-    const mine = Box({ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
-    return Box({ flexDirection: 'column', children: below ? [mine, below] : [mine] })
+    const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
+    const rows = [mine]
+    if (cacheMenu) rows.push(cacheMenuRow($, els))
+    if (below) rows.push(below)
+    return Box({ flexDirection: 'column', children: rows })
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {

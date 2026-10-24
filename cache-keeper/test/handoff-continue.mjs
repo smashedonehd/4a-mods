@@ -39,10 +39,11 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
       invalidate: () => {},
       ask: async (q) => (log.push('ask:' + q.slice(0, 14)), answer),
       log: () => {},
-      resolve: () => ({ Box: (p) => p, Text: (p) => p, Svg: null, Button: (p) => (buttons.set(p.key, p), p) }),
+      resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p) }),
     },
   }
   const buttons = new Map() // key -> props of the band's buttons at the last render
+  const svgs = [] // props of every Svg drawn
   const fire = async (name, e, pred = () => true) => {
     let out
     for (const h of hs.filter((x) => x.name === name && pred(x))) out = await h.fn($, e, async () => ({}))
@@ -71,10 +72,13 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   }
   // One main-loop request first (the band stays hidden until there was one),
   // then renders the band and presses one of its buttons
-  const press = async (key) => {
-    await step()
+  const render = async (surface = 'terminal') => {
     buttons.clear()
-    await fire('ui.render', { component: 'AbovePrompt', surface: 'terminal' })
+    await fire('ui.render', { component: 'AbovePrompt', surface })
+  }
+  const press = async (key, surface = 'terminal') => {
+    await step()
+    await render(surface)
     assert.ok(buttons.has(key), `no ${key} button on the band`)
     await buttons.get(key).onPress()
     await settle()
@@ -85,7 +89,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     await fire('turn.complete', e)
     await settle()
   }
-  return { fire, run, step, press, end, log, sent }
+  return { fire, run, step, press, render, end, log, sent, buttons, svgs }
 }
 
 const body = '# Session Handoff\n' + 'x'.repeat(300)
@@ -547,5 +551,33 @@ s = await boot('/w/race-ask', 'ra5')
 await s.run('handoff', '')
 res = await s.fire('prompt.submit', { text: 'go on', origin: { kind: 'composer' }, turnId: 't1', wait: false })
 assert.ok(!(res && res.drop))
+
+// The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
+for (const surface of ['terminal', 'desktop']) {
+  s = await boot('/w/menu-' + surface, 'mn-' + surface)
+  await s.press('cache', surface)
+  await s.press('kw-4', surface)
+  assert.ok(s.log.some((l) => l.startsWith('toast:Keeping this cache warm')))
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
+  // kept warm: the menu offers to stop it
+  await s.press('cache', surface)
+  await s.render(surface)
+  assert.ok(s.buttons.has('kw-off'))
+  s.log.length = 0
+  await s.press('kw-off', surface)
+  assert.ok(s.log.some((l) => l.startsWith('toast:Keep warm off')))
+  await s.press('cache', surface)
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-off'))
+  await s.press('cache-close', surface)
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
+}
+
+// The desktop band is native text with small gauges, never one shrinking strip
+s = await boot('/w/desktop', 'dk1')
+await s.press('cache', 'desktop')
+assert.ok(s.svgs.length > 0 && s.svgs.every((g) => g.width <= 64 && !g.source.includes('<text')))
 
 console.log('handoff-continue: ok')
