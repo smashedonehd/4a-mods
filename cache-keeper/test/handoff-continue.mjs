@@ -9,10 +9,13 @@ const HOUR = 3600e3
 let instance = 0
 let failWrites = [] // substrings of paths whose write rejects
 let failNow = false // $.clock.now rejects
+// Lets what the module scheduled with queueMicrotask, or a test with its timers, run
+const settle = () => new Promise((r) => setTimeout(r, 20))
 
 // timers: an array to collect $.clock.after callbacks in, run by the test, so
 // it can start a turn before the scheduled clear; absent, they run at once
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers } = {}) {
+// onRun: called with each command the module runs, before it is logged
+async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers, onRun } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -34,7 +37,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     env: { get: async (k) => (k === 'USERPROFILE' ? '/home' : '') },
     session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}), surfaces: async () => surfaces },
     store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
-    command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }], run: async (c) => void log.push('run:' + c.command) },
+    command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
     prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
@@ -53,7 +56,6 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   }
   await fire('session.start', {})
   if (working) await fire('turn.start', { turnId: 'busy' })
-  const settle = () => new Promise((r) => setTimeout(r, 20))
   // Fires the command hooks that handle `command`: the filtered hook that lists
   // it (/handoff) or, for the skill, the unfiltered ones
   const run = async (command, args = '') => {
@@ -498,7 +500,7 @@ assert.ok(!cleared(s))
 // Runs the callbacks the module scheduled so far, then lets them settle
 const runTimers = async (timers) => {
   for (const f of timers.splice(0)) f()
-  await new Promise((r) => setTimeout(r, 20))
+  await settle()
 }
 
 // the band's button: a message typed while the handoff runs would start a turn
@@ -574,6 +576,8 @@ s = await boot('/w/race-ask-later', 'ra7', { timers })
 await s.press('handoff')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', { turnId: 't2' })
+res = await s.fire('prompt.submit', { text: 'held in t2', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
 await s.run('handoff', '')
 await runTimers(timers) // the clear waits for t2, /handoff queues its skill
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
@@ -582,6 +586,7 @@ await runTimers(timers)
 await s.end({ reason: 'answer', answer: body, turnId: 't3' })
 await runTimers(timers)
 assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'held in t2')
 res = await s.fire('prompt.submit', { text: 'carry on', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
 
@@ -607,9 +612,10 @@ await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', { turnId: 't2' })
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.equal(timers.length, 2)
+// One at a time, unlike runTimers: the second must find the first done
 for (const f of timers.splice(0)) {
   f()
-  await new Promise((r) => setTimeout(r, 20))
+  await settle()
 }
 assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
 assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
@@ -645,6 +651,18 @@ await runTimers(timers)
 assert.equal(s.sent.at(-1), 'held then cleared')
 res = await s.fire('prompt.submit', { text: 'fresh start', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
+
+// the handoff skill could not be started: what was held while it was queued goes on here
+s = await boot('/w/race-start-fails', 'rb4', {
+  onRun: async (c) => {
+    if (!c.command.includes('session-handoff')) return
+    await s.fire('prompt.submit', { text: 'held while queued', origin: { kind: 'composer' }, wait: false })
+    throw new Error('engine busy')
+  },
+})
+await s.press('handoff')
+assert.ok(s.log.some((l) => l.startsWith('toast:Held until')))
+assert.equal(s.sent.at(-1), 'held while queued')
 
 // the scheduled clear fails outright: the hold ends and held prompts go on here
 timers = []

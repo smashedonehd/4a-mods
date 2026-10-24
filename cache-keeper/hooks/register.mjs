@@ -172,7 +172,7 @@ function canHold(e) {
 async function releaseHeld($) {
   for (const p of held.splice(0)) {
     try {
-      await $.prompt.submit(p.asUser ? { text: p.text, asUser: true } : { text: p.text })
+      await $.prompt.submit(p)
     } catch {
       let filled = false
       try {
@@ -183,6 +183,12 @@ async function releaseHeld($) {
       $.ui.toast(filled ? 'A held message is in the prompt box: press Enter to send it.' : 'A held message could not be sent: ' + clip(p.text, 80), { timeoutMs: 10000 })
     }
   }
+}
+
+// Every way out of a handoff or a clear ends here: what was held goes on once
+// nothing holds it any more (a second handoff may still be on its way)
+async function settleHold($) {
+  if (!holdsPrompts() && held.length) await releaseHeld($)
 }
 
 function armHandoff(insideTurn, after = 'none') {
@@ -335,7 +341,7 @@ async function captureHandoff($, e) {
       return
     }
     $.ui.toast('The handoff turn ended without a handoff, so nothing was saved.', { timeoutMs: 8000 })
-    await releaseHeld($)
+    await settleHold($)
     return
   }
   const clearing = ended && after === 'clear'
@@ -357,7 +363,7 @@ async function captureHandoff($, e) {
     return
   }
   // Nothing clears: what was held while the handoff ran goes on in this chat
-  await releaseHeld($)
+  await settleHold($)
   $.ui.toast(`${where}${lost} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
   // Off the hook: the turn is ending, and a dialog would hold it open. The
   // Desktop app shows no dialog asked between turns, so there the band's
@@ -423,20 +429,21 @@ async function clearAndContinue($) {
   // Claimed before the first await: two presses must not both get past the check
   H.continuing = true
   $.ui.invalidate('ui.render')
-  let ready = false
   try {
-    ready = await handoffReady($)
+    await clearAndSend($)
   } finally {
-    if (!ready) {
-      H.continuing = false
-      $.ui.invalidate('ui.render')
-    }
-  }
-  if (!ready) {
+    H.continuing = false
     H.clearDue = false
-    await releaseHeld($)
-    return
+    $.ui.invalidate('ui.render')
+    // After the handoff, so the fresh chat reads it first
+    await settleHold($)
   }
+}
+
+// The clear and the send. Every way out, a throw too, goes through
+// clearAndContinue's finally.
+async function clearAndSend($) {
+  if (!(await handoffReady($))) return
   const text = continuationPrompt()
   const path = H.path
   const fid = H.fid
@@ -444,11 +451,7 @@ async function clearAndContinue($) {
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
-    H.continuing = false
-    H.clearDue = false
-    $.ui.invalidate('ui.render')
     $.ui.toast('Could not run /clear: ' + clip(String((err && err.message) || err), 100) + (path ? ` The handoff is saved at ${path}.` : ''), { timeoutMs: 10000 })
-    await releaseHeld($)
     return
   }
   H.text = ''
@@ -474,12 +477,6 @@ async function clearAndContinue($) {
       filled = false
     }
     $.ui.toast(filled ? 'Cleared. The handoff is in the prompt box: press Enter to send it.' : `Cleared, but the handoff could not be sent.${path ? ` It's saved at ${path}.` : ''}`, { timeoutMs: 10000 })
-  } finally {
-    H.continuing = false
-    H.clearDue = false
-    $.ui.invalidate('ui.render')
-    // After the handoff, so the fresh chat reads it first
-    await releaseHeld($)
   }
 }
 
@@ -503,11 +500,7 @@ async function continueRequest($) {
 function clearAndContinueLater($, ms, due = false) {
   $.clock.after(ms, () => {
     if (due && !H.clearDue) return
-    clearAndContinue($).catch((err) => {
-      H.clearDue = false
-      $.ui.toast('Could not clear and continue: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })
-      return releaseHeld($)
-    })
+    clearAndContinue($).catch((err) => $.ui.toast('Could not clear and continue: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 }))
   })
 }
 
@@ -537,6 +530,7 @@ async function runHandoff($, after = 'none') {
   } catch (err) {
     H.armed = false
     $.ui.toast('Could not start /session-handoff: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })
+    await settleHold($)
   } finally {
     handoffPending = false
     $.ui.invalidate('ui.render')
@@ -572,7 +566,7 @@ function ctxTone(n, extra = {}) {
 
 // Desktop band: native text, each figure with a small gauge beside it, so a
 // narrow window wraps the band instead of shrinking it to an unreadable strip
-const HUE = { green: '#3fb950', yellow: '#d29922', orange: '#f0883e', red: '#f85149', cyan: '#39c5cf', gray: '#8b949e' }
+const HUE = { green: '#3fb950', yellow: '#d29922', orange: '#f0883e', red: '#f85149', cyan: '#39c5cf' }
 const CTX_MAX = 1000000
 function ctxHue(n) {
   return [HUE.green, HUE.yellow, HUE.orange, HUE.red, HUE.red][ctxLevel(n)]
@@ -593,20 +587,27 @@ function gaugeSvg(Svg, frac, fill, alt, ticks = []) {
 let cacheMenu = false
 const KEEP_WARM_PICKS = [1, 4, 8]
 
+function setCacheMenu($, open) {
+  cacheMenu = open
+  $.ui.invalidate('ui.render')
+}
+
+// A band button that turns keep warm on or off; the menu shuts after it
+const keepWarmPress = ($, fn) => async () => {
+  now = await $.clock.now()
+  fn()
+  cacheMenu = false
+  await heartbeat($, true)
+  $.ui.invalidate('ui.render')
+}
+
 function cacheMenuRow($, { Box, Text, Button }) {
-  const pick = (fn) => async () => {
-    now = await $.clock.now()
-    fn()
-    cacheMenu = false
-    await heartbeat($, true)
-    $.ui.invalidate('ui.render')
-  }
   const items = KEEP_WARM_PICKS.map((h, i) =>
-    Button({ key: 'kw-' + h, label: `${S.keepWarm ? 'warm until' : 'keep warm'} ${h} h`, hotkey: String(i + 1), plain: true, onPress: pick(() => startKeepWarm($, h)) }),
+    Button({ key: 'kw-' + h, label: `${S.keepWarm ? 'warm until' : 'keep warm'} ${h} h`, hotkey: String(i + 1), plain: true, onPress: keepWarmPress($, () => startKeepWarm($, h)) }),
   )
-  if (S.keepWarm) items.push(Button({ key: 'kw-off', label: 'stop keep warm', hotkey: '0', plain: true, onPress: pick(() => stopKeepWarm($, 'turned off')) }))
+  if (S.keepWarm) items.push(Button({ key: 'kw-off', label: 'stop keep warm', hotkey: '0', plain: true, onPress: keepWarmPress($, () => stopKeepWarm($, 'turned off')) }))
   items.push(Text({ dimColor: true, children: [`window ${ttlMin()} min · a ping costs a cache read`] }))
-  items.push(Button({ key: 'cache-close', label: 'close', plain: true, dimColor: true, onPress: () => { cacheMenu = false; $.ui.invalidate('ui.render') } }))
+  items.push(Button({ key: 'cache-close', label: 'close', plain: true, dimColor: true, onPress: () => setCacheMenu($, false) }))
   return Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, children: items })
 }
 
@@ -935,7 +936,7 @@ export function register(on) {
     if (!H.continuing) {
       // Cleared another way: nothing is due, and what was held goes to this chat
       H.clearDue = false
-      if (held.length) $.clock.after(300, () => releaseHeld($))
+      if (held.length) $.clock.after(300, () => settleHold($))
       if (revive.size) {
         revive.clear()
         await saveRevive($)
@@ -960,17 +961,15 @@ export function register(on) {
     // Typed in the terminal, the Desktop app or over Remote Control alike; a
     // held prompt comes back as the plugin's, so this looks before the hold
     if (e.origin && e.origin.kind !== 'plugin' && /^\s*(stop caveman|normal mode)\b/i.test(String(e.text || ''))) await noteAndSave($, 'caveman', 'off')
+    const fromUser = e.origin && (e.origin.kind === 'composer' || e.origin.kind === 'bridge')
     // Typed, not picked: the band's menu shuts so its digits stay out of the way
-    if (cacheMenu && e.origin && (e.origin.kind === 'composer' || e.origin.kind === 'bridge')) {
-      cacheMenu = false
-      $.ui.invalidate('ui.render')
-    }
+    if (cacheMenu && fromUser) setCacheMenu($, false)
     // Clear and continue is on its way: a prompt that would start a turn here
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
     if (holdsPrompts() && canHold(e)) {
-      held.push({ text: e.text, asUser: e.origin.kind === 'composer' || e.origin.kind === 'bridge' })
+      held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
       $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
     }
@@ -993,7 +992,6 @@ export function register(on) {
     const ttl = ttlMin()
     const left = msLeft(S.lastActivity, ttl)
     const isCold = left !== null && left <= 0
-    const fromUser = e.origin && (e.origin.kind === 'composer' || e.origin.kind === 'bridge')
     if (!settings.guard || !fromUser || !isCold || S.ctx < settings.bigTokens || e.turnId) return next(e)
     const cost = money(rewriteCost(S.ctx, S.model, ttl))
     let answer = 'Send anyway'
@@ -1221,7 +1219,7 @@ export function register(on) {
     const ttl = ttlMin()
     const big = S.ctx >= settings.bigTokens
     // A figure as text, with its gauge beside it where the surface draws one
-    const figure = (text, gauge) => (Svg && gauge ? Box({ flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [text, gauge] }) : text)
+    const figure = (text, gauge) => (gauge ? Box({ flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [text, gauge] }) : text)
     let cache
     if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] })
     else if (st.kind === 'warm') cache = Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] })
@@ -1229,7 +1227,7 @@ export function register(on) {
     else if (st.kind === 'cold') cache = Text(big ? { color: 'red', bold: true, children: [`○ cache cold ${minutes(-st.left)}`] } : { dimColor: true, children: [`○ cache cold ${minutes(-st.left)}`] })
     else cache = Text({ dimColor: true, children: ['○ cache'] })
     // The cache chip opens the keep-warm menu (w while the band has the focus)
-    const parts = [Button({ key: 'cache', hotkey: 'w', plain: true, onPress: () => { cacheMenu = !cacheMenu; $.ui.invalidate('ui.render') }, children: [cache, Text({ dimColor: true, children: [cacheMenu ? ' ▴' : ' ▾'] })] })]
+    const parts = [Button({ key: 'cache', hotkey: 'w', plain: true, onPress: () => setCacheMenu($, !cacheMenu), children: [cache, Text({ dimColor: true, children: [cacheMenu ? ' ▴' : ' ▾'] })] })]
     parts.push(figure(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8])))
     if (st.kind === 'cold' && big) parts.push(Text({ color: 'red', children: [`next send rewrites it ≈ ${money(rewriteCost(S.ctx, S.model, ttl))}`] }))
     else parts.push(Text({ dimColor: true, children: [`rewrite ≈ ${money(rewriteCost(S.ctx, S.model, ttl))}`] }))
@@ -1237,14 +1235,14 @@ export function register(on) {
       for (const l of S.rateLimits) {
         const p = l.percentUsed || 0
         const name = LIMIT_LABEL[l.kind] || l.kind
-        parts.push(figure(Text(limitTone([l], { children: [`${name} ${Math.round(p)}%`] })), gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
+        parts.push(figure(Text(limitTone([l], { children: [limitsText([l])] })), gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
       }
     } else if (S.rateLimits.length) parts.push(Text(limitTone(S.rateLimits, { children: [limitsText(S.rateLimits)] })))
     parts.push(Text({ dimColor: true, children: [`session ${money(S.costUsd)}`] }))
     if (S.coldRestarts.length) parts.push(Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0))}`] }))
     // One-press shortcut while the menu is shut; its 1 is the menu's first pick otherwise
     if (!cacheMenu && st.kind === 'cooling' && big) {
-      parts.push(Button({ key: 'keepwarm', label: 'keep warm', hotkey: '1', plain: true, onPress: async () => { now = await $.clock.now(); startKeepWarm($, settings.keepWarmHours); await heartbeat($, true); $.ui.invalidate('ui.render') } }))
+      parts.push(Button({ key: 'keepwarm', label: 'keep warm', hotkey: '1', plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) }))
     }
     const left = Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, flexShrink: 1, children: parts.map((x, i) => Box({ key: 'p' + i, flexShrink: 0, children: [x] })) })
     // Right edge: one click runs /session-handoff (h while the band has the focus;
