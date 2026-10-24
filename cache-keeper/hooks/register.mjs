@@ -545,7 +545,7 @@ function ttlMin() {
 const LIMIT_LABEL = { five_hour: '5h', seven_day: 'week', spend_limit: 'spend' }
 
 function limitsText(limits) {
-  return limits.map((l) => `${LIMIT_LABEL[l.kind] || l.kind} ${Math.round(l.percentUsed)}%`).join(' · ')
+  return limits.map((l) => `${LIMIT_LABEL[l.kind] || l.kind} ${Math.round(l.percentUsed || 0)}%`).join(' · ')
 }
 
 function limitTone(limits, extra) {

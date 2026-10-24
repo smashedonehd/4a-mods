@@ -652,6 +652,21 @@ assert.equal(s.sent.at(-1), 'held then cleared')
 res = await s.fire('prompt.submit', { text: 'fresh start', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
 
+// c pressed while the band's handoff runs: it is not ready yet, and what is held
+// stays held for the clear that handoff brings, not sent into this chat
+s = await boot('/w/race-c', 'rb5')
+await s.run('handoff', '')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't2' })
+await s.fire('prompt.submit', { text: 'held during t2', origin: { kind: 'composer' }, wait: false })
+await s.press('continue')
+assert.ok(!s.sent.includes('held during t2'))
+await s.end({ reason: 'answer', answer: body, turnId: 't2' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'held during t2')
+
 // the handoff skill could not be started: what was held while it was queued goes on here
 s = await boot('/w/race-start-fails', 'rb4', {
   onRun: async (c) => {
