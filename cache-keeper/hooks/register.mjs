@@ -167,6 +167,13 @@ function canHold(e) {
   return !/(^|\s)@\S/.test(String(e.text || ''))
 }
 
+// A notification delivered into the running turn starts no turn, so it cannot
+// keep /clear from running. Only the handoff's own turn must not take one in.
+// What the person typed over a turn may still wait for a turn of its own.
+function joinsOtherTurn(e, fromUser) {
+  return !fromUser && S.working && !!e.turnId && e.turnId === S.turnId && !isHandoffTurn(e.turnId)
+}
+
 // Sends the held prompts in the order they came; one that cannot be sent goes
 // to the prompt box rather than being lost. Never throws.
 async function releaseHeld($) {
@@ -191,11 +198,21 @@ async function settleHold($) {
   if (!holdsPrompts() && held.length) await releaseHeld($)
 }
 
+// Armed again inside the turn the arm is for (the skill called twice in it), or
+// the one the band's handoff queued behind, the arm keeps a clear it already
+// had and the handoff this turn already wrote. Until its capture, an arm with
+// no notTurn is for the running turn.
 function armHandoff(insideTurn, after = 'none') {
+  const again = insideTurn && H.armed && (H.notTurn === '' || H.notTurn === S.turnId)
+  if (!(again && H.after === 'clear')) H.after = after
+  if (!again) H.draft = ''
   H.armed = true
-  H.after = after
   H.notTurn = insideTurn ? '' : S.working ? S.turnId : ''
-  H.draft = ''
+}
+
+// The turn whose answer is the handoff: an armed one other than notTurn
+function isHandoffTurn(turnId) {
+  return H.armed && turnId !== H.notTurn
 }
 
 // The handoff without any preamble Claude put before its heading. The heading
@@ -218,7 +235,7 @@ function isHandoff(body) {
 // a rewritten handoff replaces it). A response cut off before its end
 // (max_tokens, an interrupt) is no handoff.
 function noteHandoffStep(e, result) {
-  if (!H.armed || e.turnId === H.notTurn || result.stopReason !== 'end_turn') return
+  if (!isHandoffTurn(e.turnId) || result.stopReason !== 'end_turn') return
   const body = handoffBody(result.answer)
   if (isHandoff(body)) H.draft = body
 }
@@ -478,6 +495,10 @@ async function clearAndSend($) {
     }
     $.ui.toast(filled ? 'Cleared. The handoff is in the prompt box: press Enter to send it.' : `Cleared, but the handoff could not be sent.${path ? ` It's saved at ${path}.` : ''}`, { timeoutMs: 10000 })
   }
+}
+
+function isClearArg(args) {
+  return String(args || '').trim().toLowerCase() === 'clear'
 }
 
 function isContinueArg(args) {
@@ -968,7 +989,7 @@ export function register(on) {
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
-    if (holdsPrompts() && canHold(e)) {
+    if (holdsPrompts() && canHold(e) && !joinsOtherTurn(e, fromUser)) {
       held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
       $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
@@ -1018,6 +1039,8 @@ export function register(on) {
   })
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's turn is not the main loop's, and its turn.complete is skipped too
+    if (e.agentId) return next(e)
     now = await $.clock.now()
     S.working = true
     if (e.turnId) S.turnId = e.turnId
@@ -1079,7 +1102,7 @@ export function register(on) {
     } catch {
       // usage unavailable: keep the per-request figures
     }
-    if (H.armed && e.turnId !== H.notTurn) await captureHandoff($, e)
+    if (isHandoffTurn(e.turnId)) await captureHandoff($, e)
     else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
@@ -1113,10 +1136,13 @@ export function register(on) {
 
   on('tool.call', async ($, e, next) => {
     if (!e.agentId) S.tool = e.tool
-    // Claude calling the handoff skill itself: this turn's answer is the handoff
-    if (!e.agentId && e.tool === 'Skill' && HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true)
     if (!e.agentId && e.tool === 'Skill') {
-      await noteAndSave($, e.skill, e.args || (e.input && e.input.args))
+      const args = e.args || (e.input && e.input.args)
+      // Claude calling the handoff skill itself: this turn's answer is the
+      // handoff. With args "clear" (the 250k Stop hook asks for it) the chat
+      // then clears and continues, as with the band's button.
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, isClearArg(args) ? 'clear' : 'none')
+      await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
       now = await $.clock.now()

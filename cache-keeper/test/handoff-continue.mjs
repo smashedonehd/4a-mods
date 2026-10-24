@@ -693,6 +693,97 @@ assert.equal(s.sent.at(-1), 'held then failed')
 res = await s.fire('prompt.submit', { text: 'after the failure', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
 
+// handoff pressed while Claude works: what arrives inside that running turn
+// (not the handoff's) goes in at once, it starts no turn that could block the clear
+s = await boot('/w/race-busy-inside', 'rc1', { working: true })
+await s.press('handoff')
+// a subagent's turn inside busy is not the main loop's
+await s.fire('turn.start', { turnId: 'sub', agentId: 'ag1' })
+res = await s.fire('prompt.submit', { text: 'inside busy', origin: { kind: 'task-notification' }, turnId: 'busy', wait: false })
+assert.ok(!(res && res.drop))
+// one that would start a turn of its own is still held, and so is one for another turn
+for (const p of [{}, { turnId: 'old' }]) {
+  res = await s.fire('prompt.submit', { text: 'a new turn', origin: { kind: 'task-notification' }, wait: false, ...p })
+  assert.ok(res && res.drop)
+}
+// typed over busy, the person's words may still wait for a turn of their own: held
+for (const wait of [false, true]) {
+  res = await s.fire('prompt.submit', { text: 'typed over busy', origin: { kind: 'composer' }, turnId: 'busy', wait })
+  assert.ok(res && res.drop)
+}
+
+// the clear waits for a turn that began before it: a notification into that
+// turn goes in, it does not push the clear back
+timers = []
+s = await boot('/w/race-due-inside', 'rc4', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+res = await s.fire('prompt.submit', { text: 'into t2', origin: { kind: 'task-notification' }, turnId: 't2', wait: false })
+assert.ok(!(res && res.drop))
+
+// a background agent's turn after the handoff does not stall the clear
+timers = []
+s = await boot('/w/skill-agent', 'rc5', { working: true, timers })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+await s.fire('turn.start', { turnId: 'bg', agentId: 'ag2' })
+await s.fire('turn.complete', { reason: 'answer', answer: 'done', turnId: 'bg', agentId: 'ag2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+res = await s.fire('prompt.submit', { text: 'after the clear', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// the skill called again in the same turn (another Stop hook blocked) keeps the
+// clear and the handoff the turn already wrote
+s = await boot('/w/skill-twice', 'rc6', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.step('busy', body)
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// a band handoff that never ran leaves its arm: the skill Claude calls in a
+// later turn without args does not inherit its clear
+s = await boot('/w/stale-clear', 'rc8', { working: true })
+await s.press('handoff')
+await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 't2' })
+await s.end({ reason: 'answer', answer: body, turnId: 't2' })
+assert.ok(!cleared(s))
+assert.equal(latestText('rc8'), body)
+
+// the band's handoff is queued behind busy, and Claude calls the skill in busy:
+// that turn's handoff is the one, and the band's clear still follows it
+s = await boot('/w/band-then-skill', 'rc7', { working: true })
+await s.press('handoff')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(cleared(s))
+
+// Claude calls the skill with args "clear" (the 250k Stop hook asks for it):
+// the chat clears and continues with the handoff, as the band's button does
+s = await boot('/w/skill-clear', 'rc2', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: ' Clear\n', turnId: 'busy' })
+res = await s.fire('prompt.submit', { text: 'held for the new chat', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
+// busy is the handoff's own turn now: a notification into it is held too
+res = await s.fire('prompt.submit', { text: 'note into the handoff', origin: { kind: 'task-notification' }, turnId: 'busy', wait: false })
+assert.ok(res && res.drop)
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-3).endsWith('\n\n' + body))
+assert.deepEqual(s.sent.slice(-2), ['held for the new chat', 'note into the handoff'])
+
+// called without args, the skill leaves the chat as it is
+s = await boot('/w/skill-plain', 'rc3', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(!cleared(s))
+assert.equal(latestText('rc3'), body)
+
 // The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
 for (const surface of ['terminal', 'desktop']) {
   s = await boot('/w/menu-' + surface, 'mn-' + surface)
