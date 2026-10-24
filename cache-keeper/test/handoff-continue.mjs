@@ -8,6 +8,7 @@ let T = Date.UTC(2026, 9, 11, 10, 0)
 const HOUR = 3600e3
 let instance = 0
 let failWrites = [] // substrings of paths whose write rejects
+let failNow = false // $.clock.now rejects
 
 // timers: an array to collect $.clock.after callbacks in, run by the test, so
 // it can start a turn before the scheduled clear; absent, they run at once
@@ -19,7 +20,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   const sent = [] // full texts of the prompts submitted
   const submits = [] // what $.prompt.submit got
   const $ = {
-    clock: { now: async () => T, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
+    clock: { now: async () => { if (failNow) throw new Error('clock gone'); return T }, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
     fs: {
       exists: async (p) => files.has(p),
       read: async (p) => files.get(p),
@@ -612,6 +613,52 @@ for (const f of timers.splice(0)) {
 }
 assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
 assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
+
+// a second handoff, pressed while the clear waited, is interrupted: the chat
+// still clears with the first one, and the held message follows it
+timers = []
+s = await boot('/w/race-second', 'rb1', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.press('handoff')
+await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await runTimers(timers)
+await s.end({ reason: 'aborted', turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'held meanwhile')
+
+// cleared another way while prompts were held: they go to the new chat, and
+// nothing is held after it
+timers = []
+s = await boot('/w/race-cleared', 'rb2', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('prompt.submit', { text: 'held then cleared', origin: { kind: 'composer' }, wait: false })
+timers.length = 0
+await s.fire('classic.SessionStart', { source: 'clear' })
+await runTimers(timers)
+assert.equal(s.sent.at(-1), 'held then cleared')
+res = await s.fire('prompt.submit', { text: 'fresh start', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// the scheduled clear fails outright: the hold ends and held prompts go on here
+timers = []
+s = await boot('/w/race-throw', 'rb3', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('prompt.submit', { text: 'held then failed', origin: { kind: 'composer' }, wait: false })
+failNow = true
+await runTimers(timers)
+failNow = false
+assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'held then failed')
+res = await s.fire('prompt.submit', { text: 'after the failure', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
 
 // The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
 for (const surface of ['terminal', 'desktop']) {

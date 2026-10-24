@@ -328,6 +328,12 @@ async function captureHandoff($, e) {
   // An answer that is no handoff (a reply after a Stop hook, an ordinary turn
   // a leftover arm caught) never replaces a saved handoff
   if (!isHandoff(body)) {
+    // A clear an earlier handoff made due still happens, with that handoff
+    if (H.clearDue) {
+      $.ui.toast('The handoff turn ended without a handoff. Clearing this chat and continuing with the earlier one.', { timeoutMs: 8000 })
+      clearAndContinueLater($, 300, true)
+      return
+    }
     $.ui.toast('The handoff turn ended without a handoff, so nothing was saved.', { timeoutMs: 8000 })
     await releaseHeld($)
     return
