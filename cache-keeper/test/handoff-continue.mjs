@@ -17,6 +17,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
   const log = []
   const sent = [] // full texts of the prompts submitted
+  const submits = [] // what $.prompt.submit got
   const $ = {
     clock: { now: async () => T, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
     fs: {
@@ -33,7 +34,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}), surfaces: async () => surfaces },
     store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
     command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }], run: async (c) => void log.push('run:' + c.command) },
-    prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text)), fill: async () => ({}) },
+    prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
       invalidate: () => {},
@@ -89,7 +90,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     await fire('turn.complete', e)
     await settle()
   }
-  return { fire, run, step, press, render, end, log, sent, buttons, svgs }
+  return { fire, run, step, press, render, end, log, sent, submits, buttons, svgs }
 }
 
 const body = '# Session Handoff\n' + 'x'.repeat(300)
@@ -510,6 +511,8 @@ await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(cleared(s))
 assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
 assert.equal(s.sent.at(-1), 'and then fix the tests')
+// typed by the person: sent back as their own words
+assert.equal(s.submits.at(-1).asUser, true)
 
 // a notification that arrives between the handoff and the clear is held too
 let timers = []
@@ -521,6 +524,7 @@ assert.ok(res && res.drop)
 await runTimers(timers)
 assert.ok(cleared(s))
 assert.equal(s.sent.at(-1), 'task finished')
+assert.ok(!s.submits.at(-1).asUser)
 
 // a turn begins anyway before the clear (a command passes the hold): the clear
 // waits for it to end instead of giving up
@@ -552,6 +556,63 @@ await s.run('handoff', '')
 res = await s.fire('prompt.submit', { text: 'go on', origin: { kind: 'composer' }, turnId: 't1', wait: false })
 assert.ok(!(res && res.drop))
 
+// pressed while Claude works, the queued handoff never runs: the leftover arm
+// holds nothing once Claude is idle, and the band does not say it runs
+s = await boot('/w/race-stale', 'ra6', { working: true })
+await s.press('handoff')
+await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
+res = await s.fire('prompt.submit', { text: 'hello again', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+await s.render()
+assert.equal(s.buttons.get('handoff').label, 'handoff')
+
+// a /handoff typed while the clear waited only asks: once its handoff is in,
+// nothing is held any more
+timers = []
+s = await boot('/w/race-ask-later', 'ra7', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.run('handoff', '')
+await runTimers(timers) // the clear waits for t2, /handoff queues its skill
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await runTimers(timers)
+await s.end({ reason: 'answer', answer: body, turnId: 't3' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+res = await s.fire('prompt.submit', { text: 'carry on', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// what cannot be sent again as it came passes the hold, and does not make the
+// handoff out of date: the clear still happens
+timers = []
+s = await boot('/w/race-pass', 'ra8', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+for (const p of [{ text: 'look at this', attachments: [{ kind: 'image' }] }, { text: 'see @src/x.ts' }, { text: 'idle notice', isMeta: true }]) {
+  res = await s.fire('prompt.submit', { ...p, origin: { kind: 'composer' }, wait: false })
+  assert.ok(!(res && res.drop))
+}
+await runTimers(timers)
+assert.ok(cleared(s))
+
+// a turn that starts and ends before the scheduled clear: the chat clears once,
+// and the second scheduled run finds nothing left to do
+timers = []
+s = await boot('/w/race-twice', 'ra9', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+assert.equal(timers.length, 2)
+for (const f of timers.splice(0)) {
+  f()
+  await new Promise((r) => setTimeout(r, 20))
+}
+assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
+assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
+
 // The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
 for (const surface of ['terminal', 'desktop']) {
   s = await boot('/w/menu-' + surface, 'mn-' + surface)
@@ -573,11 +634,19 @@ for (const surface of ['terminal', 'desktop']) {
   await s.press('cache-close', surface)
   await s.render(surface)
   assert.ok(!s.buttons.has('kw-1'))
+  // a typed message shuts the menu, so its digits do not catch what comes next
+  await s.press('cache', surface)
+  await s.fire('prompt.submit', { text: 'a question', origin: { kind: 'composer' } })
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
 }
 
 // The desktop band is native text with small gauges, never one shrinking strip
 s = await boot('/w/desktop', 'dk1')
 await s.press('cache', 'desktop')
 assert.ok(s.svgs.length > 0 && s.svgs.every((g) => g.width <= 64 && !g.source.includes('<text')))
+// a narrow window wraps the figures onto more lines
+const band = await s.fire('ui.render', { component: 'AbovePrompt', surface: 'desktop' }, (h) => h.filter && h.filter.component === 'AbovePrompt')
+assert.equal(band.children[0].children[0].flexWrap, 'wrap')
 
 console.log('handoff-continue: ok')

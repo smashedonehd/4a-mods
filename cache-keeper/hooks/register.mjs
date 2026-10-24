@@ -152,8 +152,19 @@ const H = {
 // this chat would keep /clear from running. They go on after the handoff.
 const held = []
 
+// Armed, it holds only while the handoff is queued or running: an arm left over
+// from a handoff that never ran must not swallow every later message
 function holdsPrompts() {
-  return (H.armed && H.after === 'clear') || H.clearDue
+  return (H.armed && H.after === 'clear' && (handoffPending || S.working)) || H.clearDue
+}
+
+// What cannot be sent again as it came passes the hold: a command, attachments,
+// @file mentions (a plugin's prompt does not expand them), and a prompt the
+// person does not see as typed
+function canHold(e) {
+  if (!e.origin || e.origin.kind === 'plugin' || e.command || e.isMeta) return false
+  if (e.attachments && e.attachments.length) return false
+  return !/(^|\s)@\S/.test(String(e.text || ''))
 }
 
 // Sends the held prompts in the order they came; one that cannot be sent goes
@@ -322,8 +333,9 @@ async function captureHandoff($, e) {
     return
   }
   const clearing = ended && after === 'clear'
-  // Set before the first await: the hold must not lapse while the files are written
-  if (clearing) H.clearDue = true
+  // Set before the first await: the hold must not lapse while the files are
+  // written. A later /handoff decides too: one that only asks ends the hold.
+  H.clearDue = clearing
   H.text = body
   H.fromDisk = false
   H.at = now
@@ -335,7 +347,7 @@ async function captureHandoff($, e) {
   if (clearing) {
     // Off the hook too: /clear must not run inside the ending turn
     $.ui.toast(`${where}${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
-    clearAndContinueLater($, 300)
+    clearAndContinueLater($, 300, true)
     return
   }
   // Nothing clears: what was held while the handoff ran goes on in this chat
@@ -480,11 +492,17 @@ async function continueRequest($) {
   return { text: 'Clearing this chat and continuing with the last handoff.' }
 }
 
-// Off the calling hook: /clear must not run inside it
-function clearAndContinueLater($, ms) {
-  $.clock.after(ms, () =>
-    clearAndContinue($).catch((err) => $.ui.toast('Could not clear and continue: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })),
-  )
+// Off the calling hook: /clear must not run inside it. due: the clear the
+// handoff made due, which a run scheduled earlier may have done already.
+function clearAndContinueLater($, ms, due = false) {
+  $.clock.after(ms, () => {
+    if (due && !H.clearDue) return
+    clearAndContinue($).catch((err) => {
+      H.clearDue = false
+      $.ui.toast('Could not clear and continue: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })
+      return releaseHeld($)
+    })
+  })
 }
 
 // Runs the /session-handoff skill as if you typed it. The engine queues it
@@ -908,9 +926,14 @@ export function register(on) {
     H.armed = false
     // A new chat: only what runs in it counts. Clear and continue notes its own
     // revived skills, so it keeps them.
-    if (!H.continuing && revive.size) {
-      revive.clear()
-      await saveRevive($)
+    if (!H.continuing) {
+      // Cleared another way: nothing is due, and what was held goes to this chat
+      H.clearDue = false
+      if (held.length) $.clock.after(300, () => releaseHeld($))
+      if (revive.size) {
+        revive.clear()
+        await saveRevive($)
+      }
     }
     try {
       S.id = (await $.session.id()) || S.id
@@ -928,11 +951,19 @@ export function register(on) {
 
   // The first prompt names the session on the board
   on('prompt.submit', async ($, e, next) => {
+    // Typed in the terminal, the Desktop app or over Remote Control alike; a
+    // held prompt comes back as the plugin's, so this looks before the hold
+    if (e.origin && e.origin.kind !== 'plugin' && /^\s*(stop caveman|normal mode)\b/i.test(String(e.text || ''))) await noteAndSave($, 'caveman', 'off')
+    // Typed, not picked: the band's menu shuts so its digits stay out of the way
+    if (cacheMenu && e.origin && (e.origin.kind === 'composer' || e.origin.kind === 'bridge')) {
+      cacheMenu = false
+      $.ui.invalidate('ui.render')
+    }
     // Clear and continue is on its way: a prompt that would start a turn here
     // (typed while the handoff ran, a notification, a peer) waits and is sent
-    // after the handoff. A command or attachments cannot be sent again as they
-    // came: those pass, and the clear waits for their turn.
-    if (holdsPrompts() && e.origin && e.origin.kind !== 'plugin' && !e.command && !(e.attachments && e.attachments.length)) {
+    // after the handoff. One that passes (see canHold) starts a turn, and the
+    // clear waits for it.
+    if (holdsPrompts() && canHold(e)) {
       held.push({ text: e.text, asUser: e.origin.kind === 'composer' || e.origin.kind === 'bridge' })
       $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
@@ -943,8 +974,9 @@ export function register(on) {
     }
     // A new message in the chat that made the handoff makes it out of date: the
     // dated file stays, the latest copy is marked used. A handoff loaded from a
-    // previous chat waits for its "continue" instead.
-    if (H.text && !H.fromDisk && !H.continuing && e.origin && e.origin.kind === 'composer' && !String(e.text || '').trim().startsWith('/')) {
+    // previous chat waits for its "continue" instead, and so does one this chat
+    // is about to clear for.
+    if (H.text && !H.fromDisk && !H.continuing && !holdsPrompts() && e.origin && e.origin.kind === 'composer' && !String(e.text || '').trim().startsWith('/')) {
       const fid = H.fid
       H.text = ''
       H.path = ''
@@ -952,8 +984,6 @@ export function register(on) {
       await dropLatestHandoff($, fid)
       $.ui.invalidate('ui.render')
     }
-    // Typed in the terminal, the Desktop app or over Remote Control alike
-    if (e.origin && e.origin.kind !== 'plugin' && /^\s*(stop caveman|normal mode)\b/i.test(String(e.text || ''))) await noteAndSave($, 'caveman', 'off')
     const ttl = ttlMin()
     const left = msLeft(S.lastActivity, ttl)
     const isCold = left !== null && left <= 0
@@ -1046,7 +1076,7 @@ export function register(on) {
       // usage unavailable: keep the per-request figures
     }
     if (H.armed && e.turnId !== H.notTurn) await captureHandoff($, e)
-    else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300)
+    else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
     return r
@@ -1215,8 +1245,9 @@ export function register(on) {
     // a letter never fires from the prompt box, unlike a digit), then clears this
     // chat and sends the handoff as the fresh chat's first prompt. c does that
     // last step for a handoff made another way.
-    const busy = handoffPending || H.armed
-    const handoff = Button({ key: 'handoff', label: handoffPending ? 'handoff queued' : H.armed ? 'handoff running' : 'handoff', hotkey: 'h', plain: true, dimColor: busy, onPress: () => runHandoff($, 'clear') })
+    // An arm while idle is left over from a handoff that never ran: not running
+    const running = H.armed && S.working
+    const handoff = Button({ key: 'handoff', label: handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff', hotkey: 'h', plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, 'clear') })
     let right = handoff
     if (H.text || H.continuing) {
       const go = Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) })
