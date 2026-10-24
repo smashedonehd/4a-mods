@@ -683,6 +683,103 @@ function cacheMenuRow($, { Box, Text, Button }) {
   return Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, children: items })
 }
 
+// What the band's handoff button does after the handoff: 'clear' or 'none'
+let handoffAfter = 'clear'
+
+// What a tag turns on in the fresh chat when this one never ran it; a tag
+// turned off keeps its last run here for when it is turned on again
+const REVIVE_DEFAULT = { caveman: { command: 'caveman', args: 'ultra' }, jev: { command: 'jev:on', args: '' }, lsp: { command: 'navigating-code-with-lsp', args: '' } }
+const parked = new Map()
+
+async function toggleRevive($, k) {
+  if (revive.has(k)) {
+    parked.set(k, revive.get(k))
+    revive.delete(k)
+  } else revive.set(k, parked.get(k) || REVIVE_DEFAULT[k])
+  await saveRevive($)
+  $.ui.invalidate('ui.render')
+}
+
+// Below this many columns the desktop band shortens its labels
+const NARROW_COLUMNS = 96
+
+// The band on a surface with Select (desktop, editor): row one is the cache and
+// the limits, row two the rewrite cost and the handoff with what follows a clear
+function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figure }) {
+  const narrow = ((e.viewport && e.viewport.columns) || 200) < NARROW_COLUMNS
+  const row = (key, children, gap = 3) => Box({ key, flexDirection: 'row', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
+  const line = (key, left, right) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 3, rowGap: 1, children: [left, right] })
+
+  let cache
+  if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [narrow ? `◆ until ${clock(S.keepWarmUntil)}` : `◆ kept warm until ${clock(S.keepWarmUntil)}`] })
+  else if (st.kind === 'warm') cache = Text({ color: 'green', children: [narrow ? `● ${minutes(st.left)}` : `● cache warm ${minutes(st.left)}`] })
+  else if (st.kind === 'cooling') cache = Text({ color: 'yellow', bold: true, children: [narrow ? `◐ ${minutes(st.left)}` : `◐ cache cools in ${minutes(st.left)}`] })
+  else if (st.kind === 'cold') cache = Text({ ...(big ? { color: 'red', bold: true } : { dimColor: true }), children: [narrow ? `○ ${minutes(-st.left)}` : `○ cache cold ${minutes(-st.left)}`] })
+  else cache = Text({ dimColor: true, children: ['○ cache'] })
+  const keepWarm = Select({
+    key: 'keep-warm',
+    label: 'keep warm',
+    value: S.keepWarm ? String(S.keepWarmHours) : 'off',
+    // A run started elsewhere (the board, settings) may last hours the picks lack
+    options: [{ value: 'off', label: 'off' }, ...[...new Set([...KEEP_WARM_PICKS, ...(S.keepWarm ? [S.keepWarmHours] : [])])].sort((a, b) => a - b).map((h) => ({ value: String(h), label: `${h} h` }))],
+    onSelect: (v) => keepWarmPress($, () => (v === 'off' ? stopKeepWarm($, 'turned off') : startKeepWarm($, Number(v))))(),
+  })
+  const figures = [figure(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8]))]
+  for (const l of S.rateLimits) {
+    const p = l.percentUsed || 0
+    const name = LIMIT_LABEL[l.kind] || l.kind
+    const shown = narrow && name === 'week' ? 'wk' : name
+    figures.push(figure(Text(limitTone([l], { children: [`${shown} ${Math.round(p)}%`] })), Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
+  }
+
+  const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
+  const rewrite = st.kind === 'cold' && big ? Text({ color: 'red', children: [`next send rewrites ≈ ${cost}`] }) : Text({ dimColor: true, children: [`rewrite ≈ ${cost}`] })
+  const restarts = S.coldRestarts.length && Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}`] })
+
+  // Each tag says whether the fresh chat turns it on again; a click flips that.
+  // A desktop draws a Button natively and drops its children's colors, so the
+  // green dot stands beside the button, not inside it
+  const tags = REVIVE_ORDER.map((k) => {
+    const on = revive.has(k)
+    const level = k === 'caveman' && on && revive.get(k).args
+    const name = k === 'caveman' ? (narrow ? 'cave' : level ? `caveman ${level}` : 'caveman') : k
+    return row('tag-group-' + k, [
+      Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
+      Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
+    ], 0)
+  })
+  // A written handoff takes the split button's place, so the row keeps its width
+  // and never wraps into a third line; the next message makes it stale anyway
+  let handoff
+  if (H.text || H.continuing) handoff = Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, onPress: () => clearAndContinue($) })
+  else {
+    const running = H.armed && S.working
+    const label = landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(landingGrowth())}` : handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff'
+    // No gap and stretched: the button and its Select read as one split button
+    handoff = Box({ key: 'handoff-group', flexDirection: 'row', alignItems: 'stretch', columnGap: 0, children: [
+      Button({ key: 'handoff', label, plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, handoffAfter) }),
+      Select({
+        key: 'handoff-after',
+        value: handoffAfter,
+        options: [{ value: 'clear', label: 'then clear' }, { value: 'none', label: 'keep chat' }],
+        onSelect: (v) => {
+          handoffAfter = v === 'none' ? 'none' : 'clear'
+          $.ui.invalidate('ui.render')
+        },
+      }),
+    ] })
+  }
+  const actions = row('actions', [
+    row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
+    landingOverdue() && Button({ key: 'stop', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }),
+    handoff,
+  ])
+  return [
+    line('state', row('cache-group', [cache, keepWarm], 2), row('figures', figures)),
+    line('handoff-line', row('costs', [rewrite, restarts]), actions),
+  ]
+}
+
 // Dollars shown as plan-limit percent. The API reports only how full each limit
 // window is; the session ledger only counts dollars. The percent-per-dollar rate
 // is learned: what this machine's sessions spent while a window moved, kept in
@@ -863,6 +960,7 @@ async function applyRemoteCommands($) {
 
 function startKeepWarm($, hours) {
   S.keepWarm = true
+  S.keepWarmHours = hours
   S.keepWarmUntil = now + hours * 60 * MIN
   $.ui.toast(`Keeping this cache warm until ${clock(S.keepWarmUntil)}. A ping reads the cache before it expires.`)
 }
@@ -1314,6 +1412,8 @@ export function register(on) {
     else if (st.kind === 'cooling') cache = Text({ color: 'yellow', bold: true, children: [`◐ cache cools in ${minutes(st.left)}`] })
     else if (st.kind === 'cold') cache = Text(big ? { color: 'red', bold: true, children: [`○ cache cold ${minutes(-st.left)}`] } : { dimColor: true, children: [`○ cache cold ${minutes(-st.left)}`] })
     else cache = Text({ dimColor: true, children: ['○ cache'] })
+    // A desktop or editor band: two fixed rows, native Selects, no hotkeys
+    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 1, children: [...deskBand($, e, els, { st, ttl, big, figure }), below].filter(Boolean) })
     // The cache chip opens the keep-warm menu (w while the band has the focus)
     const parts = [Button({ key: 'cache', hotkey: 'w', plain: true, onPress: () => setCacheMenu($, !cacheMenu), children: [cache, Text({ dimColor: true, children: [cacheMenu ? ' ▴' : ' ▾'] })] })]
     parts.push(figure(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8])))
