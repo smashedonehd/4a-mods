@@ -5,6 +5,7 @@ Claude Code mods by Filip Novotny. Mods are plugins that run inside Claude Code:
 | Mod | Commands | What it does |
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
+| [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, so each delegated task runs on the model it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, Fable only when Opus fell short |
 
 ## Requirements
 
@@ -19,13 +20,14 @@ claude plugin marketplace add smashedonehd/4a-mods
 
 ```bash
 claude plugin install cache-keeper@4a-mods
+claude plugin install model-router@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
 
-**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update cache-keeper@4a-mods`, then open a new chat.
+**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update cache-keeper@4a-mods` (and `model-router@4a-mods`), then open a new chat.
 
-**Remove:** `claude plugin uninstall cache-keeper@4a-mods`.
+**Remove:** `claude plugin uninstall cache-keeper@4a-mods` (or `model-router@4a-mods`).
 
 ## Cache Keeper
 
@@ -41,9 +43,29 @@ Every request re-reads the whole chat. From the prompt cache that costs a tenth 
 
 Prices come from the Claude API price list. On a subscription plan they show up as usage against your limits, not a bill.
 
+## Model Router
+
+Claude Code runs a subagent on its parent's model unless told otherwise, so a grep can run on Opus and a hard refactor on Haiku. Model Router turns each tier of its table (`model-router/routing.json`) into an agent type with that tier's model and effort, and tells Claude which type fits which task. Claude picks, because it sees the whole conversation and judges a task better than keywords or a small model reading one prompt.
+
+| Agent type | Model, effort | For |
+|---|---|---|
+| `model-router:quick` | Haiku, low | find, list, grep, read, check a fact |
+| `model-router:light` | Haiku, medium | summarize, extract, sweep many files, a small mechanical edit |
+| `model-router:standard` | Sonnet, medium | well-specified coding, tests, ordinary bugs, docs |
+| `model-router:deep` | Opus, high | architecture, multi-file refactors, tricky bugs, reviews |
+| `model-router:long` | Opus, xhigh | long autonomous runs over a whole codebase |
+| `model-router:frontier` | Fable, high | only after Opus fell short on the same task, or when you ask for it |
+
+- **Safety net:** a general agent Claude starts with nothing set runs on Opus at medium effort. A model or effort Claude set, a fork, and a custom agent type with its own model are left as they are. No Agent call is ever refused or delayed, and the hook makes no model calls.
+- **The main chat is never switched.** Changing the model there would throw away its prompt cache; pick its model with `/model` yourself.
+- **Staying current:** the tiers name aliases, so a new Opus or Sonnet is used without a change. Which tier gets which line and effort changes through a pull request (`model-router/UPDATING.md`), and a plugin update brings it. The status line warns when the table is over 30 days old.
+- **`/route`** shows the agent types, the default, and how many Agent calls went where. `/route fill off` turns the safety net off, `/route stats reset` clears the counts.
+
+If you installed the earlier Model Router from the `smashedonehd-mods` marketplace, uninstall it first, or both will hook the same Agent calls.
+
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Cache Keeper makes no network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Model Router keeps only its settings and call counts in the plugin store. Neither makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 

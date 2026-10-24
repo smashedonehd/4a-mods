@@ -1,0 +1,76 @@
+import { expect, test } from 'claude-code/testing'
+
+// The hooks' wiring against the engine; the shipped routing.json and the
+// decisions themselves are checked by route.test.mjs under plain node.
+const TABLE = {
+  schema: 2,
+  updated: '2026-10-24',
+  models: { haiku: { id: 'h', efforts: ['low', 'medium'] }, opus: { id: 'o', efforts: ['low', 'medium', 'high'] } },
+  tiers: {
+    quick: { model: 'haiku', effort: 'low', description: 'Quick lookups and other read-only answers.' },
+    deep: { model: 'opus', effort: 'high', description: 'Hard engineering, architecture and reviews.' },
+  },
+  order: ['quick', 'deep'],
+  fill: { model: 'opus', effort: 'medium', types: ['general-purpose', ''] },
+  builtinTypes: { Explore: 'quick' },
+}
+
+function engine(on: any, seen: any[], agents: any[], tableText = JSON.stringify(TABLE)) {
+  on('command.register', () => ({ value: { command: 'route' } }))
+  on('agent.register', (_: any, e: any) => {
+    agents.push(e)
+    return { value: { agent: `model-router:${e.name}` } }
+  })
+  on('fs.read', () => ({ value: tableText }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: Date.parse('2026-10-25T00:00:00Z') }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('tool.call', (_: any, e: any) => {
+    seen.push(e)
+    return { result: {} }
+  })
+}
+
+test('each tier is registered as an agent type with its model and effort', async ($, on) => {
+  const seen: any[] = []
+  const agents: any[] = []
+  engine(on, seen, agents)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(agents.map((a) => [a.name, a.model, a.effort])).toEqual([
+    ['quick', 'haiku', 'low'],
+    ['deep', 'opus', 'high'],
+  ])
+})
+
+test('an unset general agent gets Opus at medium, a tier type is left alone', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'Dokážeš najít, proč padá test?' })
+  await $.tool.call({ tool: 'Agent', description: 't', prompt: 'look', subagent_type: 'model-router:quick' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'medium'])
+  expect([seen[1].model, seen[1].effort]).toEqual([undefined, undefined])
+  expect(seen[1].subagent_type).toBe('model-router:quick')
+})
+
+test('a model Claude chose is kept, a fork is left alone, Explore gets its tier', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x', model: 'sonnet' })
+  await $.tool.call({ tool: 'Agent', description: 'f', prompt: 'x', subagent_type: 'fork' })
+  await $.tool.call({ tool: 'Agent', description: 'e', prompt: 'x', subagent_type: 'Explore' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['sonnet', undefined])
+  expect(seen[1].model).toBe(undefined)
+  expect([seen[2].model, seen[2].effort]).toEqual(['haiku', 'low'])
+})
+
+test('a broken table leaves every call as it came', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], '{"schema": 1}')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(seen[0].model).toBe(undefined)
+})
