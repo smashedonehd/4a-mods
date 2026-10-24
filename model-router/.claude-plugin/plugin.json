@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "Gives Claude one agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, Fable only when Opus fell short) from one tier table, and fills Opus at medium effort into a general agent Claude left unset (/route)",
   "author": {
-    "name": "Filip Novotny"
+    "name": "4AM"
   },
   "license": "MIT"
 }

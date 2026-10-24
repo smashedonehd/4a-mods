@@ -1,6 +1,6 @@
 # 4A-Mods
 
-Claude Code mods by Filip Novotny. Mods are plugins that run inside Claude Code: they can draw on screen (a line above the prompt, a footer label, a side pane), add slash commands, and step in before Claude runs a tool.
+Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can draw on screen (a line above the prompt, a footer label, a side pane), add slash commands, and step in before Claude runs a tool.
 
 | Mod | Commands | What it does |
 |---|---|---|
