@@ -8,15 +8,22 @@ let T = Date.UTC(2026, 9, 11, 10, 0)
 const HOUR = 3600e3
 let instance = 0
 let failWrites = [] // substrings of paths whose write rejects
+let failNow = false // $.clock.now rejects
+// Lets what the module scheduled with queueMicrotask, or a test with its timers, run
+const settle = () => new Promise((r) => setTimeout(r, 20))
 
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'] } = {}) {
+// timers: an array to collect $.clock.after callbacks in, run by the test, so
+// it can start a turn before the scheduled clear; absent, they run at once
+// onRun: called with each command the module runs, before it is logged
+async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers, onRun } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
   const log = []
   const sent = [] // full texts of the prompts submitted
+  const submits = [] // what $.prompt.submit got
   const $ = {
-    clock: { now: async () => T, after: (_ms, f) => void queueMicrotask(f), every: () => {} },
+    clock: { now: async () => { if (failNow) throw new Error('clock gone'); return T }, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
     fs: {
       exists: async (p) => files.has(p),
       read: async (p) => files.get(p),
@@ -30,17 +37,18 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     env: { get: async (k) => (k === 'USERPROFILE' ? '/home' : '') },
     session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}), surfaces: async () => surfaces },
     store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
-    command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }], run: async (c) => void log.push('run:' + c.command) },
-    prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text)), fill: async () => ({}) },
+    command: { register: async () => {}, list: async () => [{ name: 'cache-keeper:session-handoff' }, { name: 'handoff' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
+    prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
       invalidate: () => {},
       ask: async (q) => (log.push('ask:' + q.slice(0, 14)), answer),
       log: () => {},
-      resolve: () => ({ Box: (p) => p, Text: (p) => p, Svg: null, Button: (p) => (buttons.set(p.key, p), p) }),
+      resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p) }),
     },
   }
   const buttons = new Map() // key -> props of the band's buttons at the last render
+  const svgs = [] // props of every Svg drawn
   const fire = async (name, e, pred = () => true) => {
     let out
     for (const h of hs.filter((x) => x.name === name && pred(x))) out = await h.fn($, e, async () => ({}))
@@ -48,7 +56,6 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   }
   await fire('session.start', {})
   if (working) await fire('turn.start', { turnId: 'busy' })
-  const settle = () => new Promise((r) => setTimeout(r, 20))
   // Fires the command hooks that handle `command`: the filtered hook that lists
   // it (/handoff) or, for the skill, the unfiltered ones
   const run = async (command, args = '') => {
@@ -69,10 +76,13 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   }
   // One main-loop request first (the band stays hidden until there was one),
   // then renders the band and presses one of its buttons
-  const press = async (key) => {
-    await step()
+  const render = async (surface = 'terminal') => {
     buttons.clear()
-    await fire('ui.render', { component: 'AbovePrompt', surface: 'terminal' })
+    await fire('ui.render', { component: 'AbovePrompt', surface })
+  }
+  const press = async (key, surface = 'terminal') => {
+    await step()
+    await render(surface)
     assert.ok(buttons.has(key), `no ${key} button on the band`)
     await buttons.get(key).onPress()
     await settle()
@@ -83,7 +93,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     await fire('turn.complete', e)
     await settle()
   }
-  return { fire, run, step, press, end, log, sent }
+  return { fire, run, step, press, render, end, log, sent, submits, buttons, svgs }
 }
 
 const body = '# Session Handoff\n' + 'x'.repeat(300)
@@ -486,5 +496,237 @@ await s.step('t2', plain)
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.equal(dated('sh6'), undefined)
 assert.ok(!cleared(s))
+
+// Runs the callbacks the module scheduled so far, then lets them settle
+const runTimers = async (timers) => {
+  for (const f of timers.splice(0)) f()
+  await settle()
+}
+
+// the band's button: a message typed while the handoff runs would start a turn
+// before the clear; it is held, the chat clears, and it is sent after the handoff
+s = await boot('/w/race-typed', 'ra1')
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't1' })
+res = await s.fire('prompt.submit', { text: 'and then fix the tests', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+assert.ok(res && res.drop)
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'and then fix the tests')
+// typed by the person: sent back as their own words
+assert.equal(s.submits.at(-1).asUser, true)
+
+// a notification that arrives between the handoff and the clear is held too
+let timers = []
+s = await boot('/w/race-note', 'ra2', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+res = await s.fire('prompt.submit', { text: 'task finished', origin: { kind: 'task-notification' }, wait: false })
+assert.ok(res && res.drop)
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.equal(s.sent.at(-1), 'task finished')
+assert.ok(!s.submits.at(-1).asUser)
+
+// a turn begins anyway before the clear (a command passes the hold): the clear
+// waits for it to end instead of giving up
+timers = []
+s = await boot('/w/race-turn', 'ra3', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// the handoff turn wrote no handoff: nothing clears, the held message goes on here
+s = await boot('/w/race-none', 'ra4')
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't1' })
+await s.fire('prompt.submit', { text: 'next question', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
+assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'next question')
+
+// /handoff typed (it only asks): a message typed meanwhile is not held
+s = await boot('/w/race-ask', 'ra5')
+await s.run('handoff', '')
+res = await s.fire('prompt.submit', { text: 'go on', origin: { kind: 'composer' }, turnId: 't1', wait: false })
+assert.ok(!(res && res.drop))
+
+// pressed while Claude works, the queued handoff never runs: the leftover arm
+// holds nothing once Claude is idle, and the band does not say it runs
+s = await boot('/w/race-stale', 'ra6', { working: true })
+await s.press('handoff')
+await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
+res = await s.fire('prompt.submit', { text: 'hello again', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+await s.render()
+assert.equal(s.buttons.get('handoff').label, 'handoff')
+
+// a /handoff typed while the clear waited only asks: once its handoff is in,
+// nothing is held any more
+timers = []
+s = await boot('/w/race-ask-later', 'ra7', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+res = await s.fire('prompt.submit', { text: 'held in t2', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
+await s.run('handoff', '')
+await runTimers(timers) // the clear waits for t2, /handoff queues its skill
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await runTimers(timers)
+await s.end({ reason: 'answer', answer: body, turnId: 't3' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'held in t2')
+res = await s.fire('prompt.submit', { text: 'carry on', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// what cannot be sent again as it came passes the hold, and does not make the
+// handoff out of date: the clear still happens
+timers = []
+s = await boot('/w/race-pass', 'ra8', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+for (const p of [{ text: 'look at this', attachments: [{ kind: 'image' }] }, { text: 'see @src/x.ts' }, { text: 'idle notice', isMeta: true }]) {
+  res = await s.fire('prompt.submit', { ...p, origin: { kind: 'composer' }, wait: false })
+  assert.ok(!(res && res.drop))
+}
+await runTimers(timers)
+assert.ok(cleared(s))
+
+// a turn that starts and ends before the scheduled clear: the chat clears once,
+// and the second scheduled run finds nothing left to do
+timers = []
+s = await boot('/w/race-twice', 'ra9', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+assert.equal(timers.length, 2)
+// One at a time, unlike runTimers: the second must find the first done
+for (const f of timers.splice(0)) {
+  f()
+  await settle()
+}
+assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
+assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
+
+// a second handoff, pressed while the clear waited, is interrupted: the chat
+// still clears with the first one, and the held message follows it
+timers = []
+s = await boot('/w/race-second', 'rb1', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.press('handoff')
+await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await s.fire('turn.start', { turnId: 't3' })
+await runTimers(timers)
+await s.end({ reason: 'aborted', turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'held meanwhile')
+
+// cleared another way while prompts were held: they go to the new chat, and
+// nothing is held after it
+timers = []
+s = await boot('/w/race-cleared', 'rb2', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('prompt.submit', { text: 'held then cleared', origin: { kind: 'composer' }, wait: false })
+timers.length = 0
+await s.fire('classic.SessionStart', { source: 'clear' })
+await runTimers(timers)
+assert.equal(s.sent.at(-1), 'held then cleared')
+res = await s.fire('prompt.submit', { text: 'fresh start', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// c pressed while the band's handoff runs: it is not ready yet, and what is held
+// stays held for the clear that handoff brings, not sent into this chat
+s = await boot('/w/race-c', 'rb5')
+await s.run('handoff', '')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't2' })
+await s.fire('prompt.submit', { text: 'held during t2', origin: { kind: 'composer' }, wait: false })
+await s.press('continue')
+assert.ok(!s.sent.includes('held during t2'))
+await s.end({ reason: 'answer', answer: body, turnId: 't2' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
+assert.equal(s.sent.at(-1), 'held during t2')
+
+// the handoff skill could not be started: what was held while it was queued goes on here
+s = await boot('/w/race-start-fails', 'rb4', {
+  onRun: async (c) => {
+    if (!c.command.includes('session-handoff')) return
+    await s.fire('prompt.submit', { text: 'held while queued', origin: { kind: 'composer' }, wait: false })
+    throw new Error('engine busy')
+  },
+})
+await s.press('handoff')
+assert.ok(s.log.some((l) => l.startsWith('toast:Held until')))
+assert.equal(s.sent.at(-1), 'held while queued')
+
+// the scheduled clear fails outright: the hold ends and held prompts go on here
+timers = []
+s = await boot('/w/race-throw', 'rb3', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('prompt.submit', { text: 'held then failed', origin: { kind: 'composer' }, wait: false })
+failNow = true
+await runTimers(timers)
+failNow = false
+assert.ok(!cleared(s))
+assert.equal(s.sent.at(-1), 'held then failed')
+res = await s.fire('prompt.submit', { text: 'after the failure', origin: { kind: 'composer' }, wait: false })
+assert.ok(!(res && res.drop))
+
+// The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
+for (const surface of ['terminal', 'desktop']) {
+  s = await boot('/w/menu-' + surface, 'mn-' + surface)
+  await s.press('cache', surface)
+  await s.press('kw-4', surface)
+  assert.ok(s.log.some((l) => l.startsWith('toast:Keeping this cache warm')))
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
+  // kept warm: the menu offers to stop it
+  await s.press('cache', surface)
+  await s.render(surface)
+  assert.ok(s.buttons.has('kw-off'))
+  s.log.length = 0
+  await s.press('kw-off', surface)
+  assert.ok(s.log.some((l) => l.startsWith('toast:Keep warm off')))
+  await s.press('cache', surface)
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-off'))
+  await s.press('cache-close', surface)
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
+  // a typed message shuts the menu, so its digits do not catch what comes next
+  await s.press('cache', surface)
+  await s.fire('prompt.submit', { text: 'a question', origin: { kind: 'composer' } })
+  await s.render(surface)
+  assert.ok(!s.buttons.has('kw-1'))
+}
+
+// The desktop band is native text with small gauges, never one shrinking strip
+s = await boot('/w/desktop', 'dk1')
+await s.press('cache', 'desktop')
+assert.ok(s.svgs.length > 0 && s.svgs.every((g) => g.width <= 64 && !g.source.includes('<text')))
+// a narrow window wraps the figures onto more lines
+const band = await s.fire('ui.render', { component: 'AbovePrompt', surface: 'desktop' }, (h) => h.filter && h.filter.component === 'AbovePrompt')
+assert.equal(band.children[0].children[0].flexWrap, 'wrap')
 
 console.log('handoff-continue: ok')
