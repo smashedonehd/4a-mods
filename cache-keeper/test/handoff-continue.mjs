@@ -105,6 +105,23 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   return { fire, run, step, press, render, end, log, sent, submits, buttons, selects, svgs, marks }
 }
 
+// The keys of the elements in a drawn tree: what the band shows, not every
+// element the module built
+const drawn = (t, out = new Set()) => {
+  if (t && typeof t === 'object') {
+    if (t.key) out.add(t.key)
+    for (const c of [].concat(t.children || [])) drawn(c, out)
+  }
+  return out
+}
+
+// A session on the desktop app's band (a surface with Select), past its first step
+async function desk(cwd, id, opts) {
+  const s = await boot(cwd, id, { ...opts, select: true })
+  await s.step()
+  return s
+}
+
 const body = '# Session Handoff\n' + 'x'.repeat(300)
 const SKILL = 'cache-keeper:session-handoff'
 const cleared = (res) => res.log.includes('run:clear')
@@ -957,14 +974,14 @@ s = await boot('/w/desktop', 'dk1')
 await s.press('cache', 'desktop')
 assert.ok(s.svgs.length > 0 && s.svgs.every((g) => g.width <= 64 && !g.source.includes('<text')))
 // a narrow window wraps the figures onto more lines
-const band = await s.fire('ui.render', { component: 'AbovePrompt', surface: 'desktop' }, (h) => h.filter && h.filter.component === 'AbovePrompt')
+const band = await s.render('desktop')
 assert.equal(band.children[0].children[0].flexWrap, 'wrap')
 
 // The band on a surface with Select (the desktop app): no hotkeys, two Selects,
 // and tags for what the fresh chat turns on again
-s = await boot('/w/desk', 'ds1', { select: true })
-await s.step()
-await s.render('desktop')
+s = await desk('/w/desk', 'ds1')
+// the context figure opens the figures, as on the terminal band
+assert.ok(JSON.stringify(await s.render('desktop')).includes('"ctx '))
 assert.deepEqual([...s.selects.keys()], ['keep-warm', 'handoff-after'])
 assert.deepEqual([...s.buttons.keys()], ['tag-caveman', 'tag-jev', 'tag-lsp', 'handoff'])
 assert.ok([...s.buttons.values()].every((b) => !b.hotkey))
@@ -1023,8 +1040,7 @@ assert.ok(runs[3].startsWith('submit:'))
 assert.ok(!runs.includes('run:navigating-code-with-lsp'))
 
 // an untouched tag turns on the default: caveman ultra
-s = await boot('/w/desk-default', 'ds2', { select: true })
-await s.step()
+s = await desk('/w/desk-default', 'ds2')
 await s.render('desktop')
 await s.buttons.get('tag-caveman').onPress()
 await s.render('desktop')
@@ -1032,8 +1048,7 @@ assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
 
 // "keep chat" picked: the handoff is saved but the chat stays, and the band then
 // offers "clear and continue" in the place of the handoff and its Select
-s = await boot('/w/desk-keep', 'ds3', { select: true })
-await s.step()
+s = await desk('/w/desk-keep', 'ds3')
 await s.render('desktop')
 s.selects.get('handoff-after').onSelect('none')
 await s.render('desktop')
@@ -1052,25 +1067,13 @@ await s.render('desktop')
 assert.ok(s.buttons.has('handoff'))
 assert.ok(!s.buttons.has('continue'))
 
-// The keys of the elements in a drawn tree: what the band shows, not every
-// element the module built
-const drawn = (t, out = new Set()) => {
-  if (t && typeof t === 'object') {
-    if (t.key) out.add(t.key)
-    for (const c of [].concat(t.children || [])) drawn(c, out)
-  }
-  return out
-}
-
 // a tag survives a reload, a new chat starts every tag from its default
-s = await boot('/w/desk-reload', 'ds4', { select: true })
-await s.step()
+s = await desk('/w/desk-reload', 'ds4')
 await s.fire('command.run', { command: 'caveman:caveman', args: 'lite' }, (h) => !h.filter)
 await s.render('desktop')
 await s.buttons.get('tag-jev').onPress()
 await s.buttons.get('tag-caveman').onPress()
-s = await boot('/w/desk-reload', 'ds4', { select: true })
-await s.step()
+s = await desk('/w/desk-reload', 'ds4')
 await s.render('desktop')
 assert.ok(!s.buttons.get('tag-jev').dimColor)
 assert.ok(s.buttons.get('tag-caveman').dimColor)
@@ -1082,8 +1085,7 @@ await s.buttons.get('tag-caveman').onPress()
 await s.render('desktop')
 assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
 // a level parked in the chat before, not the default, once that chat is gone
-s = await boot('/w/desk-parked', 'ds4b', { select: true })
-await s.step()
+s = await desk('/w/desk-parked', 'ds4b')
 await s.fire('command.run', { command: 'caveman:caveman', args: 'lite' }, (h) => !h.filter)
 await s.render('desktop')
 await s.buttons.get('tag-caveman').onPress()
@@ -1096,14 +1098,12 @@ assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
 
 // keep warm started with hours the picks lack shows them in the Select; a value
 // no option has starts nothing
-s = await boot('/w/desk-hours', 'ds5', { select: true })
-await s.step()
+s = await desk('/w/desk-hours', 'ds5')
 await s.run('keepwarm', '2')
 await s.render('desktop')
 assert.equal(s.selects.get('keep-warm').value, '2')
 assert.ok(s.selects.get('keep-warm').options.some((o) => o.value === '2'))
-s = await boot('/w/desk-nan', 'ds6', { select: true })
-await s.step()
+s = await desk('/w/desk-nan', 'ds6')
 await s.render('desktop')
 s.log.length = 0
 s.selects.get('keep-warm').onSelect('soon')
@@ -1118,8 +1118,7 @@ await s.render('desktop')
 s.selects.get('handoff-after').onSelect('none')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!cleared(s))
-s = await boot('/w/desk-switch-back', 'ds8', { select: true })
-await s.step()
+s = await desk('/w/desk-switch-back', 'ds8')
 await s.render('desktop')
 s.selects.get('handoff-after').onSelect('none')
 await s.press('handoff', 'desktop')
@@ -1130,8 +1129,7 @@ await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(cleared(s))
 
 // /handoff typed shows what follows it: nothing clears on its own
-s = await boot('/w/desk-typed', 'ds13', { select: true })
-await s.step()
+s = await desk('/w/desk-typed', 'ds13')
 await s.run('handoff', '')
 await s.fire('turn.start', { turnId: 't1' })
 await s.render('desktop')
@@ -1142,19 +1140,20 @@ assert.ok(!s.selects.has('handoff-after'))
 
 // a handoff from an earlier chat goes beside the pair: this chat can still hand off
 await makeHandoff('/w/desk-disk', 'ds9')
-s = await boot('/w/desk-disk', 'ds10', { select: true })
-await s.step()
+s = await desk('/w/desk-disk', 'ds10')
 let keys = drawn(await s.render('desktop'))
 assert.ok(['continue', 'handoff', 'handoff-after'].every((k) => keys.has(k)))
 // this chat's own handoff takes the pair's place
-s = await boot('/w/desk-own', 'ds12', { select: true })
-await s.step()
+s = await desk('/w/desk-own', 'ds12')
 await s.render('desktop')
 s.selects.get('handoff-after').onSelect('none')
 await s.press('handoff', 'desktop')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-keys = drawn(await s.render('desktop'))
+const tree = await s.render('desktop')
+keys = drawn(tree)
 assert.ok(keys.has('continue') && !keys.has('handoff') && !keys.has('handoff-after'))
+// and only once
+assert.equal(JSON.stringify(tree).split('"key":"continue"').length - 1, 1)
 
 // a long landing offers stop now on the desktop band too
 s = await boot('/w/desk-land', 'ds11', { working: true, select: true })
