@@ -175,6 +175,13 @@ function landingOverdue() {
   return landing() && L.noted && (L.steps >= LANDING_STEPS || S.ctx - L.ctx0 >= LANDING_TOKENS)
 }
 
+// After a request of the landing turn: the band's figures and "stop now" redraw
+// now, not at the next heartbeat
+function landed($, result) {
+  if (landing()) $.ui.invalidate('ui.render')
+  return result
+}
+
 // Prompts that came while the chat was about to clear: a turn they started in
 // this chat would keep /clear from running. They go on after the handoff.
 const held = []
@@ -1095,7 +1102,7 @@ export function register(on) {
     if (e.agentId || !result) return result
     noteHandoffStep(e, result)
     if (L.noted && landing()) L.steps++
-    if (!result.usage) return result
+    if (!result.usage) return landed($, result)
     now = await $.clock.now()
     const u = result.usage
     const total = totalInput(u)
@@ -1122,7 +1129,7 @@ export function register(on) {
     }
     S.ctx = total
     S.lastActivity = now
-    return result
+    return landed($, result)
   })
 
   on('turn.complete', async ($, e, next) => {

@@ -22,6 +22,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   const log = []
   const sent = [] // full texts of the prompts submitted
   const submits = [] // what $.prompt.submit got
+  const marks = { invalidated: 0 } // $.ui.invalidate calls
   const $ = {
     clock: { now: async () => { if (failNow) throw new Error('clock gone'); return T }, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
     fs: {
@@ -42,7 +43,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
-      invalidate: () => {},
+      invalidate: () => void marks.invalidated++,
       ask: async (q) => (log.push('ask:' + q.slice(0, 14)), answer),
       log: () => {},
       resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p) }),
@@ -50,9 +51,10 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
   }
   const buttons = new Map() // key -> props of the band's buttons at the last render
   const svgs = [] // props of every Svg drawn
-  const fire = async (name, e, pred = () => true) => {
+  // below: what next(e) resolves to, as the hooks under the module answered
+  const fire = async (name, e, pred = () => true, below = {}) => {
     let out
-    for (const h of hs.filter((x) => x.name === name && pred(x))) out = await h.fn($, e, async () => ({}))
+    for (const h of hs.filter((x) => x.name === name && pred(x))) out = await h.fn($, e, async () => below)
     return out
   }
   await fire('session.start', {})
@@ -94,7 +96,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
     await fire('turn.complete', e)
     await settle()
   }
-  return { fire, run, step, press, render, end, log, sent, submits, buttons, svgs }
+  return { fire, run, step, press, render, end, log, sent, submits, buttons, svgs, marks }
 }
 
 const body = '# Session Handoff\n' + 'x'.repeat(300)
@@ -818,24 +820,37 @@ assert.ok(!s.buttons.has('stop'))
 await s.step('busy')
 await s.step('busy')
 await s.step('busy')
+let marked = s.marks.invalidated
 await batch(s)
+// the band redraws when the note goes out, and after each request that follows
+assert.ok(s.marks.invalidated > marked)
 await s.step('busy')
 await s.step('busy')
 await s.render()
 assert.ok(!s.buttons.has('stop'))
+marked = s.marks.invalidated
 await s.step('busy')
+assert.ok(s.marks.invalidated > marked)
 await s.render()
 assert.ok(s.buttons.has('stop'))
 assert.ok(!s.log.some((l) => l.startsWith('abort:')))
 await s.buttons.get('stop').onPress()
 await settle()
 assert.ok(s.log.includes('abort:busy'))
+// the stopped turn ends: no landing and no stop on the band any more
+await s.end({ reason: 'aborted', answer: '', turnId: 'busy' })
+await s.render()
+assert.ok(!/landing/.test(s.buttons.get('handoff').label))
+assert.ok(!s.buttons.has('stop'))
 
-// a turn that grows its context fast offers the stop sooner
+// a turn that grows its context fast offers the stop sooner, but only once it
+// had the note
 s = await boot('/w/land-ctx', 'sl4', { working: true })
 await s.press('handoff')
-await batch(s)
 await s.step('busy', '', 'end_turn', undefined, 60000)
+await s.render()
+assert.ok(!s.buttons.has('stop'))
+await batch(s)
 await s.render()
 assert.ok(s.buttons.has('stop'))
 
@@ -860,6 +875,39 @@ s = await boot('/w/land-skill', 'sl7', { working: true })
 await s.press('handoff')
 await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
 assert.equal(await batch(s), '')
+
+// a second handoff pressed during a later turn of the same session lands anew:
+// its turn gets the note, and the band counts from the second press
+s = await boot('/w/land-twice', 'sl8', { working: true })
+await s.press('handoff')
+await batch(s)
+for (let i = 0; i < 3; i++) await s.step('busy', '', 'end_turn', undefined, 60000)
+await s.end({ reason: 'answer', answer: 'paused here', turnId: 'busy' })
+await s.fire('turn.start', { turnId: 't1' })
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+assert.equal(dated('sl8').trim(), body)
+T += 10 * 60e3
+await s.fire('turn.start', { turnId: 't2' })
+await s.step('t2', '', 'end_turn', undefined, 100000)
+await s.render()
+await s.buttons.get('handoff').onPress()
+await settle()
+await s.render()
+assert.match(s.buttons.get('handoff').label, /landing · 0m · \+0\b/)
+assert.ok(!s.buttons.has('stop'))
+assert.match(await batch(s), /handoff/i)
+await s.render()
+assert.ok(!s.buttons.has('stop'))
+
+// the note joins what the hooks under the module answered
+s = await boot('/w/land-chain', 'sl9', { working: true })
+await s.press('handoff')
+const below = { additionalContext: ['from below'], continue: true }
+const chained = await s.fire('classic.PostToolBatch', { hook_event_name: 'PostToolBatch', tool_calls: [] }, undefined, below)
+assert.equal(chained.continue, true)
+assert.equal(chained.additionalContext.length, 2)
+assert.equal(chained.additionalContext[0], 'from below')
+assert.match(chained.additionalContext[1], /handoff/i)
 
 // The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
 for (const surface of ['terminal', 'desktop']) {
