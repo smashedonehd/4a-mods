@@ -744,6 +744,17 @@ await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
 assert.ok(cleared(s))
 assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
+// a band handoff that never ran leaves its arm: the skill Claude calls in a
+// later turn without args does not inherit its clear
+s = await boot('/w/stale-clear', 'rc8', { working: true })
+await s.press('handoff')
+await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 't2' })
+await s.end({ reason: 'answer', answer: body, turnId: 't2' })
+assert.ok(!cleared(s))
+assert.equal(latestText('rc8'), body)
+
 // the band's handoff is queued behind busy, and Claude calls the skill in busy:
 // that turn's handoff is the one, and the band's clear still follows it
 s = await boot('/w/band-then-skill', 'rc7', { working: true })
