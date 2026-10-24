@@ -787,10 +787,19 @@ await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.ok(!cleared(s))
 assert.equal(latestText('rc3'), body)
 
-// Soft landing. The note Claude reads after a batch of tools, if any
-const batch = async (s, extra = {}) => {
-  const r = await s.fire('classic.PostToolBatch', { hook_event_name: 'PostToolBatch', tool_calls: [], ...extra })
+// Soft landing. What the module answers to a batch of tools, the hooks under
+// it having answered `below`
+const batchResult = (s, extra = {}, below) => s.fire('classic.PostToolBatch', { hook_event_name: 'PostToolBatch', tool_calls: [], ...extra }, undefined, below)
+// The note Claude reads after a batch of tools, if any
+const batch = async (s, extra) => {
+  const r = await batchResult(s, extra)
   return ((r && r.additionalContext) || []).join('\n')
+}
+// Whether `act` made the band redraw
+const redraws = async (s, act) => {
+  const before = s.marks.invalidated
+  await act()
+  return s.marks.invalidated > before
 }
 
 // handoff pressed while Claude works: the running turn is asked once, after
@@ -809,9 +818,7 @@ await s.press('handoff')
 await s.fire('turn.start', { turnId: 't1' })
 assert.equal(await batch(s), '')
 // and with no landing a request does not redraw the band
-let marked = s.marks.invalidated
-await s.step('t1')
-assert.equal(s.marks.invalidated, marked)
+assert.ok(!(await redraws(s, () => s.step('t1'))))
 
 // the band shows the landing; once it runs long it offers to stop the turn,
 // which only a press does
@@ -824,21 +831,15 @@ assert.ok(!s.buttons.has('stop'))
 await s.step('busy')
 await s.step('busy')
 await s.step('busy')
-marked = s.marks.invalidated
-await batch(s)
 // the band redraws when the note goes out
-assert.ok(s.marks.invalidated > marked)
+assert.ok(await redraws(s, () => batch(s)))
 await s.step('busy')
 await s.step('busy')
 await s.render()
 assert.ok(!s.buttons.has('stop'))
 // and after each request that follows, also one that came back without usage
-marked = s.marks.invalidated
-await s.step('busy', '', 'end_turn', undefined, null)
-assert.ok(s.marks.invalidated > marked)
-marked = s.marks.invalidated
-await s.step('busy')
-assert.ok(s.marks.invalidated > marked)
+assert.ok(await redraws(s, () => s.step('busy', '', 'end_turn', undefined, null)))
+assert.ok(await redraws(s, () => s.step('busy')))
 await s.render()
 assert.ok(s.buttons.has('stop'))
 assert.ok(!s.log.some((l) => l.startsWith('abort:')))
@@ -911,7 +912,7 @@ assert.ok(!s.buttons.has('stop'))
 s = await boot('/w/land-chain', 'sl9', { working: true })
 await s.press('handoff')
 const below = { additionalContext: ['from below'], continue: true }
-const chained = await s.fire('classic.PostToolBatch', { hook_event_name: 'PostToolBatch', tool_calls: [] }, undefined, below)
+const chained = await batchResult(s, {}, below)
 assert.equal(chained.continue, true)
 assert.equal(chained.additionalContext.length, 2)
 assert.equal(chained.additionalContext[0], 'from below')

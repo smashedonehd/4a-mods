@@ -171,8 +171,13 @@ function startLanding() {
   Object.assign(L, { at: now, ctx0: S.ctx, noted: false, steps: 0 })
 }
 
+// How much the context grew since the press
+function landingGrowth() {
+  return Math.max(0, S.ctx - L.ctx0)
+}
+
 function landingOverdue() {
-  return landing() && L.noted && (L.steps >= LANDING_STEPS || S.ctx - L.ctx0 >= LANDING_TOKENS)
+  return landing() && L.noted && (L.steps >= LANDING_STEPS || landingGrowth() >= LANDING_TOKENS)
 }
 
 // After a request of the landing turn: the band's figures and "stop now" redraw
@@ -1335,11 +1340,13 @@ export function register(on) {
     // An arm while idle is left over from a handoff that never ran: not running
     const running = H.armed && S.working
     // Waiting for the turn to wind down: how long, and how much the context grew
-    const label = landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(Math.max(0, S.ctx - L.ctx0))}` : handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff'
+    const label = landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(landingGrowth())}` : handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff'
     const handoff = Button({ key: 'handoff', label, hotkey: 'h', plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, 'clear') })
-    const buttons = [handoff]
-    if (H.text || H.continuing) buttons.unshift(Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) }))
-    if (landingOverdue()) buttons.unshift(Button({ key: 'stop', hotkey: 's', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }))
+    const buttons = [
+      landingOverdue() && Button({ key: 'stop', hotkey: 's', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }),
+      (H.text || H.continuing) && Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) }),
+      handoff,
+    ].filter(Boolean)
     const right = buttons.length > 1 ? Box({ flexDirection: 'row', columnGap: 2, children: buttons }) : handoff
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
     const rows = [mine]
