@@ -722,7 +722,11 @@ function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figu
     value: S.keepWarm ? String(S.keepWarmHours) : 'off',
     // A run started elsewhere (the board, settings) may last hours the picks lack
     options: [{ value: 'off', label: 'off' }, ...[...new Set([...KEEP_WARM_PICKS, ...(S.keepWarm ? [S.keepWarmHours] : [])])].sort((a, b) => a - b).map((h) => ({ value: String(h), label: `${h} h` }))],
-    onSelect: (v) => keepWarmPress($, () => (v === 'off' ? stopKeepWarm($, 'turned off') : startKeepWarm($, Number(v))))(),
+    onSelect: (v) => {
+      // A ui.select hook above may hand over a value no option has
+      const hours = Number(v)
+      if (v === 'off' || (Number.isFinite(hours) && hours > 0)) keepWarmPress($, () => (v === 'off' ? stopKeepWarm($, 'turned off') : startKeepWarm($, hours)))()
+    },
   })
   const figures = [figure(Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8]))]
   for (const l of S.rateLimits) {
@@ -748,10 +752,13 @@ function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figu
       Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
     ], 0)
   })
-  // A written handoff takes the split button's place, so the row keeps its width
-  // and never wraps into a third line; the next message makes it stale anyway
+  // This chat's written handoff takes the split button's place, so the row keeps
+  // its width and never wraps into a third line; the next message makes it stale
+  // anyway. One loaded from an earlier chat stays for hours: it goes beside the
+  // pair, which this chat still needs for a handoff of its own.
+  const cont = (H.text || H.continuing) && Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, onPress: () => clearAndContinue($) })
   let handoff
-  if (H.text || H.continuing) handoff = Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, onPress: () => clearAndContinue($) })
+  if (cont && !H.fromDisk) handoff = cont
   else {
     const running = H.armed && S.working
     const label = landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(landingGrowth())}` : handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff'
@@ -764,6 +771,8 @@ function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figu
         options: [{ value: 'clear', label: 'then clear' }, { value: 'none', label: 'keep chat' }],
         onSelect: (v) => {
           handoffAfter = v === 'none' ? 'none' : 'clear'
+          // A handoff already queued or running follows the new pick, as a second press would
+          if (handoffPending || running) H.after = handoffAfter
           $.ui.invalidate('ui.render')
         },
       }),
@@ -772,6 +781,7 @@ function deskBand($, e, { Box, Text, Button, Select, Svg }, { st, ttl, big, figu
   const actions = row('actions', [
     row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
     landingOverdue() && Button({ key: 'stop', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }),
+    handoff !== cont && cont,
     handoff,
   ])
   return [
@@ -1107,6 +1117,7 @@ export function register(on) {
       // Cleared another way: nothing is due, and what was held goes to this chat
       H.clearDue = false
       if (held.length) $.clock.after(300, () => settleHold($))
+      parked.clear()
       if (revive.size) {
         revive.clear()
         await saveRevive($)
