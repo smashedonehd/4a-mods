@@ -761,6 +761,36 @@ await runTimers(timers)
 assert.ok(s.log.includes('run:' + SKILL))
 assert.ok(!s.log.some((l) => l.includes('The chat stays')))
 
+// a message that comes while the fresh handoff is being started is held too
+timers = []
+s = await boot('/w/race-refresh-gap', 'rb1f', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+for (const f of timers.splice(0)) f()
+res = await s.fire('prompt.submit', { text: 'typed in the gap', origin: { kind: 'composer' }, wait: false })
+assert.ok(res && res.drop)
+await settle()
+await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.equal(s.sent.at(-1), 'typed in the gap')
+
+// a second handoff pressed while idle with the clear due is no turn that makes
+// the first out of date: it ends without a handoff, and the chat clears with the first
+timers = []
+s = await boot('/w/race-second-idle', 'rb1g', { timers })
+await s.press('handoff')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+timers.length = 0
+await s.press('handoff')
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'aborted', turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
 // the same second handoff completes: the chat clears with it, not the first
 timers = []
 s = await boot('/w/race-second-ok', 'rb1b', { timers })

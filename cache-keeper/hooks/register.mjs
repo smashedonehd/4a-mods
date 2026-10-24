@@ -621,15 +621,19 @@ async function runHandoff($, after = 'none') {
     $.ui.toast(`Session handoff is already ${handoffPending ? 'queued' : 'running'}.${after === 'clear' ? ' The chat clears and continues once it is in.' : ''}`)
     return
   }
+  // Before the first await: a prompt that comes meanwhile is held, and a
+  // second press finds this one
+  handoffPending = true
+  armHandoff(false, after)
   try {
     const commands = await $.command.list()
     const cmd = commands.find((c) => c.name === 'session-handoff') || commands.find((c) => HANDOFF_SKILL.test(c.name))
     if (!cmd) {
+      H.armed = false
       $.ui.toast('No /session-handoff skill in this session.', { timeoutMs: 8000 })
+      await settleHold($)
       return
     }
-    handoffPending = true
-    armHandoff(false, after)
     now = await $.clock.now()
     startLanding()
     $.ui.invalidate('ui.render')
