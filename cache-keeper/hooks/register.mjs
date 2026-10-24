@@ -148,6 +148,33 @@ const H = {
   clearDue: false, // the handoff is in and this chat clears and continues next
 }
 
+// Soft landing: a handoff asked for while Claude works waits for the turn to
+// end. That turn is asked once, after its next batch of tools, to wind down at
+// a safe point. It is never stopped on its own: a turn that runs long past the
+// note gets a "stop now" on the band, for the person to press.
+const LANDING_NOTE = 'Cache Keeper: the user asked for a session handoff. It runs as soon as this turn ends. Wind down now: finish or safely pause the current step, start no new work, leave nothing half-written (save or commit work in progress the way this project expects), then end this turn with a two-line status of where things stand.'
+const LANDING_STEPS = 3 // model requests after the note before the band offers "stop now"
+const LANDING_TOKENS = 40000 // or this much context growth since the press
+const L = {
+  at: 0,
+  ctx0: 0, // context size at the press
+  noted: false,
+  steps: 0, // model requests since the note
+}
+
+// The handoff is queued behind the running turn (its notTurn), and still armed
+function landing() {
+  return H.armed && S.working && !!H.notTurn && S.turnId === H.notTurn
+}
+
+function startLanding() {
+  Object.assign(L, { at: now, ctx0: S.ctx, noted: false, steps: 0 })
+}
+
+function landingOverdue() {
+  return landing() && L.noted && (L.steps >= LANDING_STEPS || S.ctx - L.ctx0 >= LANDING_TOKENS)
+}
+
 // Prompts that came while the chat was about to clear: a turn they started in
 // this chat would keep /clear from running. They go on after the handoff.
 const held = []
@@ -545,6 +572,8 @@ async function runHandoff($, after = 'none') {
     }
     handoffPending = true
     armHandoff(false, after)
+    now = await $.clock.now()
+    startLanding()
     $.ui.invalidate('ui.render')
     $.ui.toast(S.working ? 'Session handoff queued: it runs when Claude finishes this turn.' : 'Running /session-handoff.')
     await $.command.run({ command: cmd.name, args: '' })
@@ -555,6 +584,16 @@ async function runHandoff($, after = 'none') {
   } finally {
     handoffPending = false
     $.ui.invalidate('ui.render')
+  }
+}
+
+// "stop now" on the band: the person ends the turn the handoff waits for
+async function stopLanding($) {
+  if (!landing()) return
+  try {
+    await $.turn.abort({ turnId: H.notTurn })
+  } catch (err) {
+    $.ui.toast('Could not stop this turn: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })
   }
 }
 
@@ -1055,6 +1094,7 @@ export function register(on) {
     const result = yield* next(e)
     if (e.agentId || !result) return result
     noteHandoffStep(e, result)
+    if (L.noted && landing()) L.steps++
     if (!result.usage) return result
     now = await $.clock.now()
     const u = result.usage
@@ -1121,6 +1161,16 @@ export function register(on) {
     if (e.cost) S.costUsd = e.cost.usd
     if (Array.isArray(e.rateLimits) && e.rateLimits.length) S.rateLimits = e.rateLimits
     return next(e)
+  })
+
+  // Soft landing: the turn a handoff waits for reads the note once, with the
+  // results of its next batch of tools
+  on('classic.PostToolBatch', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agent_id || L.noted || !landing()) return r
+    L.noted = true
+    $.ui.invalidate('ui.render')
+    return { ...r, additionalContext: [...((r && r.additionalContext) || []), LANDING_NOTE] }
   })
 
   // Waiting on the person: a permission prompt or a question
@@ -1277,12 +1327,13 @@ export function register(on) {
     // last step for a handoff made another way.
     // An arm while idle is left over from a handoff that never ran: not running
     const running = H.armed && S.working
-    const handoff = Button({ key: 'handoff', label: handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff', hotkey: 'h', plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, 'clear') })
-    let right = handoff
-    if (H.text || H.continuing) {
-      const go = Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) })
-      right = Box({ flexDirection: 'row', columnGap: 2, children: [go, handoff] })
-    }
+    // Waiting for the turn to wind down: how long, and how much the context grew
+    const label = landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(Math.max(0, S.ctx - L.ctx0))}` : handoffPending ? 'handoff queued' : running ? 'handoff running' : 'handoff'
+    const handoff = Button({ key: 'handoff', label, hotkey: 'h', plain: true, dimColor: handoffPending || running, onPress: () => runHandoff($, 'clear') })
+    const buttons = [handoff]
+    if (H.text || H.continuing) buttons.unshift(Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) }))
+    if (landingOverdue()) buttons.unshift(Button({ key: 'stop', hotkey: 's', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }))
+    const right = buttons.length > 1 ? Box({ flexDirection: 'row', columnGap: 2, children: buttons }) : handoff
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
     const rows = [mine]
     if (cacheMenu) rows.push(cacheMenuRow($, els))
