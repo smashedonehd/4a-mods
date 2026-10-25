@@ -2,7 +2,10 @@
 // Checks the eval's pure parts: the sample and its split, the judges' prompts and replies,
 // the metrics, the policy hash and today's router as a baseline. No model is called.
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions } from '../eval/lib.mjs'
 import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
 import { policyInputs, policyHash } from '../eval/hash.mjs'
@@ -216,5 +219,60 @@ check("today's router on recorded calls", () => {
   assert.equal(familyOf('claude-haiku-4-5-20251001'), 'haiku')
   assert.equal(familyOf('inherit'), '')
 })
+
+// The runner's cache and pool, against a temporary DATA directory; no model is spawned
+const tmp = mkdtempSync(join(tmpdir(), 'mr-eval-test-'))
+process.env.MODEL_ROUTER_EVAL_DATA = tmp
+const { cached, pool } = await import('../eval/claude.mjs')
+
+{
+  let inFlight = 0
+  let peak = 0
+  const got = await pool([5, 1, 3, 2, 4], 2, async (x, i) => {
+    inFlight++
+    peak = Math.max(peak, inFlight)
+    await new Promise((r) => setTimeout(r, x * 3))
+    inFlight--
+    return x * 10 + i
+  })
+  check('pool keeps input order and caps concurrency', () => {
+    assert.deepEqual(got, [50, 11, 32, 23, 44])
+    assert.equal(peak, 2)
+  })
+  const none = await pool([], 4, async () => 1)
+  check('pool of nothing returns nothing', () => assert.deepEqual(none, []))
+}
+
+{
+  let runs = 0
+  const run = async (req) => {
+    runs++
+    return { echo: req.prompt, runs }
+  }
+  const a = await cached('t', { prompt: 'x' }, run)
+  const b = await cached('t', { prompt: 'x' }, run)
+  const c = await cached('t', { prompt: 'y' }, run)
+  const d = await cached('t', { prompt: 'x' }, run, { read: false })
+  const file = join(tmp, 'cache', 't.jsonl')
+  appendFileSync(file, '{"key":"cut by a cra')
+  const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
+  check('cached runs each distinct request once and appends one line per run', () => {
+    assert.deepEqual(a, { echo: 'x', runs: 1 })
+    assert.deepEqual(b, a)
+    assert.deepEqual(c, { echo: 'y', runs: 2 })
+    assert.deepEqual(d, { echo: 'x', runs: 3 })
+    assert.equal(lines.length, 4)
+    assert.equal(JSON.parse(lines[0]).key.length, 64)
+  })
+  // A fresh process reads the file back; the truncated line is skipped
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    const { cached } = await import(${JSON.stringify(new URL('../eval/claude.mjs', import.meta.url).href)})
+    const v = await cached('t', { prompt: 'y' }, async () => 'ran')
+    console.log(JSON.stringify(v))`], { env: { ...process.env, MODEL_ROUTER_EVAL_DATA: tmp } })
+  check('cached resumes from the file in a new process and skips a cut line', () => {
+    assert.deepEqual(JSON.parse(String(out)), { echo: 'y', runs: 2 })
+  })
+}
+rmSync(tmp, { recursive: true, force: true })
 
 console.log(`${n} checks passed`)
