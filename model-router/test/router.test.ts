@@ -111,3 +111,23 @@ test('plain /route caps at Opus, /route fable opens Fable, and /route goes back'
   await $.tool.call({ tool: 'Agent', description: 'c', prompt: 'x', subagent_type: 'model-router:frontier' })
   expect([seen[2].model, seen[2].effort]).toEqual(['opus', 'high'])
 })
+
+test('/route fill off leaves every call as it came except the Opus cap', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const off = await $.command.run({ command: 'route', args: 'fill off' })
+  expect(String(off.text)).toContain('safety net: off')
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'opus' })
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x' })
+  await $.tool.call({ tool: 'Agent', description: 'e', prompt: 'x', subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'Agent', description: 'c', prompt: 'x', model: 'fable' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', undefined])
+  expect([seen[1].model, seen[1].effort]).toEqual([undefined, undefined])
+  expect([seen[2].model, seen[2].effort]).toEqual([undefined, undefined])
+  expect([seen[3].model, seen[3].effort]).toEqual(['opus', 'high'])
+  const status = await $.command.run({ command: 'route', args: '' })
+  expect(String(status.text)).toContain('4 Agent calls (keep 3, capped 1)')
+  const back = await $.command.run({ command: 'route', args: 'fill on' })
+  expect(String(back.text)).toContain('safety net: on')
+})

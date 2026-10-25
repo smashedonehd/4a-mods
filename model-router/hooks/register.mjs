@@ -7,9 +7,10 @@
 // Why types and not a classifier: the main Claude sees the whole conversation,
 // so it judges a task better than keywords or a small model reading one prompt.
 // The hook below is only a safety net: a general agent Claude started with
-// nothing set gets the table's default (Opus at medium), one given only a model
-// gets the effort of that model's first tier instead of the session's, a model
-// and effort Claude chose are kept, a fork is left alone, and nothing is ever refused.
+// nothing set gets the table's default (Opus at medium), a general or mapped
+// built-in agent given only a model gets the effort of that model's first tier
+// instead of the session's, a tier type and a model and effort Claude chose are
+// kept, a fork is left alone, and nothing is ever refused.
 // Current: the table ships with the plugin and changes through pull requests
 // (UPDATING.md); aliases already follow each line's newest model.
 // Cost: zero tokens per call; the policy is one cached system prompt section.
@@ -17,7 +18,7 @@
 import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier } from './route.mjs'
 
 const settings = {
-  fill: true, // give an unset general agent the table's default model and effort
+  fill: true, // the safety net: defaults for an unset general or built-in agent, a tier effort for one given only a model
   ceiling: 'opus', // opus: Haiku up to Opus, the frontier tier off (/route) · fable: up to Fable (/route fable)
 }
 
@@ -90,6 +91,7 @@ async function statusText($) {
     lines.push(`  ${`${plugin}:${n}`.padEnd(26)} ${tag(table.tiers[n]).padEnd(14)} ${table.tiers[n].description}${off}`)
   }
   lines.push(`  general agent with nothing set -> ${tag(table.fill)}`)
+  lines.push(`  general or built-in agent with only a model -> the effort of that model's first tier`)
   const s = await $.store.get('stats')
   if (s && s.total) {
     const by = Object.entries(s.byAction || {}).map(([k, n]) => `${k} ${n}`).join(', ')
@@ -128,8 +130,9 @@ export function register(on) {
   // The safety net: never refuses, never touches subagent_type or prompt
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!table) return next(e)
-    const plan = capPlan(table, planAgentCall(table, plugin, e), settings.ceiling)
-    if (plan.set && !settings.fill && plan.action !== 'capped') plan.set = null
+    let plan = capPlan(table, planAgentCall(table, plugin, e), settings.ceiling)
+    // With the safety net off only the cap applies; the status and the counts say the call was kept
+    if (plan.set && !settings.fill && plan.action !== 'capped') plan = { action: 'keep', why: 'fill off', tier: '', model: e.model, effort: e.effort }
     const frontier = isFrontier(table, plan)
     remember({ ...plan, what: `${e.subagent_type || 'agent'}: ${String(e.description || '').slice(0, 20)}` })
     try {
