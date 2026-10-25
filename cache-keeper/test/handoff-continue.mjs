@@ -1045,6 +1045,24 @@ await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!s.log.some((l) => l.includes('queued handoff')))
 assert.equal(latestText('rd2e'), body)
 
+// the queued turn starts while busy's turn.complete still runs, then writes no
+// handoff: that turn is the handoff's, not one that makes busy's out of date,
+// so the chat clears with busy's
+s = await boot('/w/band-then-skill-overlap', 'rd2f', { working: true, timers })
+await s.press('handoff')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+s.log.length = 0
+const endingBusy = s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 'busy' })
+await s.fire('turn.start', { turnId: 't2' })
+await endingBusy
+await settle()
+await runTimers(timers)
+assert.ok(!cleared(s))
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
 // The band's command is refused by the engine (past a Stop, say) only later:
 // refuse() rejects its run
 let refuse
