@@ -104,19 +104,47 @@ check('the Opus ceiling (plain /route) offers Haiku up to Opus only', () => {
 })
 
 check('under the Opus ceiling a Fable call runs on Opus xhigh; under /route fable it stays', () => {
-  for (const e of [{ model: 'fable' }, { subagent_type: 'model-router:frontier' }]) {
-    const capped = capPlan(table, planAgentCall(table, P, e), 'opus')
-    assert.deepEqual([capped.action, capped.model, capped.effort], ['capped', 'opus', 'xhigh'])
-    assert.deepEqual(capped.set, { model: 'opus', effort: 'xhigh' })
+  const cap = (e, ceiling = 'opus') => capPlan(table, P, e, planAgentCall(table, P, e), ceiling)
+  for (const e of [{ model: 'fable' }, { subagent_type: 'model-router:frontier' }, { subagent_type: 'Explore', model: 'fable' }]) {
+    const capped = cap(e)
+    assert.deepEqual([capped.action, capped.tier, capped.model, capped.effort], ['capped', 'long', 'opus', 'xhigh'])
+    assert.deepEqual([capped.set.model, capped.set.effort], ['opus', 'xhigh'])
     assert.equal(isFrontier(table, capped), false)
-    const open = capPlan(table, planAgentCall(table, P, e), 'fable')
+    const open = cap(e, 'fable')
     assert.equal(isFrontier(table, open), true)
     assert.equal(open.set, undefined)
   }
-  const effortOnly = capPlan(table, planAgentCall(table, P, { subagent_type: 'model-router:frontier', effort: 'max' }), 'opus')
-  assert.deepEqual([effortOnly.action, effortOnly.model], ['capped', 'opus'])
   const deep = planAgentCall(table, P, { subagent_type: 'model-router:deep' })
-  assert.equal(capPlan(table, deep, 'opus'), deep)
+  assert.equal(capPlan(table, P, { subagent_type: 'model-router:deep' }, deep, 'opus'), deep)
+  assert.equal(cap({ subagent_type: 'model-router:deep', model: 'opus' }).set, undefined)
+})
+
+check('the host refuses the hidden frontier type, so a call naming it moves to the cap type', () => {
+  const cap = (e) => capPlan(table, P, e, planAgentCall(table, P, e), 'opus')
+  assert.equal(cap({ subagent_type: 'model-router:frontier' }).set.subagent_type, 'model-router:long')
+  assert.equal(cap({ subagent_type: 'model-router:frontier', model: 'fable' }).set.subagent_type, 'model-router:long')
+  assert.equal(cap({ model: 'fable' }).set.subagent_type, undefined)
+  assert.equal(cap({ subagent_type: 'Explore', model: 'fable' }).set.subagent_type, undefined)
+  const sonnet = cap({ subagent_type: 'model-router:frontier', model: 'sonnet' })
+  assert.deepEqual([sonnet.action, sonnet.tier, sonnet.model, sonnet.effort], ['capped', 'long', 'sonnet', 'xhigh'])
+  assert.deepEqual(sonnet.set, { subagent_type: 'model-router:long' })
+})
+
+check('a capped call keeps the effort Claude set', () => {
+  const cap = (e) => capPlan(table, P, e, planAgentCall(table, P, e), 'opus')
+  const low = cap({ model: 'fable', effort: 'low' })
+  assert.deepEqual([low.action, low.model, low.effort], ['capped', 'opus', 'low'])
+  const max = cap({ subagent_type: 'model-router:frontier', effort: 'max' })
+  assert.deepEqual(max.set, { subagent_type: 'model-router:long', model: 'opus', effort: 'max' })
+  const narrow = { ...table, models: { ...table.models, opus: { ...table.models.opus, efforts: ['high', 'xhigh'] } } }
+  const e = { model: 'fable', effort: 'low' }
+  assert.equal(capPlan(narrow, P, e, planAgentCall(narrow, P, e), 'opus').effort, 'xhigh')
+})
+
+check('a built-in type given only an effort runs on its own model and counts under no tier', () => {
+  const p = planAgentCall(table, P, { subagent_type: 'Explore', effort: 'high' })
+  assert.deepEqual([p.action, p.tier], ['keep', ''])
+  assert.equal(planAgentCall(table, P, { subagent_type: 'model-router:deep', effort: 'max' }).tier, 'deep')
 })
 
 check('counts add up', () => {

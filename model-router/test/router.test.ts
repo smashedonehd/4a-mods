@@ -21,8 +21,8 @@ const TABLE = {
   builtinTypes: { Explore: 'quick' },
 }
 
-function engine(on: any, seen: any[], agents: any[], tableText = JSON.stringify(TABLE)) {
-  const store = new Map<string, any>()
+function engine(on: any, seen: any[], agents: any[], tableText = JSON.stringify(TABLE), stored: Record<string, any> = {}) {
+  const store = new Map<string, any>(Object.entries(stored))
   on('command.register', () => ({ value: { command: 'route' } }))
   on('agent.register', (_: any, e: any) => {
     agents.push(e)
@@ -37,6 +37,7 @@ function engine(on: any, seen: any[], agents: any[], tableText = JSON.stringify(
   on('clock.now', () => ({ value: Date.parse('2026-10-25T00:00:00Z') }))
   on('ui.status', () => ({ value: undefined }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('agent.offer', () => ({ isOffered: true }))
   on('tool.call', (_: any, e: any) => {
     seen.push(e)
     return { result: {} }
@@ -99,5 +100,44 @@ test('plain /route caps at Opus, /route fable opens Fable, and /route goes back'
   const back = await $.command.run({ command: 'route', args: '' })
   expect(String(back.text)).toContain('haiku → opus')
   await $.tool.call({ tool: 'Agent', description: 'c', prompt: 'x', subagent_type: 'model-router:frontier' })
-  expect([seen[2].model, seen[2].effort]).toEqual(['opus', 'high'])
+  expect([seen[2].subagent_type, seen[2].model, seen[2].effort]).toEqual(['model-router:deep', 'opus', 'high'])
+})
+
+const offer = (agent: string) => ({ agent, description: 'd', source: 'plugin', provider: { plugin: 'model-router', tier: 'user' } })
+
+test('plain /route hides the frontier type from the listing and dispatch, /route fable offers it', async ($, on) => {
+  engine(on, [], [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect((await $.agent.offer(offer('model-router:frontier'))).isOffered).toBe(false)
+  expect((await $.agent.offer(offer('model-router:deep'))).isOffered).toBe(true)
+  await $.command.run({ command: 'route', args: 'fable' })
+  expect((await $.agent.offer(offer('model-router:frontier'))).isOffered).toBe(true)
+})
+
+test('the stored range is read at the start', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(TABLE), { settings: { fill: true, ceiling: 'fable' } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'fable' })
+  expect(seen[0].model).toBe('fable')
+})
+
+test('a stored range the router does not know falls back to Opus', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(TABLE), { settings: { fill: true, ceiling: 'bogus' } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'fable' })
+  expect(seen[0].model).toBe('opus')
+  expect((await $.agent.offer(offer('model-router:frontier'))).isOffered).toBe(false)
+})
+
+test('with the safety net off a Fable call is still capped', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'route', args: 'fill off' })
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'fable' })
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
+  expect(seen[1].model).toBe(undefined)
 })

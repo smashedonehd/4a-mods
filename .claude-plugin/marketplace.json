@@ -13,7 +13,7 @@
     {
       "name": "model-router",
       "source": "./model-router",
-      "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, Fable only when Opus fell short), from one tier table kept current through pull requests (/route)"
+      "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering), from one tier table kept current through pull requests; /route routes Haiku up to Opus, /route fable up to Fable"
     }
   ]
 }
