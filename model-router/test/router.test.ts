@@ -350,6 +350,16 @@ test('the rules policy lifts a review to deep', async ($, on) => {
   expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
 })
 
+test('with no router answer the rules policy still lifts a matching call to its floor', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify({ ...AUTO, router: { ...AUTO.router, policy: 'rules' } }))
+  router(on, { value: { isAnswered: false, reason: 'aborted', usage: {} } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'Security review', prompt: 'x', model: 'haiku' })
+  await $.tool.call({ tool: 'Agent', description: 'Find the config', prompt: 'x', model: 'haiku' })
+  expect(seen.map((s) => [s.model, s.effort])).toEqual([['opus', 'high'], ['haiku', 'low']])
+})
+
 const JEV = JSON.stringify({ ...AUTO, router: { ...AUTO.router, policy: 'jev' } })
 
 test('the jev policy routes by probabilities', async ($, on) => {

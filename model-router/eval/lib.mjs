@@ -242,11 +242,14 @@ function safeDirs(dir) {
   }
 }
 
+// Today's plan for an Agent call as the hook makes it by default: the safety net on, under the Opus cap
+const todayPlan = (table, plugin, e) => capPlan(table, plugin, e, planAgentCall(table, plugin, e), 'opus')
+
 // What today's router runs a recorded call on: its own plan, else what Claude set, else the agent's
 // definition, else the parent's model and effort
 export function todayDecision(table, plugin, call, defs) {
   const e = eventOf(call)
-  const plan = capPlan(table, plugin, e, planAgentCall(table, plugin, e), 'opus')
+  const plan = todayPlan(table, plugin, e)
   const set = plan.set || {}
   const def = defs.get(call.type) || {}
   const model = familyOf(set.model || plan.model || e.model) || familyOf(def.model) || familyOf(call.parentModel) || 'opus'
@@ -256,7 +259,8 @@ export function todayDecision(table, plugin, call, defs) {
 
 // The table's policy's decision for a recorded call, from the router's reply (text, rules) or Jev's (jev):
 // the routed tier, or today's plan when the reply is unusable or the call's explicit request is a floor
-// above the routed tier, as the hook decides
+// above the routed tier, as the hook decides; with no usable reply, the rules policy's pattern floors still
+// lift today's plan
 export function policyDecision(table, plugin, call, reply, defs) {
   const { policy } = table.router
   if (!POLICIES.includes(policy)) throw new Error(`unknown policy: ${policy}`)
@@ -267,7 +271,7 @@ export function policyDecision(table, plugin, call, reply, defs) {
   // A call whose explicit request is above the routed tier keeps today's plan, as the hook does. Such a
   // decision is not always a tier, so it is scored at the model and effort it runs on (todayDecision): the
   // metrics take a { model, effort } pair, and its price is the real cost of the kept call.
-  const tier = autoTier(table, plugin, e, picked ? picked.tier : '')
+  const tier = autoTier(table, plugin, e, picked ? picked.tier : '', todayPlan(table, plugin, e))
   return { decision: tier || today(), category: picked ? picked.category : null, fallback: !picked }
 }
 

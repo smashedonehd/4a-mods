@@ -195,8 +195,9 @@ export function register(on) {
   // to move our own tier type to the routed tier's, or the hidden frontier type to the cap's
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!table) return next(e)
-    const tier = routes(e) ? autoTier(table, plugin, e, await decide($, e)) : ''
-    const plan = tier ? routedPlan(table, plugin, e, tier) : capPlan(table, plugin, e, planAgentCall(table, plugin, e, settings.fill), settings.ceiling)
+    const today = capPlan(table, plugin, e, planAgentCall(table, plugin, e, settings.fill), settings.ceiling)
+    const tier = routes(e) ? autoTier(table, plugin, e, await decide($, e), today) : ''
+    const plan = tier ? routedPlan(table, plugin, e, tier) : today
     const frontier = isFrontier(table, plan)
     remember({ ...plan, what: `${e.subagent_type || 'agent'}: ${String(e.description || '').slice(0, 20)}` })
     try {

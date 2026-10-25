@@ -379,11 +379,15 @@ export function weaker(pair, ask) {
   return Boolean(ask.effort) && EFFORTS.indexOf(pair.effort) < EFFORTS.indexOf(ask.effort)
 }
 
-// The tier auto routing gives one call from the policy's tier ('' when it has none), or '' to keep today's
-// plan (planAgentCall, then capPlan), which carries what the call asked for. An explicit request is a floor:
-// the router may raise a call, never lower it below what was asked (askOf).
-export function autoTier(table, plugin, e, tier) {
-  return tier && !weaker(table.tiers[tier], askOf(table, plugin, e)) ? tier : ''
+// The tier auto routing gives one call, or '' to keep today's plan (planAgentCall, then capPlan), which
+// carries what the call asked for. tier is the policy's (policyTier), '' when it has none.
+// - An explicit request is a floor: the router may raise a call, never lower it below what was asked (askOf).
+// - With no tier under the rules policy, a rule whose pattern matches the type or the description (there is
+//   no category without a reply) still lifts today's plan to the rule's floor.
+export function autoTier(table, plugin, e, tier, today) {
+  const ruled = !tier && table.router.policy === 'rules' ? applyRules(table, plugin, e, { tier: table.order[0], category: null }) : null
+  const pick = tier || (ruled && ruled.ruled && weaker(today, table.tiers[ruled.tier]) ? ruled.tier : '')
+  return pick && !weaker(table.tiers[pick], askOf(table, plugin, e)) ? pick : ''
 }
 
 // The plan for a call the policy routed: the tier's model and effort, and our own type moved to the routed tier's

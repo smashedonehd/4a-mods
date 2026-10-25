@@ -357,6 +357,26 @@ check('an explicit request is a floor: the router may raise a call, never lower 
   assert.equal(autoTier(table, P, opus, ''), '')
 })
 
+check('with no router answer the rules policy still lifts today\'s plan to a matching floor', () => {
+  const today = (e) => capPlan(table, P, e, planAgentCall(table, P, e), 'opus')
+  const fall = (e, t = table) => autoTier(t, P, e, '', today(e))
+  assert.equal(table.router.policy, 'rules')
+  assert.equal(fall({ model: 'haiku', description: 'Security review' }), 'deep')
+  assert.equal(fall({ description: 'Review Task 3' }), 'deep')
+  assert.equal(fall({ subagent_type: 'lisa-reviewer', description: 'PR 12' }), 'deep')
+  assert.equal(fall({ effort: 'low', description: 'Review Task 3' }), 'deep')
+  assert.equal(fall({ model: 'haiku', description: 'Implement Task 2' }), '')
+  // The floor reads the type and the description, never the prompt
+  assert.equal(fall({ description: 'Implement Task 2', prompt: 'then review it' }), '')
+  // A floor below today's plan or below the call's own request changes nothing
+  assert.equal(fall({ subagent_type: 'model-router:long', description: 'Review Task 3' }), '')
+  assert.equal(fall({ model: 'opus', effort: 'xhigh', description: 'Review Task 3' }), '')
+  assert.equal(fall({ effort: 'xhigh', description: 'Review Task 3' }), '')
+  assert.equal(fall({ model: 'fable', description: 'Review Task 3' }), '')
+  // Only the rules policy has floors
+  for (const policy of ['text', 'jev']) assert.equal(fall({ model: 'haiku', description: 'Security review' }, { ...table, router: { ...table.router, policy } }), '')
+})
+
 check('routesCall is false for today, for a fork, and for the frontier type under /route fable', () => {
   assert.equal(routesCall(table, P, { subagent_type: 'general-purpose' }, 'opus'), true)
   assert.equal(routesCall({ ...table, router: { ...table.router, policy: 'today' } }, P, { subagent_type: 'general-purpose' }, 'opus'), false)

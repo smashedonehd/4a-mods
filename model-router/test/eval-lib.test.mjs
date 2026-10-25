@@ -287,6 +287,10 @@ check('a policy decides from the reply, and an unusable reply falls back to toda
   assert.deepEqual(d('text', '{"category":"search","tier":"quick"}'), { decision: 'quick', category: 'search', fallback: false })
   assert.deepEqual(d('rules', '{"category":"search","tier":"quick"}'), { decision: 'deep', category: 'search', fallback: false })
   assert.deepEqual(d('text', 'no json'), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
+  // Under rules the pattern floors hold without a reply: "Review Task 3" goes to deep, "Implement" keeps today's plan
+  assert.deepEqual(d('rules', 'no json'), { decision: 'deep', category: null, fallback: true })
+  assert.deepEqual(d('rules', null, { ...call, description: 'Security review', model: 'haiku' }), { decision: 'deep', category: null, fallback: true })
+  assert.deepEqual(d('rules', null, { ...call, description: 'Implement Task 2', model: 'haiku' }), { decision: { model: 'haiku', effort: 'low' }, category: null, fallback: true })
   assert.deepEqual(d('text', '{"tier":"frontier"}'), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
   assert.deepEqual(d('jev', { answers: { tier: { probabilities: { quick: 0.9, light: 0.1 } } } }), { decision: 'quick', category: null, fallback: false })
   assert.deepEqual(d('jev', {}), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
