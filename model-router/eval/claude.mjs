@@ -10,18 +10,36 @@ import { CACHE_DIR } from './paths.mjs'
 
 export const CLAUDE_BIN = process.env.CLAUDE_BIN || (process.platform === 'win32' ? join(homedir(), '.local', 'bin', 'claude.exe') : 'claude')
 
-const ISOLATE = ['--safe-mode', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json']
+// MODEL_ROUTER_EVAL_ACCOUNT=2 runs on Filip's second account, as claude2.cmd does: its OAuth token
+// from CLAUDE_TOKEN_UCET2, with the API key variables cleared because they would win over it
+function accountEnv() {
+  if (process.env.MODEL_ROUTER_EVAL_ACCOUNT !== '2') return process.env
+  const token = process.env.CLAUDE_TOKEN_UCET2
+  if (!token) throw new Error('MODEL_ROUTER_EVAL_ACCOUNT=2 needs CLAUDE_TOKEN_UCET2')
+  const env = { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token }
+  delete env.ANTHROPIC_AUTH_TOKEN
+  delete env.ANTHROPIC_API_KEY
+  return env
+}
+
+const ISOLATE =['--safe-mode', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json']
 
 // req: {model: alias, effort, system, prompt, timeoutMs?}. Resolves to {text, usage, costUsd}.
 export function complete(table, req) {
   const m = table.models[req.model]
   if (!m) return Promise.reject(new Error(`unknown model alias: ${req.model}`))
+  let env
+  try {
+    env = accountEnv()
+  } catch (e) {
+    return Promise.reject(e)
+  }
   const dir = mkdtempSync(join(tmpdir(), 'mr-eval-'))
   const sys = join(dir, 'system.txt')
   writeFileSync(sys, req.system || '')
   const args = ['-p', ...ISOLATE, '--model', m.id, '--effort', req.effort, '--system-prompt-file', sys]
   return new Promise((resolve, reject) => {
-    const child = spawn(CLAUDE_BIN, args, { cwd: dir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(CLAUDE_BIN, args, { cwd: dir, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     let out = ''
     let err = ''
     const timer = setTimeout(() => child.kill(), req.timeoutMs || 600000)
