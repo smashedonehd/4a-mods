@@ -69,9 +69,11 @@ export function tierOfType(table, plugin, type) {
 export function planAgentCall(table, plugin, e) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
-  if (e.model || e.effort) return { action: 'keep', why: 'set by Claude', model: e.model, effort: e.effort }
   const tier = tierOfType(table, plugin, type)
-  if (tier && type.startsWith(`${plugin}:`)) return { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
+  // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
+  const own = tier && type.startsWith(`${plugin}:`)
+  if (e.model || e.effort) return { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
+  if (own) return { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
   if (tier) {
     const { model, effort } = table.tiers[tier]
     return { action: 'builtin', tier, model, effort, set: { model, effort } }
@@ -89,13 +91,48 @@ export function isFrontier(table, plan) {
   return plan.tier === table.frontier || plan.model === table.tiers[table.frontier].model
 }
 
+// The tiers Claude is offered under a ceiling: 'opus' leaves out the frontier tier, 'fable' offers them all
+export function offeredTiers(table, ceiling) {
+  return ceiling === 'fable' || !table.frontier ? table.order : table.order.filter((n) => n !== table.frontier)
+}
+
+// The strongest tier below the frontier: where a capped frontier call lands
+export function capTier(table) {
+  const below = offeredTiers(table, 'opus')
+  return below[below.length - 1]
+}
+
+// Under the 'opus' ceiling a call bound for the frontier model runs on the cap tier's model instead,
+// at the effort Claude set if that model takes it, else the cap tier's. The host refuses a type it
+// does not offer, so a call naming the frontier type also moves to the cap tier's type.
+export function capPlan(table, plugin, e, plan, ceiling) {
+  if (ceiling === 'fable' || !table.frontier) return plan
+  const hidden = String(e.subagent_type || '') === `${plugin}:${table.frontier}`
+  const frontier = isFrontier(table, plan)
+  if (!hidden && !frontier) return plan
+  const tier = capTier(table)
+  const move = hidden ? { subagent_type: `${plugin}:${tier}` } : {}
+  // The frontier type with a model below the frontier: only the type moves, the model Claude set is kept
+  if (!frontier) return { ...plan, action: 'capped', tier, effort: e.effort || table.tiers[tier].effort, set: move }
+  const { model } = table.tiers[tier]
+  const takes = table.models[model].efforts
+  const effort = e.effort && (!Array.isArray(takes) || takes.includes(e.effort)) ? e.effort : table.tiers[tier].effort
+  return { ...plan, action: 'capped', tier, model, effort, set: { ...move, model, effort } }
+}
+
 // The section added to Claude's system prompt: which type to pick for which task
-export function policyText(table, plugin) {
-  const lines = table.order.map((n) => `- ${plugin}:${n} (${table.tiers[n].model}, ${table.tiers[n].effort}): ${table.tiers[n].description}`)
+export function policyText(table, plugin, ceiling = 'opus') {
+  const tiers = offeredTiers(table, ceiling)
+  const lines = tiers.map((n) => `- ${plugin}:${n} (${table.tiers[n].model}, ${table.tiers[n].effort}): ${table.tiers[n].description}`)
+  const frontier = !table.frontier
+    ? ''
+    : ceiling === 'fable'
+      ? ` Pick ${plugin}:${table.frontier} only as its description says.`
+      : ` ${table.tiers[table.frontier].model} is switched off: the strongest tier is ${plugin}:${capTier(table)}, and a call naming ${table.tiers[table.frontier].model} runs there.`
   return [
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
-    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it. Pick ${plugin}:${table.frontier || 'frontier'} only as its description says. A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
+    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
   ].join('\n')
 }
 

@@ -1,8 +1,8 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by Filip Novotny. Cache Keeper shows costs as plan-limit percent instead of dollars; Model Router gives Claude one agent type per model and effort tier.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Model Router gives Claude one agent type per model and effort tier.",
   "owner": {
-    "name": "Filip Novotny"
+    "name": "4AM"
   },
   "plugins": [
     {
@@ -13,7 +13,7 @@
     {
       "name": "model-router",
       "source": "./model-router",
-      "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, Fable only when Opus fell short), from one tier table kept current through pull requests (/route)"
+      "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering), from one tier table kept current through pull requests; /route routes Haiku up to Opus, /route fable up to Fable"
     }
   ]
 }

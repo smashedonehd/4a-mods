@@ -13,10 +13,11 @@
 // (UPDATING.md); aliases already follow each line's newest model.
 // Cost: zero tokens per call; the policy is one cached system prompt section.
 
-import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision } from './route.mjs'
+import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier } from './route.mjs'
 
 const settings = {
   fill: true, // give an unset general agent the table's default model and effort
+  ceiling: 'opus', // opus: Haiku up to Opus, the frontier tier off (/route) · fable: up to Fable (/route fable)
 }
 
 let table = null
@@ -32,6 +33,12 @@ function remember(d) {
   if (recent.length > 12) recent.shift()
 }
 
+// The range Claude may route to, as the status line and /route say it
+function range() {
+  const tiers = offeredTiers(table, settings.ceiling)
+  return `${table.tiers[tiers[0]].model} → ${table.tiers[tiers[tiers.length - 1]].model}`
+}
+
 function tag(d) {
   return d.model ? `${d.model}·${d.effort || 'default'}` : 'unchanged'
 }
@@ -41,7 +48,7 @@ async function showStatus($, text) {
   try {
     const age = table ? ageDays(table, await $.clock.now()) : 0
     const stale = table && age > (table.staleDays || 30) ? ` (table ${age} days old, see /${commandName})` : ''
-    $.ui.status(text || stale ? `router: ${text || 'on'}${stale}` : undefined)
+    $.ui.status(table ? `router ${range()}${text ? `: ${text}` : ''}${stale}` : undefined)
   } catch {
     // no status this time
   }
@@ -74,9 +81,13 @@ async function registerTypes($) {
 
 async function statusText($) {
   const now = await $.clock.now()
-  const lines = [`Model Router ${table.updated} (${ageDays(table, now)} days old), safety net ${settings.fill ? 'on' : 'off'}.`]
+  const offered = offeredTiers(table, settings.ceiling)
+  const lines = [`Model Router ${table.updated} (${ageDays(table, now)} days old): routes ${range()}, safety net ${settings.fill ? 'on' : 'off'}.`]
   lines.push(`Agent types (${registered.length} of ${table.order.length} registered):`)
-  for (const n of table.order) lines.push(`  ${`${plugin}:${n}`.padEnd(26)} ${tag(table.tiers[n]).padEnd(14)} ${table.tiers[n].description}`)
+  for (const n of table.order) {
+    const off = offered.includes(n) ? '' : ` (off: /${commandName} fable turns it on; calls go to ${plugin}:${capTier(table)})`
+    lines.push(`  ${`${plugin}:${n}`.padEnd(26)} ${tag(table.tiers[n]).padEnd(14)} ${table.tiers[n].description}${off}`)
+  }
   lines.push(`  general agent with nothing set -> ${tag(table.fill)}`)
   const s = await $.store.get('stats')
   if (s && s.total) {
@@ -88,7 +99,7 @@ async function statusText($) {
     lines.push('This session:')
     for (const d of recent.slice(-6)) lines.push(`  ${d.what.padEnd(34)} ${d.action.padEnd(8)} ${tag(d)}`)
   }
-  lines.push(`Settings: /${commandName} fill on|off · /${commandName} stats reset`)
+  lines.push(`Settings: /${commandName} (Haiku up to Opus) · /${commandName} fable (up to Fable) · /${commandName} fill on|off · /${commandName} stats reset`)
   return lines.join('\n')
 }
 
@@ -97,11 +108,12 @@ export function register(on) {
     plugin = $.plugin.name || plugin
     const saved = await $.store.get('settings')
     if (saved && typeof saved === 'object') Object.assign(settings, saved)
+    if (settings.ceiling !== 'fable') settings.ceiling = 'opus'
     await loadTable($)
     if (table) await registerTypes($)
     for (const name of ['route', 'model-router']) {
       try {
-        await $.command.register({ name, description: 'Model Router: the agent types per model and effort, and what the router did', argumentHint: '[fill on|off|stats reset]', immediate: true })
+        await $.command.register({ name, description: 'Model Router: route Haiku up to Opus (/route) or up to Fable (/route fable), and what the router did', argumentHint: '[fable|fill on|off|stats reset]', immediate: true })
         commandName = name
         break
       } catch {
@@ -112,11 +124,11 @@ export function register(on) {
     return next(e)
   })
 
-  // The safety net: never refuses, never touches subagent_type or prompt
+  // The safety net: never refuses and never touches the prompt; subagent_type changes only for the hidden frontier type
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!table) return next(e)
-    const plan = planAgentCall(table, plugin, e)
-    if (plan.set && !settings.fill) plan.set = null
+    const plan = capPlan(table, plugin, e, planAgentCall(table, plugin, e), settings.ceiling)
+    if (plan.set && !settings.fill && plan.action !== 'capped') plan.set = null
     const frontier = isFrontier(table, plan)
     remember({ ...plan, what: `${e.subagent_type || 'agent'}: ${String(e.description || '').slice(0, 20)}` })
     try {
@@ -124,7 +136,7 @@ export function register(on) {
     } catch {
       // the count is a convenience
     }
-    if (plan.action !== 'keep' || frontier) await showStatus($, `${e.subagent_type || 'agent'} → ${tag(plan)}${frontier ? ' (frontier)' : ''}`)
+    if (plan.action !== 'keep' || frontier) await showStatus($, `${e.subagent_type || 'agent'} → ${tag(plan)}${frontier ? ' (frontier)' : ''}${plan.action === 'capped' ? ' (capped)' : ''}`)
     return next(plan.set ? { ...e, ...plan.set } : e)
   }).catch(($, e, next) => next(e))
 
@@ -134,10 +146,17 @@ export function register(on) {
     return next(e)
   })
 
+  // Under the Opus ceiling the frontier type is neither listed to Claude nor dispatched;
+  // tool.call has already moved a call naming it to the cap tier's type
+  on('agent.offer', async ($, e, next) => {
+    if (table && table.frontier && e.agent === `${plugin}:${table.frontier}` && settings.ceiling !== 'fable') return { isOffered: false }
+    return next(e)
+  })
+
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     if (!table || !registered.length || !e.tools.includes('Agent')) return r
-    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin), scope: 'session' }] }
+    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin, settings.ceiling), scope: 'session' }] }
   })
 
   on('command.run', { command: ['route', 'model-router'] }, async ($, e) => {
@@ -145,6 +164,13 @@ export function register(on) {
     const k = (key || '').toLowerCase()
     const v = (rest[0] || '').toLowerCase()
     if (!table) return { text: `Model Router has no table in use: ${problem || 'not loaded yet'}.` }
+    // Bare /route (or /route opus) routes Haiku up to Opus; /route fable up to Fable
+    if (k === '' || k === 'opus' || k === 'fable') {
+      settings.ceiling = k === 'fable' ? 'fable' : 'opus'
+      await $.store.set('settings', settings)
+      await showStatus($)
+      return { text: await statusText($) }
+    }
     if (k === 'fill' && ['on', 'off'].includes(v)) {
       settings.fill = v === 'on'
       await $.store.set('settings', settings)
@@ -154,6 +180,6 @@ export function register(on) {
       await $.store.set('stats', null)
       return { text: 'Model Router counts reset.' }
     }
-    return { text: await statusText($) }
+    return { text: `Not an option: /${commandName} ${String(e.args || '').trim()}. ${await statusText($)}` }
   })
 }
