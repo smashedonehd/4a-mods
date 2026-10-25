@@ -10,7 +10,9 @@
 // nothing set gets the table's default (Opus at medium), a general or mapped
 // built-in agent given only a model gets the effort of that model's first tier
 // instead of the session's, a tier type and a model and effort Claude chose are
-// kept, a fork is left alone, and nothing is ever refused.
+// kept, and a fork is left alone. The one exception is the Opus cap (plain
+// /route): a call with model Fable runs on Opus instead, and a call naming the
+// Fable type, which the host would refuse as not offered, moves to the cap type.
 // Current: the table ships with the plugin and changes through pull requests
 // (UPDATING.md); aliases already follow each line's newest model.
 // Cost: zero tokens per call; the policy is one cached system prompt section.

@@ -2,7 +2,7 @@
 // Checks the shipped routing.json and the router's decision for each kind of Agent call.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan } from '../hooks/route.mjs'
+import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType } from '../hooks/route.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -128,6 +128,7 @@ check('the Opus ceiling (plain /route) offers Haiku up to Opus only', () => {
   const text = policyText(table, P, 'opus')
   assert.ok(!text.includes(`${P}:frontier`))
   assert.match(text, /fable is switched off/)
+  assert.match(text, /naming the fable type moves to model-router:long; a call with model fable keeps its own type and runs on opus/)
 })
 
 check('under the Opus ceiling a Fable call runs on Opus xhigh; under /route fable it stays', () => {
@@ -157,6 +158,22 @@ check('the host refuses the hidden frontier type, so a call naming it moves to t
   const sonnet = cap({ subagent_type: 'model-router:frontier', model: 'sonnet' })
   assert.deepEqual([sonnet.action, sonnet.tier, sonnet.model, sonnet.effort], ['capped', 'long', 'sonnet', 'xhigh'])
   assert.deepEqual(sonnet.set, { subagent_type: 'model-router:long' })
+  const low = cap({ subagent_type: 'model-router:frontier', model: 'sonnet', effort: 'low' })
+  assert.deepEqual([low.model, low.effort, low.set], ['sonnet', 'low', { subagent_type: 'model-router:long' }])
+})
+
+check('type names compare as the host matches them: case, spaces, dashes and underscores do not count', () => {
+  for (const type of ['Model-Router:Frontier', 'MODEL_ROUTER:FRONTIER', ' model router : frontier ', 'ｍodel-router:frontier']) {
+    const capped = capPlan(table, P, { subagent_type: type }, planAgentCall(table, P, { subagent_type: type }), 'opus')
+    assert.deepEqual([capped.action, capped.set], ['capped', { subagent_type: 'model-router:long', model: 'opus', effort: 'xhigh' }])
+  }
+  assert.equal(tierOfType(table, P, 'Model-Router:Deep'), 'deep')
+  assert.equal(tierOfType(table, P, 'explore'), 'quick')
+  assert.equal(tierOfType(table, P, 'model-router:nope'), '')
+  assert.equal(tierOfType(table, P, 'other-plugin:deep'), '')
+  assert.equal(planAgentCall(table, P, { subagent_type: 'Model-Router:Deep' }).action, 'typed')
+  assert.equal(planAgentCall(table, P, { subagent_type: 'General_Purpose' }).action, 'fill')
+  assert.equal(planAgentCall(table, P, { subagent_type: 'Fork' }).action, 'keep')
 })
 
 check('a capped call keeps the effort Claude set', () => {

@@ -42,6 +42,7 @@ function engine(on: any, seen: any[], agents: any[], tableText = JSON.stringify(
     seen.push(e)
     return { result: {} }
   })
+  return store
 }
 
 test('each tier is registered as an agent type with its model and effort', async ($, on) => {
@@ -134,10 +135,13 @@ test('the stored range is read at the start', async ($, on) => {
 
 test('a stored range the router does not know falls back to Opus', async ($, on) => {
   const seen: any[] = []
-  engine(on, seen, [], JSON.stringify(TABLE), { settings: { fill: true, ceiling: 'bogus' } })
+  const store = engine(on, seen, [], JSON.stringify(TABLE), { settings: { fill: true, ceiling: 'bogus' } })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'fable' })
   expect(seen[0].model).toBe('opus')
+  // The next save writes the fallback back, so the unknown range does not stay stored
+  await $.command.run({ command: 'route', args: 'fill on' })
+  expect(store.get('settings').ceiling).toBe('opus')
   expect((await $.agent.offer(offer('model-router:frontier'))).isOffered).toBe(false)
 })
 
@@ -170,4 +174,14 @@ test('/route fill off leaves every call as it came except the Opus cap', async (
   expect(String(status.text)).toContain('4 Agent calls (keep 3, capped 1)')
   const back = await $.command.run({ command: 'route', args: 'fill on' })
   expect(String(back.text)).toContain('safety net: on')
+})
+
+test('/route fill without on or off is not an option and changes nothing', async ($, on) => {
+  const seen: any[] = []
+  const store = engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const r = await $.command.run({ command: 'route', args: 'fill' })
+  expect(String(r.text)).toContain('Not an option: /route fill.')
+  expect(String(r.text)).toContain('safety net on')
+  expect(store.get('settings')).toBe(undefined)
 })
