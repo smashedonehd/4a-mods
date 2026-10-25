@@ -213,19 +213,17 @@ export function routableTiers(table) {
   return offeredTiers(table, 'opus')
 }
 
-// A type whose name says which model it runs on, hidden so a judge or router does not copy the choice
-const MODEL_TYPE = /^(haiku|sonnet|opus|fable)-(low|medium|high|xhigh|max)$/
-const HEAD = 9000
-const TAIL = 3000
-
-// What a router or judge sees of an Agent call: its type unless the type names a model, the description,
-// and the prompt cut to its head and tail
+// What a router or judge sees of an Agent call: its type, the description, and the prompt cut to its
+// head and tail. A type whose name says which model it runs on is hidden, so nobody copies that choice.
 export function blindView(table, plugin, e) {
   const type = String(e.subagent_type || '')
-  const hidden = !type || type === 'claude' || MODEL_TYPE.test(type) || hostName(type).startsWith(`${hostName(plugin)}:`)
+  const named = /^(haiku|sonnet|opus|fable)-(low|medium|high|xhigh|max)$/.test(type) || hostName(type).startsWith(`${hostName(plugin)}:`)
+  const hidden = !type || type === 'claude' || named
   const prompt = String(e.prompt || '')
-  const cut = prompt.length - HEAD - TAIL
-  const text = cut > 0 ? `${prompt.slice(0, HEAD)}\n[... ${cut} characters cut ...]\n${prompt.slice(-TAIL)}` : prompt
+  const head = 9000
+  const tail = 3000
+  const cut = prompt.length - head - tail
+  const text = cut > 0 ? `${prompt.slice(0, head)}\n[... ${cut} characters cut ...]\n${prompt.slice(-tail)}` : prompt
   return `Agent type: ${hidden ? 'general-purpose' : type}\nTask description: ${String(e.description || '')}\nTask prompt:\n${text}`
 }
 
@@ -316,5 +314,9 @@ export function routedPlan(table, plugin, e, tier) {
   return { action: 'routed', tier, model, effort, set }
 }
 
-// The functions whose source the policy hash covers (eval/hash.mjs)
-export const POLICY_CODE = [blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan]
+// The functions whose source the policy hash covers (eval/hash.mjs): the policy's own, and today's router,
+// which the `today` policy is and every policy falls back to
+export const POLICY_CODE = [
+  hostName, ownTier, tierOfType, planAgentCall, isFrontier, offeredTiers, capTier, capPlan,
+  routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
+]

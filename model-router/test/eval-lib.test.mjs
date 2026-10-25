@@ -1,0 +1,220 @@
+// Run: node model-router/test/eval-lib.test.mjs
+// Checks the eval's pure parts: the sample and its split, the judges' prompts and replies,
+// the metrics, the policy hash and today's router as a baseline. No model is called.
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions } from '../eval/lib.mjs'
+import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
+import { policyInputs, policyHash } from '../eval/hash.mjs'
+
+const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
+const P = 'model-router'
+let n = 0
+function check(name, fn) {
+  fn()
+  n++
+  console.log(`ok ${n} ${name}`)
+}
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`)
+
+check('rng is deterministic', () => {
+  const a = rng(20261025)
+  const b = rng(20261025)
+  const c = rng(1)
+  const first = [a(), a(), a(), a(), a()]
+  assert.deepEqual([b(), b(), b(), b(), b()], first)
+  assert.notDeepEqual([c(), c(), c(), c(), c()], first)
+  assert.ok(first.every((x) => x >= 0 && x < 1))
+})
+
+check('strata from descriptions', () => {
+  const s = (description, extra = {}) => stratumOf({ type: 'general-purpose', description, prompt: 'x', ...extra })
+  assert.equal(s('Review správnosti a bezpečnosti'), 'security')
+  assert.equal(s('Re-review fix round 1'), 'review')
+  assert.equal(s('Design dashboard architecture'), 'architecture')
+  assert.equal(s('Implement plan A Task 7'), 'implement')
+  assert.equal(s('Find Upgates Chrome addon'), 'search')
+  assert.equal(s('Visual read FV batch 7'), 'summarize')
+  assert.equal(s('Research WP site-building add-ons'), 'research')
+  assert.equal(s('Wrap-up + state'), 'other')
+  assert.equal(s('Wrap-up + state', { prompt: 'Look for a vulnerability in the login form' }), 'security')
+  assert.equal(stratumOf({ type: 'lisa-reviewer', description: 'PR 12', prompt: 'x' }), 'review')
+})
+
+const KINDS = { security: 'Security audit of', review: 'Review task', architecture: 'Design the architecture of', implement: 'Implement task', search: 'Find file', summarize: 'Summarize log', research: 'Research topic', other: 'Wrap-up' }
+function corpus(perStratum = 300, sessions = 60, only = {}) {
+  const calls = []
+  let i = 0
+  for (const [stratum, words] of Object.entries(KINDS)) {
+    const count = only[stratum] ?? perStratum
+    for (let k = 0; k < count; k++, i++) {
+      calls.push({ id: `c${i}`, session: `s${i % sessions}`, type: k % 3 ? 'general-purpose' : 'opus-medium', description: `${words} ${k}`, prompt: `Prompt for call number ${i}, long enough.` })
+    }
+  }
+  for (let k = 0; k < 10; k++) calls.push({ ...calls[k * 7], id: `dup${k}` })
+  for (let k = 0; k < 5; k++) calls.push({ id: `fork${k}`, session: 's1', type: 'fork', description: `Implement fork ${k}`, prompt: `A forked task number ${k}, long enough.` })
+  return calls
+}
+
+check('the sample is stratified, deduplicated and split 80/20 by session', () => {
+  const calls = corpus()
+  const sample = drawSample(calls)
+  assert.equal(sample.length, 400)
+  for (const [stratum, size] of Object.entries(STRATA)) {
+    const got = sample.filter((c) => c.stratum === stratum)
+    assert.equal(got.length, size, stratum)
+    assert.equal(got.filter((c) => c.split === 'heldout').length, size / 5, stratum)
+  }
+  assert.equal(sample.filter((c) => c.split === 'heldout').length, 80)
+  assert.ok(!sample.some((c) => c.type === 'fork' || c.id.startsWith('dup')))
+  assert.equal(new Set(sample.map((c) => `${c.description}\u0000${c.prompt.slice(0, 500)}`)).size, 400)
+  const held = new Set(sample.filter((c) => c.split === 'heldout').map((c) => c.session))
+  assert.ok(!sample.some((c) => c.split === 'train' && held.has(c.session)))
+  assert.deepEqual(drawSample(calls).map((c) => c.id), sample.map((c) => c.id))
+})
+
+check('a small stratum gives all it has and other takes the rest', () => {
+  const sample = drawSample(corpus(300, 60, { research: 3 }))
+  assert.equal(sample.length, 400)
+  assert.equal(sample.filter((c) => c.stratum === 'research').length, 3)
+  assert.equal(sample.filter((c) => c.stratum === 'other').length, STRATA.other + STRATA.research - 3)
+  assert.equal(sample.filter((c) => c.split === 'heldout').length, 80)
+})
+
+check('judges see the routable tiers, and the recommender sees both verdicts', () => {
+  const call = { type: 'opus-high', description: 'Review Task 3', prompt: 'Check the diff.' }
+  const a = judgeRequest(table, P, call, 'A')
+  const b = judgeRequest(table, P, call, 'B')
+  assert.deepEqual([a.model, a.effort], ['opus', 'high'])
+  for (const r of [a, b]) {
+    assert.ok(!/frontier|fable/i.test(r.system))
+    assert.match(r.prompt, /Agent type: general-purpose/)
+  }
+  assert.match(b.system, /one tier lower/)
+  assert.notEqual(a.system, b.system)
+  const r = judgeRequest(table, P, call, 'R', { A: { tier: 'standard', category: 'review', reason: 'ra' }, B: { tier: 'deep', category: 'review', reason: 'rb' } })
+  assert.match(r.prompt, /standard/)
+  assert.match(r.prompt, /rb/)
+})
+
+check('judge replies parse and disagreements follow the rule', () => {
+  assert.deepEqual(parseJudge(table, 'Thinking...\n{"category":"review","tier":"deep","reason":"A diff review."}'), { tier: 'deep', category: 'review', reason: 'A diff review.' })
+  assert.equal(parseJudge(table, '{"category":"review","tier":"frontier","reason":"x"}'), null)
+  assert.equal(parseJudge(table, 'no json'), null)
+  const v = (tier, category) => ({ tier, category, reason: '' })
+  assert.equal(disagrees(table, v('quick', 'search'), v('light', 'search')), true)
+  assert.equal(disagrees(table, v('deep', 'review'), v('deep', 'implement')), true)
+  assert.equal(disagrees(table, v('quick', 'search'), v('quick', 'summarize')), false)
+  assert.equal(disagrees(table, v('deep', 'review'), v('deep', 'security')), false)
+})
+
+check('tier costs follow the labelled assumption', () => {
+  const tiers = Object.fromEntries(['quick', 'light', 'standard', 'deep', 'long'].map((t) => [t, costOf(table, table.tiers[t].model, table.tiers[t].effort)]))
+  near(tiers.quick, 0.09)
+  near(tiers.light, 0.18)
+  near(tiers.standard, 3.6)
+  near(tiers.deep, 11.52)
+  near(tiers.long, 18)
+  assert.ok(rankOf(table, 'opus', 'medium') < rankOf(table, 'opus', 'high'))
+  assert.ok(rankOf(table, 'sonnet', 'max') < rankOf(table, 'opus', 'low'))
+})
+
+const gold5 = [
+  { id: 'a', tier: 'quick', category: 'search', stratum: 'search' },
+  { id: 'b', tier: 'standard', category: 'implement', stratum: 'implement' },
+  { id: 'c', tier: 'deep', category: 'review', stratum: 'review' },
+  { id: 'd', tier: 'deep', category: 'security', stratum: 'security' },
+  { id: 'e', tier: 'light', category: 'summarize', stratum: 'summarize' },
+]
+const dec5 = { a: 'quick', b: 'standard', c: 'standard', d: 'deep', e: 'standard' }
+
+check('score on a hand-built set', () => {
+  const m = score(table, gold5, dec5)
+  assert.equal(m.n, 5)
+  near(m.agreement, 0.6)
+  near(m.under, 0.2)
+  assert.equal(m.underCritical, 1)
+  near(m.costRatio, (0.09 + 3.6 + 3.6 + 11.52 + 3.6) / (0.09 + 3.6 + 11.52 + 11.52 + 0.18))
+  near(m.costOver, m.costRatio - 1)
+  assert.deepEqual(m.byCategory.review, { n: 1, agree: 0, under: 1 })
+  // A pair outside the tiers is never agreement; below the gold tier it is an underestimate
+  const opusMedium = { model: 'opus', effort: 'medium' }
+  const deep = score(table, [gold5[2]], { c: opusMedium })
+  assert.deepEqual([deep.agreement, deep.under, deep.underCritical], [0, 1, 1])
+  const standard = score(table, [gold5[1]], { b: opusMedium })
+  assert.deepEqual([standard.agreement, standard.under], [0, 0])
+  // Weights change the weighted rates, not the per-stratum counts
+  const w = score(table, gold5, dec5, { search: 2 })
+  assert.deepEqual(w.byStratum, m.byStratum)
+  near(w.agreement, 4 / 6)
+  assert.throws(() => score(table, gold5, { a: 'quick' }), /no decision/)
+})
+
+check('weights are corpus share over sample share', () => {
+  const corpusCalls = [...Array(9)].map(() => ({ stratum: 'review' })).concat([{ stratum: 'search' }])
+  const sample = [{ stratum: 'review' }, { stratum: 'search' }]
+  const w = weightsFor(corpusCalls, sample)
+  near(w.review, 0.9 / 0.5)
+  near(w.search, 0.1 / 0.5)
+})
+
+check('criteria name what is missed', () => {
+  assert.deepEqual(criteria(table, { agreement: 0.9, under: 0, underCritical: 1, costOver: 0.2 }), { pass: false, missed: ['agreement', 'underCritical', 'costOver'] })
+  assert.deepEqual(criteria(table, { agreement: 0.95, under: 0.01, underCritical: 0, costOver: 0.15 }), { pass: true, missed: [] })
+})
+
+check('kappa', () => {
+  assert.equal(kappa(['a', 'b', 'a'], ['a', 'b', 'a']), 1)
+  assert.ok(kappa(['a', 'b'], ['b', 'a']) < 0)
+})
+
+check('the policy hash covers the policy and nothing else', () => {
+  const h = policyHash(table)
+  assert.match(h, /^[0-9a-f]{64}$/)
+  assert.equal(policyHash(Object.fromEntries(Object.entries(table).reverse())), h)
+  const changed = [
+    { ...table, tiers: { ...table.tiers, quick: { ...table.tiers.quick, description: `${table.tiers.quick.description} More.` } } },
+    { ...table, rules: [{ ...table.rules[0], floor: 'long' }] },
+    { ...table, router: { ...table.router, model: 'sonnet' } },
+    { ...table, router: { ...table.router, jev: { ...table.router.jev, theta: 0.9 } } },
+    { ...table, categories: [...table.categories, 'poetry'] },
+  ]
+  for (const t of changed) assert.notEqual(policyHash(t), h)
+  const same = [
+    { ...table, router: { ...table.router, default: table.router.default === 'on' ? 'off' : 'on' } },
+    { ...table, costModel: { ...table.costModel, inputShare: 0.5 } },
+    { ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 1, out: 2 } } } },
+    { ...table, thresholds: { ...table.thresholds, agreement: 0.5 } },
+    { ...table, updated: '2030-01-01', sources: [] },
+  ]
+  for (const t of same) assert.equal(policyHash(t), h)
+  const code = policyInputs(table).code.join('\n')
+  assert.match(code, /function blindView/)
+  assert.match(code, /function applyRules/)
+  assert.match(code, /9000/)
+})
+
+check('a table with the descriptions of another', () => {
+  const other = { ...table, tiers: Object.fromEntries(Object.entries(table.tiers).map(([k, t]) => [k, { ...t, description: `old ${k}` }])) }
+  const t = withDescriptions(table, other)
+  assert.equal(t.tiers.deep.description, 'old deep')
+  assert.equal(t.tiers.deep.model, table.tiers.deep.model)
+  assert.equal(table.tiers.deep.description === 'old deep', false)
+})
+
+check("today's router on recorded calls", () => {
+  const defs = new Map([['opus-medium', { model: 'opus', effort: 'medium' }]])
+  const today = (call) => todayDecision(table, P, { parentModel: 'claude-opus-5-5', parentEffort: '', model: '', effort: '', ...call }, defs)
+  assert.deepEqual(today({ type: 'opus-medium' }), { model: 'opus', effort: 'medium' })
+  assert.deepEqual(today({ type: 'general-purpose', model: 'sonnet' }), { model: 'sonnet', effort: 'medium' })
+  assert.deepEqual(today({ type: 'general-purpose' }), { model: 'opus', effort: 'medium' })
+  assert.deepEqual(today({ type: '', model: 'fable' }), { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(today({ type: 'Explore' }), { model: 'haiku', effort: 'low' })
+  assert.deepEqual(today({ type: 'model-router:standard' }), { model: 'sonnet', effort: 'medium' })
+  assert.deepEqual(today({ type: 'mystery', parentModel: 'claude-opus-4-8' }), { model: 'opus', effort: 'medium' })
+  assert.deepEqual(today({ type: 'mystery', parentModel: 'claude-sonnet-5', parentEffort: 'high' }), { model: 'sonnet', effort: 'high' })
+  assert.equal(familyOf('claude-haiku-4-5-20251001'), 'haiku')
+  assert.equal(familyOf('inherit'), '')
+})
+
+console.log(`${n} checks passed`)
