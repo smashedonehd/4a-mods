@@ -35,6 +35,7 @@ export function score(table, gold, decisions, weights) {
   let agree = 0
   let under = 0
   let critical = 0
+  let criticalTotal = 0
   let cost = 0
   let goldCost = 0
   const byCategory = {}
@@ -49,14 +50,17 @@ export function score(table, gold, decisions, weights) {
     total += w
     if (ok) agree += w
     if (low) under += w
-    if (low && table.critical.includes(g.category)) critical += w
+    if (table.critical.includes(g.category)) {
+      criticalTotal += w
+      if (low) critical += w
+    }
     cost += w * costOf(table, d.model, d.effort)
     goldCost += w * costOf(table, want.model, want.effort)
     bump(byCategory, g.category, ok, low)
     bump(byStratum, g.stratum || 'all', ok, low)
   }
   const costRatio = cost / goldCost
-  return { n: gold.length, agreement: agree / total, under: under / total, underCritical: critical, costRatio, costOver: costRatio - 1, byCategory, byStratum }
+  return { n: gold.length, agreement: agree / total, under: under / total, underCritical: critical, underCriticalRate: criticalTotal ? critical / criticalTotal : 0, costRatio, costOver: costRatio - 1, byCategory, byStratum }
 }
 
 // How much each stratum stands for in the corpus against its share of the sample
@@ -72,13 +76,15 @@ export function weightsFor(corpus, sample) {
 }
 
 // Which thresholds the metrics miss. Agreement is reported, not gated: the two judges agree with
-// each other on only 92.7 % of calls, so exact agreement with gold has no meaningful ceiling.
+// each other on only 92.7 % of calls, so exact agreement with gold has no meaningful ceiling. For
+// the same reason under is 5 %, and underCritical is a share of the critical calls, also 5 %: either
+// Opus judge alone under-routes 2.5-5 % of all calls and up to 4.2 % of critical ones against gold.
 export function criteria(table, m) {
   const t = table.thresholds
   const eps = 1e-12
   const missed = []
   if (!(m.under <= t.under + eps)) missed.push('under')
-  if (!(m.underCritical <= t.underCritical + eps)) missed.push('underCritical')
+  if (!(m.underCriticalRate <= t.underCritical + eps)) missed.push('underCritical')
   if (!(m.costOver <= t.costOver + eps)) missed.push('costOver')
   return { pass: missed.length === 0, missed }
 }

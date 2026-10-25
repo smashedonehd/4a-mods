@@ -36,22 +36,22 @@
     "timeoutMs": 8000,
     "jev": { "model": "jev-1.13.0", "theta": 0.8 }
   },
-  "thresholds": { "under": 0.01, "underCritical": 0, "costOver": 0.15 },
+  "thresholds": { "under": 0.05, "underCritical": 0.05, "costOver": 0.15 },
   "tiers": {
     "quick": {
       "model": "haiku",
       "effort": "low",
-      "description": "Quick lookups: find, list, grep or read something, check a fact in files or docs. A short, read-only answer."
+      "description": "Quick lookups: find, list, grep or read something, check one fact in files or docs. A short, read-only answer; mapping how several parts connect is standard work."
     },
     "light": {
       "model": "haiku",
       "effort": "medium",
-      "description": "Light work: summarize, extract, classify or translate; sweep many files and report; a small mechanical edit such as a rename or a version bump."
+      "description": "Light work on plain text: summarize, classify or translate; sweep many files and report; a small mechanical edit such as a rename or a version bump."
     },
     "standard": {
       "model": "sonnet",
       "effort": "medium",
-      "description": "Well-specified coding: implement a clear change, write or fix tests, fix an ordinary bug, write docs, web research with a synthesis."
+      "description": "Well-specified work: implement a clear change, write or fix tests, fix an ordinary bug, write docs; web research with a synthesis; map how code fits together across files; read scanned PDFs or images, or extract exact figures such as invoices."
     },
     "deep": {
       "model": "opus",

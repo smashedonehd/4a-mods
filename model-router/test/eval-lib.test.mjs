@@ -140,6 +140,7 @@ check('score on a hand-built set', () => {
   near(m.agreement, 0.6)
   near(m.under, 0.2)
   assert.equal(m.underCritical, 1)
+  near(m.underCriticalRate, 0.5)
   near(m.costRatio, (0.09 + 3.6 + 3.6 + 11.52 + 3.6) / (0.09 + 3.6 + 11.52 + 11.52 + 0.18))
   near(m.costOver, m.costRatio - 1)
   assert.deepEqual(m.byCategory.review, { n: 1, agree: 0, under: 1 })
@@ -165,8 +166,9 @@ check('weights are corpus share over sample share', () => {
 })
 
 check('criteria name what is missed', () => {
-  assert.deepEqual(criteria(table, { agreement: 0.9, under: 0, underCritical: 1, costOver: 0.2 }), { pass: false, missed: ['underCritical', 'costOver'] })
-  assert.deepEqual(criteria(table, { agreement: 0.1, under: 0.01, underCritical: 0, costOver: 0.15 }), { pass: true, missed: [] })
+  assert.deepEqual(criteria(table, { agreement: 0.9, under: 0, underCriticalRate: 0.06, costOver: 0.2 }), { pass: false, missed: ['underCritical', 'costOver'] })
+  assert.deepEqual(criteria(table, { agreement: 0.1, under: 0.05, underCriticalRate: 0.05, costOver: 0.15 }), { pass: true, missed: [] })
+  assert.deepEqual(criteria(table, { agreement: 1, under: 0.06, underCriticalRate: 0, costOver: 0 }), { pass: false, missed: ['under'] })
 })
 
 check('kappa', () => {

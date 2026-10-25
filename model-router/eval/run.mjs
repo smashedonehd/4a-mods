@@ -171,7 +171,7 @@ function report(table, gold, res, sample) {
   const w = score(table, gold, res.decisions, weightsFor(corpus, sample))
   const c = criteria(table, m)
   const pct = (x) => `${(x * 100).toFixed(1)} %`
-  console.log(`\nn ${m.n}  agreement ${pct(m.agreement)}  under ${pct(m.under)}  underCritical ${m.underCritical}  cost vs gold ${m.costRatio.toFixed(3)} (${pct(m.costOver)} over)`)
+  console.log(`\nn ${m.n}  agreement ${pct(m.agreement)}  under ${pct(m.under)}  underCritical ${m.underCritical} (${pct(m.underCriticalRate)})  cost vs gold ${m.costRatio.toFixed(3)} (${pct(m.costOver)} over)`)
   console.log(`weighted to the corpus: agreement ${pct(w.agreement)}  under ${pct(w.under)}  cost vs gold ${w.costRatio.toFixed(3)}`)
   console.log(`criteria: ${c.pass ? 'PASS' : `miss ${c.missed.join(', ')}`}`)
   console.log(`by stratum: ${Object.entries(m.byStratum).map(([k, x]) => `${k} ${x.agree}/${x.n} (under ${x.under})`).join(', ')}`)
