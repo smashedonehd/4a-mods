@@ -150,6 +150,9 @@ const H = {
   // ran since, so that handoff is out of date
   clearDue: false,
   refreshed: false, // the due clear already wrote one fresh handoff of its own
+  // the band's handoff, queued behind the running turn, which Claude's own
+  // skill call in that turn took over: the queued one still runs, as the next turn
+  another: false,
 }
 
 // Soft landing: a handoff asked for while Claude works waits for the turn to
@@ -246,11 +249,15 @@ async function settleHold($) {
 // Armed again inside the turn the arm is for (the skill called twice in it), or
 // the one the band's handoff queued behind, the arm keeps a clear it already
 // had and the handoff this turn already wrote. Until its capture, an arm with
-// no notTurn is for the running turn.
+// no notTurn is for the running turn. The band's handoff taken over this way is
+// still queued: the engine runs it once this turn ends (see H.another).
 function armHandoff(insideTurn, after = 'none') {
-  const again = insideTurn && H.armed && (H.notTurn === '' || H.notTurn === S.turnId)
+  const live = insideTurn && H.armed
+  const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
+  const again = live && (H.notTurn === '' || queued)
   if (!(again && H.after === 'clear')) H.after = after
   if (!again) H.draft = ''
+  H.another = queued || (again && H.another)
   H.armed = true
   H.notTurn = insideTurn ? '' : S.working ? S.turnId : ''
 }
@@ -391,11 +398,27 @@ async function captureHandoff($, e) {
   H.after = 'none'
   // An interrupted turn keeps its handoff, but nothing follows on its own
   const ended = e.reason === 'answer'
+  // The band's handoff this turn took over still runs, as the next turn, if
+  // this turn ended on its own (an interrupt may drop the engine's queue).
+  // That turn is the handoff's too: what it writes replaces this turn's, and
+  // its capture decides what follows. Armed now, before any await: its
+  // turn.start may already have come.
+  const another = ended && H.another
+  H.another = false
   // The final answer counts when no step of the turn held a handoff
   const body = H.draft || (ended ? handoffBody(e.answer) : '')
+  if (another) {
+    H.armed = true
+    H.after = after
+    H.draft = ''
+  }
   // An answer that is no handoff (a reply after a Stop hook, an ordinary turn
   // a leftover arm caught) never replaces a saved handoff
   if (!isHandoff(body)) {
+    if (another) {
+      $.ui.toast('The handoff turn ended without a handoff. The queued handoff still runs next.', { timeoutMs: 8000 })
+      return
+    }
     // A clear an earlier handoff made due still happens, with that handoff,
     // unless a turn since made it out of date
     if (H.clearDue === true) {
@@ -409,9 +432,13 @@ async function captureHandoff($, e) {
     return
   }
   const clearing = ended && after === 'clear'
+  // A turn other than a handoff's own began over this hook (one the hold could
+  // not stop): what it does is not in this handoff. The queued handoff's turn,
+  // re-armed above, is a handoff's own, as turn.start counts it.
+  const overrun = clearing && S.working && !isHandoffTurn(S.turnId)
   // Set before the first await: the hold must not lapse while the files are
   // written. A later /handoff decides too: one that only asks ends the hold.
-  H.clearDue = clearing
+  H.clearDue = overrun ? 'stale' : clearing
   H.text = body
   H.fromDisk = false
   H.at = now
@@ -420,15 +447,22 @@ async function captureHandoff($, e) {
   H.fid = saved.fid
   const where = saved.path ? `Handoff saved to ${saved.path}.` : 'Handoff captured (the backup file could not be written).'
   const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
+  const lead = where + lost
+  if (another) {
+    // This turn's handoff is saved; the queued one runs next and decides what follows
+    $.ui.toast(`${lead} The queued handoff still runs next${clearing ? ', and the chat then clears and continues with it' : ''}.`, { timeoutMs: 8000 })
+    return
+  }
   if (clearing) {
-    // Off the hook too: /clear must not run inside the ending turn
-    $.ui.toast(`${where}${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
+    // Off the hook too: /clear must not run inside the ending turn. Overrun, the
+    // scheduled run waits for that turn, then writes a fresh handoff (refreshHandoff)
+    $.ui.toast(`${lead} ${overrun ? 'Claude works on, so the chat clears with a fresh handoff once this turn ends.' : 'Clearing this chat and continuing with it.'}`, { timeoutMs: 8000 })
     clearAndContinueLater($, 300, true)
     return
   }
   // Nothing clears: what was held while the handoff ran goes on in this chat
   await settleHold($)
-  $.ui.toast(`${where}${lost} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
+  $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
   // Off the hook: the turn is ending, and a dialog would hold it open. The
   // Desktop app shows no dialog asked between turns, so there the band's
   // "clear and continue" button is the way on.
@@ -633,9 +667,15 @@ async function runHandoff($, after = 'none') {
     $.ui.toast(S.working ? 'Session handoff queued: it runs when Claude finishes this turn.' : 'Running /session-handoff.')
     await $.command.run({ command: cmd.name, args: '' })
   } catch (err) {
-    H.armed = false
+    // Taken over by Claude's own skill call in the running turn, the arm is
+    // that turn's now, and no queued turn follows it
+    if (H.another) H.another = false
+    else H.armed = false
     $.ui.toast('Could not start /session-handoff: ' + clip(String((err && err.message) || err), 100), { timeoutMs: 8000 })
-    await settleHold($)
+    // A clear made due before (a second handoff while it waited, or the
+    // queued turn this chat re-armed for) still happens, with the handoff it has
+    if (H.clearDue === true && !S.working && !H.armed) clearAndContinueLater($, 300, true)
+    else await settleHold($)
   } finally {
     handoffPending = false
     $.ui.invalidate('ui.render')
@@ -812,7 +852,7 @@ function deskBand($, e, els, { st, ttl, big }) {
   // anyway. One loaded from an earlier chat stays for hours: it goes beside the
   // pair, which this chat still needs for a handoff of its own.
   const cont = (H.text || H.continuing) && Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, onPress: () => clearAndContinue($) })
-  const own = cont && !H.fromDisk
+  const own = cont && !H.fromDisk && !handoffInFlight()
   let handoff
   if (own) handoff = cont
   else {
@@ -1260,7 +1300,7 @@ export function register(on) {
     if (e.agentId) return next(e)
     now = await $.clock.now()
     S.working = true
-    if (e.turnId) S.turnId = e.turnId
+    S.turnId = e.turnId || ''
     // A turn other than a handoff's own, before the due clear: what it does is
     // not in the handoff the chat would clear with
     if (H.clearDue && !isHandoffTurn(S.turnId)) H.clearDue = 'stale'
@@ -1310,9 +1350,14 @@ export function register(on) {
     const r = await next(e)
     if (e.agentId) return r
     now = await $.clock.now()
-    S.working = false
+    // The next turn may have started while this hook waited: the chat is
+    // still working then, and that turn's own end makes it idle
+    const overlapped = e.turnId && S.turnId && S.turnId !== e.turnId
+    if (!overlapped) {
+      S.working = false
+      S.tool = ''
+    }
     S.waitingSince = 0
-    S.tool = ''
     S.lastTurnEnd = now
     try {
       const usage = await $.session.usage()
