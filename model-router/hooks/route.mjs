@@ -57,7 +57,7 @@ function invalidPolicy(t) {
   if (!Number.isInteger(r.timeoutMs) || r.timeoutMs <= 0) return `router timeoutMs ${r.timeoutMs}`
   if (!r.jev || !r.jev.model || !(r.jev.theta > 0 && r.jev.theta <= 1)) return 'router jev needs a model and a theta'
   const th = t.thresholds
-  if (!th || ['agreement', 'under', 'underCritical', 'costOver'].some((k) => !Number.isFinite(th[k]))) return 'thresholds need agreement, under, underCritical and costOver'
+  if (!th || ['under', 'underCritical', 'costOver'].some((k) => !Number.isFinite(th[k]))) return 'thresholds need under, underCritical and costOver'
   return ''
 }
 

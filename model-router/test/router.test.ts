@@ -15,7 +15,7 @@ const TABLE = {
   critical: ['review', 'security', 'architecture'],
   rules: [{ floor: 'deep', categories: ['review', 'security', 'architecture'], match: '\\breview' }],
   router: { policy: 'text', default: 'off', model: 'haiku', effort: 'low', timeoutMs: 8000, jev: { model: 'jev-1.13.0', theta: 0.8 } },
-  thresholds: { agreement: 0.95, under: 0.01, underCritical: 0, costOver: 0.15 },
+  thresholds: { under: 0.01, underCritical: 0, costOver: 0.15 },
   tiers: {
     quick: { model: 'haiku', effort: 'low', description: 'Quick lookups and other read-only answers.' },
     deep: { model: 'opus', effort: 'high', description: 'Hard engineering, architecture and reviews.' },

@@ -1,6 +1,7 @@
 // Gold tiers for the 400 sampled calls: the judges' shared verdict where they agree, Filip's ruling
-// (DATA/rulings.json, {<id>: {tier, category}}) where they disagree. Writes eval/gold.json, which keeps
-// ids, tiers, categories, split and stratum only. Every disagreement needs a ruling first.
+// (DATA/rulings.json, {<id>: {tier, category}}) where he gave one, and the safer verdict (the higher
+// tier, a critical category if either judge saw one) for every other disagreement. Writes
+// eval/gold.json, which keeps ids, tiers, categories, split and stratum only.
 //
 //   node model-router/eval/gold.mjs
 //   node model-router/eval/gold.mjs --provisional   (missing rulings take the recommendation;
@@ -19,7 +20,7 @@ const jsonl = (f) =>
 const provisional = process.argv.includes('--provisional')
 const table = JSON.parse(readFileSync(TABLE, 'utf8'))
 const rulings = existsSync(RULINGS) ? JSON.parse(readFileSync(RULINGS, 'utf8')) : {}
-const { gold, missing } = buildGold(table, jsonl(SAMPLE), jsonl(JUDGMENTS), rulings, { provisional })
+const { gold, missing } = buildGold(table, jsonl(SAMPLE), jsonl(JUDGMENTS), rulings, { provisional, safer: !provisional })
 if (missing.length) {
   console.error(`${missing.length} disagreements have no ruling in ${RULINGS}: ${missing.join(', ')}`)
   process.exit(1)

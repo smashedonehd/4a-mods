@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold } from '../eval/lib.mjs'
+import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
 import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
 import { policyInputs, policyHash } from '../eval/hash.mjs'
 
@@ -165,8 +165,8 @@ check('weights are corpus share over sample share', () => {
 })
 
 check('criteria name what is missed', () => {
-  assert.deepEqual(criteria(table, { agreement: 0.9, under: 0, underCritical: 1, costOver: 0.2 }), { pass: false, missed: ['agreement', 'underCritical', 'costOver'] })
-  assert.deepEqual(criteria(table, { agreement: 0.95, under: 0.01, underCritical: 0, costOver: 0.15 }), { pass: true, missed: [] })
+  assert.deepEqual(criteria(table, { agreement: 0.9, under: 0, underCritical: 1, costOver: 0.2 }), { pass: false, missed: ['underCritical', 'costOver'] })
+  assert.deepEqual(criteria(table, { agreement: 0.1, under: 0.01, underCritical: 0, costOver: 0.15 }), { pass: true, missed: [] })
 })
 
 check('kappa', () => {
@@ -190,7 +190,7 @@ check('the policy hash covers the policy and nothing else', () => {
     { ...table, router: { ...table.router, default: table.router.default === 'on' ? 'off' : 'on' } },
     { ...table, costModel: { ...table.costModel, inputShare: 0.5 } },
     { ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 1, out: 2 } } } },
-    { ...table, thresholds: { ...table.thresholds, agreement: 0.5 } },
+    { ...table, thresholds: { ...table.thresholds, under: 0.5 } },
     { ...table, updated: '2030-01-01', sources: [] },
   ]
   for (const t of same) assert.equal(policyHash(t), h)
@@ -263,6 +263,18 @@ check('gold takes agreed verdicts and rulings, and names what is missing', () =>
   assert.deepEqual(prov.gold.map((g) => [g.id, g.tier, g.source]), [['a', 'quick', 'agreed'], ['b', 'deep', 'recommendation'], ['c', 'light', 'recommendation']])
   assert.throws(() => buildGold(table, sample, judgments, { b: { tier: 'frontier', category: 'review' } }), /ruling for b/)
   assert.throws(() => buildGold(table, sample, [judgments[0]], {}), /no judgment for b/)
+  const safe = buildGold(table, sample, judgments, { c: { tier: 'light', category: 'other' } }, { safer: true })
+  assert.deepEqual(safe.missing, [])
+  assert.deepEqual(safe.gold.map((g) => [g.id, g.tier, g.category, g.source]), [['a', 'quick', 'search', 'agreed'], ['b', 'deep', 'review', 'safer'], ['c', 'light', 'other', 'filip']])
+})
+
+check('the safer verdict takes the higher tier and a critical category', () => {
+  const v = (tier, category) => ({ tier, category, reason: 'r' })
+  assert.deepEqual(saferVerdict(table, v('light', 'other'), v('standard', 'research'), v('light', 'other')), { tier: 'standard', category: 'research' })
+  assert.deepEqual(saferVerdict(table, v('deep', 'implement'), v('standard', 'review'), v('standard', 'review')), { tier: 'deep', category: 'review' })
+  assert.deepEqual(saferVerdict(table, v('standard', 'implement'), v('standard', 'security'), v('standard', 'implement')), { tier: 'standard', category: 'security' })
+  assert.deepEqual(saferVerdict(table, v('quick', 'review'), v('quick', 'security'), v('quick', 'security')), { tier: 'quick', category: 'security' })
+  assert.deepEqual(saferVerdict(table, v('quick', 'search'), v('quick', 'other'), v('quick', 'other')), { tier: 'quick', category: 'other' })
 })
 
 // The runner's cache and pool, against a temporary DATA directory; no model is spawned

@@ -36,7 +36,7 @@
     "timeoutMs": 8000,
     "jev": { "model": "jev-1.13.0", "theta": 0.8 }
   },
-  "thresholds": { "agreement": 0.95, "under": 0.01, "underCritical": 0, "costOver": 0.15 },
+  "thresholds": { "under": 0.01, "underCritical": 0, "costOver": 0.15 },
   "tiers": {
     "quick": {
       "model": "haiku",

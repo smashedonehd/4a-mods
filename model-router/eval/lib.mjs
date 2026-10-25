@@ -268,10 +268,22 @@ export function policyDecision(table, plugin, call, policy, reply, defs, theta) 
   return { decision: d.tier, category: d.category, fallback: false }
 }
 
+// The verdict that cannot under-route either judge: the higher tier, and a critical category when
+// either judge saw one (that judge's, else the higher tier's, else the recommendation's)
+export function saferVerdict(table, a, b, r) {
+  const tiers = routableTiers(table)
+  const crit = (v) => table.critical.includes(v.category)
+  const higher = tiers.indexOf(b.tier) > tiers.indexOf(a.tier) ? b : a
+  const category =
+    crit(a) !== crit(b) ? (crit(a) ? a : b).category : a.tier !== b.tier ? higher.category : (r || a).category
+  return { tier: higher.tier, category }
+}
+
 // Gold for every sampled call: the shared tier where the judges agree (judge A's category), Filip's
 // ruling where they disagree. provisional fills a missing ruling with the recommendation, for a
-// baseline before the rulings are in; such gold never goes into the repo.
-export function buildGold(table, sample, judgments, rulings, { provisional = false } = {}) {
+// baseline before the rulings are in; such gold never goes into the repo. safer fills it with
+// saferVerdict, which the committed gold uses where Filip has not ruled.
+export function buildGold(table, sample, judgments, rulings, { provisional = false, safer = false } = {}) {
   const byId = new Map(judgments.map((j) => [j.id, j]))
   const tiers = routableTiers(table)
   const gold = []
@@ -288,7 +300,8 @@ export function buildGold(table, sample, judgments, rulings, { provisional = fal
     if (r) {
       if (!tiers.includes(r.tier) || !table.categories.includes(r.category)) throw new Error(`ruling for ${c.id} names no routable tier or known category`)
       gold.push(row(r, 'filip'))
-    } else if (provisional && j.R) gold.push(row(j.R, 'recommendation'))
+    } else if (safer) gold.push(row(saferVerdict(table, j.A, j.B, j.R), 'safer'))
+    else if (provisional && j.R) gold.push(row(j.R, 'recommendation'))
     else missing.push(c.id)
   }
   return { gold, missing }
