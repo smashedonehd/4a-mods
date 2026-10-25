@@ -65,7 +65,10 @@ check('Czech prompts are never read: "Proveď" and "Dokážeš" no longer reach 
 check('a model and effort Claude set, or an effort alone, is kept', () => {
   assert.equal(planAgentCall(table, P, { model: 'sonnet', effort: 'high', prompt: 'x' }).action, 'keep')
   assert.equal(planAgentCall(table, P, { effort: 'high', prompt: 'x' }).action, 'keep')
-  assert.equal(planAgentCall(table, P, { subagent_type: 'model-router:quick', model: 'opus' }).set, undefined)
+  const typed = planAgentCall(table, P, { subagent_type: 'model-router:quick', model: 'opus' })
+  assert.deepEqual([typed.action, typed.tier, typed.set], ['keep', '', undefined])
+  const frontier = capPlan(table, planAgentCall(table, P, { subagent_type: 'model-router:frontier', model: 'sonnet' }), 'opus')
+  assert.deepEqual([frontier.action, frontier.model, frontier.set], ['keep', 'sonnet', undefined])
 })
 
 check('a model Claude set without an effort runs at the effort of that model\'s first tier', () => {
