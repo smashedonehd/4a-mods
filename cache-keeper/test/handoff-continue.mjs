@@ -953,14 +953,19 @@ assert.equal(latestText('rc3'), body)
 // skill still runs, as the next turn. That turn is the handoff's too: the chat
 // does not clear before it, no third handoff runs, and its rewrite is the one sent
 timers = []
-s = await boot('/w/band-then-skill-queued', 'rd1', { working: true, timers })
+s = await boot('/w/band-then-skill-queued', 'rd1', { working: true, timers, select: true })
 await s.press('handoff')
 await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+await s.step('busy', body)
+await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
 assert.equal(latestText('rd1'), body)
+assert.ok(!s.log.some((l) => l.includes('Clearing this chat')))
 await runTimers(timers)
 assert.ok(!cleared(s))
 await s.fire('turn.start', { turnId: 't2' })
+// the desktop band shows the second handoff running, not "clear and continue"
+await s.render('desktop')
+assert.equal(s.buttons.get('handoff').label, 'handoff running')
 res = await s.fire('prompt.submit', { text: 'typed over the second', origin: { kind: 'composer' }, wait: false })
 assert.ok(res && res.drop)
 await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
@@ -976,7 +981,7 @@ await s.press('handoff')
 await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
 await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
 await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'aborted', turnId: 't2' })
+await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 await runTimers(timers)
 assert.ok(cleared(s))
 assert.ok(!s.log.includes('run:' + SKILL))
@@ -997,6 +1002,99 @@ await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.ok(!s.log.some((l) => l.includes('nothing was saved')))
 assert.equal(latestText('rd2b'), body)
 
+// busy itself ended without a handoff: the queued one still runs next, and
+// its handoff is the one the chat clears with
+s = await boot('/w/band-then-skill-plain', 'rd2c', { working: true, timers })
+await s.press('handoff')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.end({ reason: 'answer', answer: plain, turnId: 'busy' })
+assert.ok(!s.log.some((l) => l.includes('nothing was saved')))
+await runTimers(timers)
+assert.ok(!cleared(s))
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
+
+// the skill called twice in busy after the takeover (another Stop hook
+// blocked): the queued turn is still waited for
+s = await boot('/w/band-then-skill-twice', 'rd2d', { working: true, timers })
+await s.press('handoff')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.step('busy', body)
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
+
+// the chat is cleared by hand after the takeover: the new chat's first handoff
+// waits for no queued turn
+s = await boot('/w/band-then-skill-hand-clear', 'rd2e', { working: true, timers })
+await s.press('handoff')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.fire('classic.SessionStart', { source: 'clear' })
+await s.end({ reason: 'answer', answer: plain, turnId: 'busy' })
+await s.run(SKILL)
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+assert.ok(!s.log.some((l) => l.includes('queued handoff')))
+assert.equal(latestText('rd2e'), body)
+
+// The band's command is refused by the engine (past a Stop, say) only later:
+// refuse() rejects its run
+let refuse
+const refusable = (c) => (c.command.includes('session-handoff') ? new Promise((_, rej) => (refuse = rej)) : undefined)
+// The band pressed while its run stays pending: press() would wait for it
+const pressPending = async (s) => {
+  await s.step()
+  await s.render()
+  void s.buttons.get('handoff').onPress()
+  await settle()
+}
+// refused once busy's capture re-armed for it: no queued turn comes, so the
+// chat clears with busy's handoff instead of holding every prompt for good
+s = await boot('/w/band-then-skill-refused', 'rd5', { working: true, timers, onRun: refusable })
+await pressPending(s)
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+await runTimers(timers)
+assert.ok(!cleared(s))
+refuse(new Error('engine busy'))
+await settle()
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// refused while busy still runs: the arm is the skill call's now, so busy's
+// handoff is captured and the chat clears with it, as with no band press
+s = await boot('/w/band-then-skill-refused-early', 'rd5b', { working: true, timers, onRun: refusable })
+await pressPending(s)
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
+refuse(new Error('engine busy'))
+await settle()
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+await runTimers(timers)
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+// and a later handoff of this chat waits for no queued turn
+s = await boot('/w/band-then-skill-refused-later', 'rd5c', { working: true, timers, onRun: refusable })
+await pressPending(s)
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+refuse(new Error('engine busy'))
+await settle()
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+await runTimers(timers)
+await s.run(SKILL)
+await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
+await runTimers(timers)
+assert.ok(!s.log.some((l) => l.includes('queued handoff')))
+assert.equal(latestText('rd5c'), fresh)
+
 // the next turn starts while the handoff turn's turn.complete still runs (a
 // command passed the hold): the chat stays working, the clear waits for that
 // turn instead of being queued into it, and its handoff is out of date by then
@@ -1008,6 +1106,7 @@ const ending = s.fire('turn.complete', { reason: 'answer', answer: body, turnId:
 await s.fire('turn.start', { turnId: 't2' })
 await ending
 await settle()
+assert.ok(!s.log.some((l) => l.includes('Clearing this chat and continuing with it')))
 await runTimers(timers)
 assert.ok(!cleared(s))
 assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
@@ -1019,9 +1118,20 @@ assert.ok(s.log.some((l) => l.includes('out of date')))
 assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
 
 // a turn.complete without a turn id still ends the turn
-s = await boot('/w/end-no-id', 'rd4', { working: true })
+s = await boot('/w/end-no-id', 'rd4')
+await s.run(SKILL)
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', { turnId: 't2' })
 await s.fire('turn.complete', { reason: 'answer', answer: plain })
-assert.ok(!/still working/.test((await s.run(SKILL, 'continue')).text))
+assert.match((await s.run(SKILL, 'continue')).text, /Clearing this chat/)
+// so does one after a turn.start without one
+s = await boot('/w/start-no-id', 'rd4b')
+await s.run(SKILL)
+await s.fire('turn.start', { turnId: 't1' })
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await s.fire('turn.start', {})
+await s.fire('turn.complete', { reason: 'answer', answer: plain, turnId: 't2' })
+assert.match((await s.run(SKILL, 'continue')).text, /Clearing this chat/)
 
 // Soft landing. What the module answers to a batch of tools, the hooks under
 // it having answered `below`
