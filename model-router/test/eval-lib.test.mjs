@@ -337,6 +337,8 @@ check('the safer verdict takes the higher tier and a critical category', () => {
 const tmp = mkdtempSync(join(tmpdir(), 'mr-eval-test-'))
 process.env.MODEL_ROUTER_EVAL_DATA = tmp
 const { cached, pool } = await import('../eval/claude.mjs')
+// io.mjs imports paths.mjs, so it too loads only after MODEL_ROUTER_EVAL_DATA points at tmp
+const { readJsonl } = await import('../eval/io.mjs')
 
 {
   let inFlight = 0
@@ -452,5 +454,14 @@ rmSync(tmp, { recursive: true, force: true })
 
   rmSync(tmp2, { recursive: true, force: true })
 }
+
+check('readJsonl throws on a cut data line, a lenient cache read skips it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mr-io-'))
+  const f = join(dir, 'x.jsonl')
+  writeFileSync(f, '{"a":1}\n\n{"a":2\n')
+  assert.throws(() => readJsonl(f), /x\.jsonl:3:/)
+  assert.deepEqual(readJsonl(f, { lenient: true }), [{ a: 1 }])
+  rmSync(dir, { recursive: true, force: true })
+})
 
 console.log(`${n} checks passed`)

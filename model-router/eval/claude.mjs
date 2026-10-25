@@ -83,7 +83,7 @@ function cacheOf(name) {
   if (caches.has(name)) return caches.get(name)
   const file = join(CACHE_DIR, `${name}.jsonl`)
   // A line cut by a crashed run is skipped; its request runs again
-  const map = new Map(existsSync(file) ? readJsonl(file).map((row) => [row.key, row.value]) : [])
+  const map = new Map(existsSync(file) ? readJsonl(file, { lenient: true }).map((row) => [row.key, row.value]) : [])
   const c = { file, map }
   caches.set(name, c)
   return c

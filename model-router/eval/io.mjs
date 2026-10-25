@@ -3,17 +3,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { TABLE } from './paths.mjs'
 
-// One value per line; a blank line, or a line cut by a crashed run, is skipped
-export function readJsonl(f) {
+// One value per line; a blank line is skipped. A line that does not parse throws, because a cut
+// data file would score a different sample; only a cache passes lenient, where a line cut by a
+// crashed run is a miss
+export function readJsonl(f, { lenient = false } = {}) {
   const out = []
-  for (const line of readFileSync(f, 'utf8').split('\n')) {
-    if (!line.trim()) continue
+  readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+    if (!line.trim()) return
     try {
       out.push(JSON.parse(line))
-    } catch {
-      // cut by a crashed run
+    } catch (e) {
+      if (!lenient) throw new Error(`${f}:${i + 1}: ${e.message}`)
     }
-  }
+  })
   return out
 }
 
