@@ -33,9 +33,9 @@ for (const split of ['train', 'heldout']) {
 }
 const re = new RegExp(table.rules[0].match, 'iu')
 const sample = new Map(jsonl(SAMPLE).map((r) => [r.id, r]))
-const crit = gold.filter((g) => g.split === 'heldout' && table.critical.includes(g.category))
+const crit = gold.filter((g) => g.split === 'train' && table.critical.includes(g.category))
 const unmatched = crit.filter((g) => !re.test(`${sample.get(g.id).type || ''} ${sample.get(g.id).description || ''}`)).length
-console.log(`held-out critical ${crit.length}, of them not caught by rules[0].match ${unmatched}`)
+console.log(`train critical ${crit.length}, of them not caught by rules[0].match ${unmatched}`)
 
 const out = provisional ? join(DATA, 'gold-provisional.json') : GOLD
 writeFileSync(out, JSON.stringify(gold, null, 1) + '\n')

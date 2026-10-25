@@ -2,7 +2,7 @@
 // Checks the shipped routing.json and the router's decision for each kind of Agent call.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType, routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan } from '../hooks/route.mjs'
+import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType, routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan, routesCall, policyTier } from '../hooks/route.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -218,7 +218,10 @@ check('the shipped table is schema 3 and valid', () => {
   assert.match(invalidTable({ ...table, router: { ...table.router, model: 'gpt' } }), /router model/)
   assert.match(invalidTable({ ...table, critical: ['nope'] }), /critical/)
   assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], floor: 'ultra' }] }), /floor/)
+  assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], floor: table.frontier }] }), /floor/)
   assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: '(' }] }), /match/)
+  assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: '' }] }), /match/)
+  assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: 123 }] }), /match/)
   assert.match(invalidTable({ ...table, costModel: { ...table.costModel, effort: { low: 1 } } }), /costModel/)
   assert.match(invalidTable({ ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 'x', out: 1 } } } }), /price/)
 })
@@ -258,6 +261,9 @@ check('router replies parse strictly', () => {
     assert.equal(parseRouterReply(table, text), null)
   }
   assert.deepEqual(parseRouterReply(table, '{"category":"poetry","tier":"light"}'), { tier: 'light', category: 'other' })
+  // A stray or nested brace before the answer must not keep it from being found
+  assert.deepEqual(parseRouterReply(table, 'Considering {scope}… {"category":"review","tier":"deep"}'), { tier: 'deep', category: 'review' })
+  assert.deepEqual(parseRouterReply(table, 'Draft {"tier": "ultra"} then {"category": "search", "tier": "light"}'), { tier: 'light', category: 'search' })
 })
 
 check('rules raise review, security and architecture to the floor', () => {
@@ -293,6 +299,27 @@ check('a routed plan sets model and effort, and moves only our own type', () => 
   })
   assert.deepEqual(routedPlan(table, P, { subagent_type: 'irene-reviewer' }, 'standard').set, { model: 'sonnet', effort: 'medium' })
   assert.deepEqual(routedPlan(table, P, {}, 'quick').set, { model: 'haiku', effort: 'low' })
+})
+
+check('routesCall is false for today, for a fork, and for the frontier type under /route fable', () => {
+  assert.equal(routesCall(table, P, { subagent_type: 'general-purpose' }, 'opus'), true)
+  assert.equal(routesCall({ ...table, router: { ...table.router, policy: 'today' } }, P, { subagent_type: 'general-purpose' }, 'opus'), false)
+  assert.equal(routesCall(table, P, { subagent_type: 'fork' }, 'opus'), false)
+  assert.equal(routesCall(table, P, { subagent_type: 'model-router:frontier' }, 'fable'), false)
+  assert.equal(routesCall(table, P, { subagent_type: 'model-router:deep' }, 'fable'), true)
+})
+
+check('policyTier reads a jev reply or a router reply by the table\'s policy, and today never routes', () => {
+  const e = { description: 'Review Task 3' }
+  const jevTable = { ...table, router: { ...table.router, policy: 'jev' } }
+  const reply = { answers: { tier: { probabilities: { quick: 0.9, deep: 0.1 } } } }
+  assert.deepEqual(policyTier(jevTable, P, e, reply), { tier: 'quick', category: null })
+  assert.equal(policyTier(jevTable, P, e, null), null)
+  const textTable = { ...table, router: { ...table.router, policy: 'text' } }
+  assert.deepEqual(policyTier(textTable, P, e, '{"category":"search","tier":"quick"}'), { tier: 'quick', category: 'search' })
+  const rulesTable = { ...table, router: { ...table.router, policy: 'rules' } }
+  assert.deepEqual(policyTier(rulesTable, P, e, '{"category":"search","tier":"quick"}'), { tier: 'deep', category: 'search' })
+  assert.equal(policyTier({ ...table, router: { ...table.router, policy: 'today' } }, P, e, 'anything'), null)
 })
 
 check('age in days', () => assert.equal(ageDays({ updated: '2026-10-24' }, Date.parse('2026-11-03T12:00:00Z')), 10))

@@ -4,6 +4,12 @@
 import { createHash } from 'node:crypto'
 import { routableTiers, POLICY_CODE, ROUTER_SYSTEM, JEV_INSTRUCTIONS, CATEGORY_GUIDE } from '../hooks/route.mjs'
 
+// CRLF and LF source for the same function must hash the same; .gitattributes pins the repo's
+// own copies to LF, but a clone's line endings are not under our control
+export function noEol(s) {
+  return String(s).replace(/\r\n/g, '\n')
+}
+
 export function policyInputs(table) {
   const { default: _on, ...router } = table.router
   const tiers = Object.fromEntries(routableTiers(table).map((n) => {
@@ -18,9 +24,9 @@ export function policyInputs(table) {
     categories: table.categories,
     critical: table.critical,
     rules: table.rules,
-    router,
+    router: { ...router, modelId: table.models[router.model].id },
     texts: { ROUTER_SYSTEM, JEV_INSTRUCTIONS, CATEGORY_GUIDE },
-    code: POLICY_CODE.map(String),
+    code: POLICY_CODE.map((f) => noEol(f)),
   }
 }
 

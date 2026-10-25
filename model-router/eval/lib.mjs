@@ -2,7 +2,7 @@
 // and today's router replayed on a recorded call. No I/O here except loadAgentDefs.
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { EFFORTS, POLICIES, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan, parseRouterReply, applyRules, pickJevTier } from '../hooks/route.mjs'
+import { EFFORTS, POLICIES, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan, policyTier } from '../hooks/route.mjs'
 
 export const SEED = 20261025
 
@@ -87,9 +87,10 @@ function shares(sizes, total) {
   return out
 }
 
-// The stratified sample: forks and near-empty prompts out, duplicates out, each session wholly in train or held-out
-export function drawSample(calls, strata = STRATA, seed = SEED) {
-  const rand = rng(seed)
+// The calls drawSample draws from: forks and near-empty prompts out, duplicates out, each call
+// stamped with its stratum. The corpus a weighted report is measured against is this pool, since
+// the sample is drawn from it, not from the raw log.
+export function filterCalls(calls) {
   const seen = new Set()
   const pool = []
   for (const c of calls) {
@@ -99,6 +100,13 @@ export function drawSample(calls, strata = STRATA, seed = SEED) {
     seen.add(key)
     pool.push({ ...c, stratum: stratumOf(c) })
   }
+  return pool
+}
+
+// The stratified sample: forks and near-empty prompts out, duplicates out, each session wholly in train or held-out
+export function drawSample(calls, strata = STRATA, seed = SEED) {
+  const rand = rng(seed)
+  const pool = filterCalls(calls)
   // A stratum short of calls gives all it has; other takes the rest
   const sizes = {}
   let short = 0
@@ -258,14 +266,25 @@ export function policyDecision(table, plugin, call, policy, reply, defs, theta) 
   if (!POLICIES.includes(policy)) throw new Error(`unknown policy: ${policy}`)
   const today = () => todayDecision(table, plugin, call, defs)
   if (policy === 'today') return { decision: today(), category: null, fallback: false }
-  if (policy === 'jev') {
-    const tier = pickJevTier(table, reply, theta)
-    return tier ? { decision: tier, category: null, fallback: false } : { decision: today(), category: null, fallback: true }
-  }
-  let d = parseRouterReply(table, reply)
-  if (!d) return { decision: today(), category: null, fallback: true }
-  if (policy === 'rules') d = applyRules(table, plugin, { subagent_type: call.type, description: call.description }, d)
-  return { decision: d.tier, category: d.category, fallback: false }
+  const tbl = policy === table.router.policy ? table : { ...table, router: { ...table.router, policy } }
+  const e = { subagent_type: call.type, description: call.description }
+  const picked = policyTier(tbl, plugin, e, reply, theta)
+  return picked ? { decision: picked.tier, category: picked.category, fallback: false } : { decision: today(), category: null, fallback: true }
+}
+
+// Validates a held-out run against the tuned configuration (results.tuning.final[row] must exist
+// and match this run's policyHash) and, once valid, folds in the new row: the previous value of
+// results.heldout[row], if any, moves to results.heldoutHistory instead of being overwritten.
+// Returns { error } or { results: <next results, not yet written> }.
+export function heldoutRecord(results, row, hash, entry) {
+  const tuned = results.tuning && results.tuning.final && results.tuning.final[row]
+  if (!tuned || tuned.policyHash !== hash) return { error: `held-out row ${row} needs a tuning.final[${row}] whose policyHash matches this run; run --split train --final ${row} first` }
+  const heldout = { ...(results.heldout || {}) }
+  const heldoutHistory = [...(results.heldoutHistory || [])]
+  const prev = heldout[row]
+  if (prev) heldoutHistory.push({ row, ...prev })
+  heldout[row] = entry
+  return { results: { ...results, heldout, heldoutHistory, heldoutRuns: (results.heldoutRuns || 0) + 1 } }
 }
 
 // The verdict that cannot under-route either judge: the higher tier, and a critical category when

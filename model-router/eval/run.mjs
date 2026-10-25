@@ -18,10 +18,10 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { POLICIES, routerRequest, jevRequest } from '../hooks/route.mjs'
+import { POLICIES, invalidTable, routerRequest, jevRequest } from '../hooks/route.mjs'
 import { cached, complete, isCached, pool } from './claude.mjs'
 import { policyInputs, policyHash } from './hash.mjs'
-import { loadAgentDefs, policyDecision, stratumOf, withDescriptions } from './lib.mjs'
+import { filterCalls, heldoutRecord, loadAgentDefs, policyDecision, withDescriptions } from './lib.mjs'
 import { criteria, score, weightsFor } from './metrics.mjs'
 import { CALLS, DATA, DECISIONS, GOLD, RESULTS, SAMPLE, TABLE } from './paths.mjs'
 
@@ -71,7 +71,10 @@ function variantTable() {
   if (opt('--policy')) router.policy = opt('--policy')
   if (!POLICIES.includes(router.policy)) die(`--policy must be one of ${POLICIES.join(', ')}`)
   if (!t.models[router.model]) die(`unknown router model ${router.model}`)
-  return { ...t, router }
+  const variant = { ...t, router }
+  const why = invalidTable(variant)
+  if (why) die(`variant table refused: ${why}`)
+  return variant
 }
 
 // The request a policy sends for one call, and the cache it lives in; null for today (no model)
@@ -79,7 +82,7 @@ function requestOf(table, call) {
   const e = { subagent_type: call.type, description: call.description, prompt: call.prompt }
   if (table.router.policy === 'today') return null
   if (table.router.policy === 'jev') return { cache: 'jev', req: jevRequest(table, P, e) }
-  return { cache: 'router', req: routerRequest(table, P, e) }
+  return { cache: 'router', req: { ...routerRequest(table, P, e), modelId: table.models[table.router.model].id } }
 }
 
 async function callJev(req) {
@@ -166,7 +169,7 @@ function loadGold() {
 }
 
 function report(table, gold, res, sample) {
-  const corpus = jsonl(CALLS).map((c) => ({ stratum: stratumOf(c) }))
+  const corpus = filterCalls(jsonl(CALLS))
   const m = score(table, gold, res.decisions)
   const w = score(table, gold, res.decisions, weightsFor(corpus, sample))
   const c = criteria(table, m)
@@ -236,12 +239,20 @@ if (flag('--one')) {
 } else {
   const split = opt('--split')
   if (!['train', 'heldout', 'all'].includes(split)) die('--split must be train, heldout or all')
+  const row = opt('--heldout-row')
+  const note = opt('--tuning')
+  const fin = opt('--final')
+  // Every flag is checked before guard (which can exit on cost) or decideAll (which spends), so a
+  // bad combination never runs a call it could not record
+  if ((split === 'heldout' || split === 'all') && !row) die(`--split ${split} needs --heldout-row`)
+  if (note && split !== 'train') die('--tuning records train runs only')
+  if (fin && split !== 'train') die('--final records a train run on the final gold')
   const table = variantTable()
   const { gold: allGold, provisional } = loadGold()
+  if (fin && provisional) die('--final records a train run on the final gold')
   const gold = allGold.filter((g) => split === 'all' || g.split === split)
   const ids = new Set(gold.map((g) => g.id))
   const calls = sample.filter((c) => ids.has(c.id))
-  const row = opt('--heldout-row')
   const results = readJson(RESULTS, { heldoutRuns: 0, heldout: {}, tuning: { rounds: [], final: {} } })
   const hash = policyHash(table)
   if (row) {
@@ -255,22 +266,21 @@ if (flag('--one')) {
   failOnErrors(res)
   const { m, w, c } = report(table, gold, res, sample)
   const router = policyInputs(table).router
+  let nextResults = results
   if (row) {
-    results.heldout[row] = { metrics: m, weighted: w, criteria: c, router, policy: table.router.policy, policyHash: hash, routerCostUsd: res.policyCost, at: new Date().toISOString() }
-    results.heldoutRuns = (results.heldoutRuns || 0) + 1
+    const entry = { metrics: m, weighted: w, criteria: c, router, policy: table.router.policy, policyHash: hash, routerCostUsd: res.policyCost, at: new Date().toISOString() }
+    const folded = heldoutRecord(results, row, hash, entry)
+    if (folded.error) die(folded.error)
+    nextResults = folded.results
   }
-  const note = opt('--tuning')
   if (note) {
-    if (split !== 'train') die('--tuning records train runs only')
-    results.tuning.rounds.push({ round: results.tuning.rounds.length + 1, change: note, policy: table.router.policy, router, policyHash: hash, metrics: { ...m, byCategory: undefined }, gold: provisional ? 'provisional' : 'final', at: today() })
+    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, rounds: [...nextResults.tuning.rounds, { round: nextResults.tuning.rounds.length + 1, change: note, policy: table.router.policy, router, policyHash: hash, metrics: { ...m, byCategory: undefined }, gold: provisional ? 'provisional' : 'final', at: today() }] } }
   }
-  const fin = opt('--final')
   if (fin) {
-    if (split !== 'train' || provisional) die('--final records a train run on the final gold')
-    results.tuning.final[fin] = { router, descriptionsFrom: opt('--descriptions-from') || null, policyHash: hash, metrics: { ...m, byCategory: undefined }, at: today() }
+    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, final: { ...nextResults.tuning.final, [fin]: { router, descriptionsFrom: opt('--descriptions-from') || null, policyHash: hash, metrics: { ...m, byCategory: undefined }, at: today() } } } }
   }
   if (row || note || fin) {
-    writeJson(RESULTS, results)
+    writeJson(RESULTS, nextResults)
     console.log(`-> ${RESULTS}`)
   }
 }

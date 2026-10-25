@@ -42,8 +42,9 @@ function invalidPolicy(t) {
   if (!Array.isArray(t.categories) || !t.categories.includes('other')) return 'categories must be a list that includes other'
   if (!Array.isArray(t.critical) || t.critical.some((x) => !t.categories.includes(x))) return 'critical names a category that categories does not list'
   for (const [i, rule] of (Array.isArray(t.rules) ? t.rules : []).entries()) {
-    if (!t.order.includes(rule.floor)) return `rule ${i} has floor ${rule.floor}`
+    if (!routableTiers(t).includes(rule.floor)) return `rule ${i} has floor ${rule.floor}`
     if (!Array.isArray(rule.categories) || rule.categories.some((x) => !t.categories.includes(x))) return `rule ${i} names a category that categories does not list`
+    if (typeof rule.match !== 'string' || !rule.match) return `rule ${i} match is not a non-empty string`
     try {
       new RegExp(rule.match, 'iu')
     } catch {
@@ -258,18 +259,30 @@ export function routerRequest(table, plugin, e) {
   return { model: r.model, effort: r.effort, system, prompt: blindView(table, plugin, e), maxTokens: 1024, timeoutMs: r.timeoutMs }
 }
 
-// The router's answer: a routable tier and a known category (else other), or null
+// The router's answer: a routable tier and a known category (else other), or null. Every '{' … '}'
+// span is tried, so a brace stray or nested before the answer does not keep it from being found.
 export function parseRouterReply(table, text) {
-  const m = /\{[^{}]*\}/.exec(String(text || ''))
-  if (!m) return null
-  let o
-  try {
-    o = JSON.parse(m[0])
-  } catch {
-    return null
+  const s = String(text || '')
+  for (let i = s.indexOf('{'); i >= 0; i = s.indexOf('{', i + 1)) {
+    for (let j = s.indexOf('}', i); j >= 0; j = s.indexOf('}', j + 1)) {
+      let o
+      try {
+        o = JSON.parse(s.slice(i, j + 1))
+      } catch {
+        continue
+      }
+      if (!o || !routableTiers(table).includes(o.tier)) break
+      return { tier: o.tier, category: table.categories.includes(o.category) ? o.category : 'other' }
+    }
   }
-  if (!o || !routableTiers(table).includes(o.tier)) return null
-  return { tier: o.tier, category: table.categories.includes(o.category) ? o.category : 'other' }
+  return null
+}
+
+// Whether the policy routes this call at all: never a fork, never today's policy, and never the
+// frontier type Claude may still pick by hand under /route fable
+export function routesCall(table, plugin, e, ceiling) {
+  if (table.router.policy === 'today' || e.subagent_type === 'fork') return false
+  return !(ceiling === 'fable' && table.frontier && tierOfType(table, plugin, e.subagent_type) === table.frontier)
 }
 
 // Hard floors: a rule lifts the tier to its floor when the router named one of its categories,
@@ -282,6 +295,22 @@ export function applyRules(table, plugin, e, d) {
     if (hit && table.order.indexOf(rule.floor) > table.order.indexOf(tier)) tier = rule.floor
   }
   return tier === d.tier ? d : { ...d, tier, ruled: true }
+}
+
+// One policy's tier for one call, from its model's reply (the hook and the eval share this, so
+// what the eval measured is what the hook decides): jev reads a parsed Jev reply (or null), text
+// and rules read the router's text reply (or null); today never routes, so it is always null
+export function policyTier(table, plugin, e, reply, theta = table.router.jev.theta) {
+  const r = table.router
+  if (r.policy === 'today') return null
+  if (r.policy === 'jev') {
+    const tier = pickJevTier(table, reply, theta)
+    return tier ? { tier, category: null } : null
+  }
+  const d = parseRouterReply(table, reply)
+  if (!d) return null
+  const picked = r.policy === 'rules' ? applyRules(table, plugin, e, d) : d
+  return { tier: picked.tier, category: picked.category }
 }
 
 export const JEV_INSTRUCTIONS = 'Pick the cheapest tier whose model and effort will do this delegated task well on the first try. The state is the task: its agent type, description and prompt.'
@@ -320,4 +349,5 @@ export function routedPlan(table, plugin, e, tier) {
 export const POLICY_CODE = [
   hostName, ownTier, tierOfType, planAgentCall, isFrontier, offeredTiers, capTier, capPlan,
   routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
+  routesCall, policyTier,
 ]

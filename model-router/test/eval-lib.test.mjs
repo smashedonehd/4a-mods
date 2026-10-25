@@ -3,12 +3,13 @@
 // the metrics, the policy hash and today's router as a baseline. No model is called.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
+import { fileURLToPath } from 'node:url'
+import { rng, stratumOf, STRATA, drawSample, filterCalls, heldoutRecord, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
 import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
-import { policyInputs, policyHash } from '../eval/hash.mjs'
+import { policyInputs, policyHash, noEol } from '../eval/hash.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -202,6 +203,51 @@ check('the policy hash covers the policy and nothing else', () => {
   assert.match(code, /9000/)
 })
 
+check('the hash normalises line endings, so a CRLF checkout hashes the same as an LF one', () => {
+  const fn = function example() {
+    return 1
+  }
+  const lf = fn.toString()
+  const crlf = lf.replace(/\n/g, '\r\n')
+  assert.notEqual(lf, crlf)
+  assert.equal(noEol(crlf), lf)
+  assert.equal(noEol(lf), lf)
+})
+
+check('the policy hash also covers the router model\'s pinned id', () => {
+  const h = policyHash(table)
+  const otherAlias = Object.keys(table.models).find((a) => a !== table.router.model) || table.router.model
+  const changedId = { ...table, models: { ...table.models, [table.router.model]: { ...table.models[table.router.model], id: 'some-other-id' } } }
+  assert.notEqual(policyHash(changedId), h)
+  assert.equal(policyInputs(table).router.modelId, table.models[table.router.model].id)
+  void otherAlias
+})
+
+check('filterCalls drops forks and near-empty prompts and dedupes, exactly as drawSample\'s pool does', () => {
+  const calls = [
+    { id: 'a', description: 'd', prompt: 'A long enough prompt for a.' },
+    { id: 'dup', description: 'd', prompt: 'A long enough prompt for a.' },
+    { id: 'fork', type: 'fork', description: 'd', prompt: 'A long enough prompt for a fork.' },
+    { id: 'short', description: 'd', prompt: 'short' },
+  ]
+  const pool = filterCalls(calls)
+  assert.deepEqual(pool.map((c) => c.id), ['a'])
+  assert.equal(pool[0].stratum, stratumOf(calls[0]))
+})
+
+check('a held-out run is refused without a matching tuned final row, and keeps history instead of overwriting', () => {
+  const miss = heldoutRecord({ tuning: { final: {} } }, 'r1', 'h1', { at: 'now' })
+  assert.match(miss.error, /needs a tuning\.final\[r1\]/)
+  const wrongHash = heldoutRecord({ tuning: { final: { r1: { policyHash: 'other' } } } }, 'r1', 'h1', { at: 'now' })
+  assert.match(wrongHash.error, /tuning\.final\[r1\]/)
+  const base = { tuning: { final: { r1: { policyHash: 'h1' } } }, heldout: { r1: { policyHash: 'h1', at: 'first' } }, heldoutRuns: 1 }
+  const again = heldoutRecord(base, 'r1', 'h1', { policyHash: 'h1', at: 'second' })
+  assert.equal(again.error, undefined)
+  assert.deepEqual(again.results.heldoutHistory, [{ row: 'r1', policyHash: 'h1', at: 'first' }])
+  assert.deepEqual(again.results.heldout.r1, { policyHash: 'h1', at: 'second' })
+  assert.equal(again.results.heldoutRuns, 2)
+})
+
 check('a table with the descriptions of another', () => {
   const other = { ...table, tiers: Object.fromEntries(Object.entries(table.tiers).map(([k, t]) => [k, { ...t, description: `old ${k}` }])) }
   const t = withDescriptions(table, other)
@@ -333,5 +379,70 @@ const { cached, pool } = await import('../eval/claude.mjs')
   })
 }
 rmSync(tmp, { recursive: true, force: true })
+
+// The CLI scripts, each against their own temporary DATA directory; every case here dies before
+// any model call or any write to the repo's results.json or gold.json
+{
+  const runMjs = fileURLToPath(new URL('../eval/run.mjs', import.meta.url))
+  const goldMjs = fileURLToPath(new URL('../eval/gold.mjs', import.meta.url))
+  const cli = (script, args, extraEnv) => {
+    try {
+      const out = execFileSync(process.execPath, [script, ...args], { env: { ...process.env, ...extraEnv }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { status: 0, stdout: out }
+    } catch (e) {
+      return { status: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }
+    }
+  }
+  const tmp2 = mkdtempSync(join(tmpdir(), 'mr-eval-cli-'))
+  writeFileSync(join(tmp2, 'sample.jsonl'), '')
+  const env = { MODEL_ROUTER_EVAL_DATA: tmp2 }
+
+  check('a theta out of (0, 1] or not a number refuses the variant table before any call', () => {
+    for (const theta of ['abc', '1.5']) {
+      const r = cli(runMjs, ['--policy', 'jev', '--theta', theta, '--split', 'train'], env)
+      assert.equal(r.status, 2)
+      assert.match(r.stderr, /variant table refused/)
+    }
+  })
+
+  check('--split heldout or --split all without --heldout-row dies with a clear message', () => {
+    for (const split of ['heldout', 'all']) {
+      const r = cli(runMjs, ['--policy', 'today', '--split', split], env)
+      assert.equal(r.status, 2)
+      assert.match(r.stderr, /needs --heldout-row/)
+    }
+  })
+
+  check('--tuning and --final outside --split train die before guard or decideAll', () => {
+    const tuning = cli(runMjs, ['--policy', 'today', '--split', 'heldout', '--heldout-row', 'r1', '--tuning', 'note'], env)
+    assert.equal(tuning.status, 2)
+    assert.match(tuning.stderr, /--tuning records train runs only/)
+    const final = cli(runMjs, ['--policy', 'today', '--split', 'heldout', '--heldout-row', 'r1', '--final', 'r1'], env)
+    assert.equal(final.status, 2)
+    assert.match(final.stderr, /--final records a train run on the final gold/)
+  })
+
+  check('--final refuses provisional gold', () => {
+    writeFileSync(join(tmp2, 'gold-provisional.json'), '[]\n')
+    const r = cli(runMjs, ['--policy', 'today', '--split', 'train', '--gold', 'provisional', '--final', 'r1'], env)
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /--final records a train run on the final gold/)
+  })
+
+  check('gold.mjs reports rule coverage on train critical calls, not held-out', () => {
+    writeFileSync(join(tmp2, 'sample.jsonl'), [
+      { id: 't1', session: 's1', split: 'train', stratum: 'review', type: 'general-purpose', description: 'Review the diff' },
+      { id: 'h1', session: 's2', split: 'heldout', stratum: 'review', type: 'general-purpose', description: 'Review the diff' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n')
+    const v = { tier: 'deep', category: 'review', reason: 'r' }
+    writeFileSync(join(tmp2, 'judgments.jsonl'), [{ id: 't1', A: v, B: v }, { id: 'h1', A: v, B: v }].map((r) => JSON.stringify(r)).join('\n') + '\n')
+    const r = cli(goldMjs, ['--provisional'], env)
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /train critical 1, of them not caught by rules\[0\]\.match 0/)
+    assert.doesNotMatch(r.stdout, /held-out critical/)
+  })
+
+  rmSync(tmp2, { recursive: true, force: true })
+}
 
 console.log(`${n} checks passed`)

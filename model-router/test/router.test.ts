@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { routerRequest } from '../hooks/route.mjs'
 
 // The hooks' wiring against the engine; the shipped routing.json and the
 // decisions themselves are checked by route.test.mjs under plain node.
@@ -196,9 +197,10 @@ test('/route fill without on or off is not an option and changes nothing', async
 const AUTO = { ...TABLE, router: { ...TABLE.router, default: 'on' } }
 const answered = (text: string) => ({ value: { isAnswered: true, text, usage: { input_tokens: 1, output_tokens: 1 } } })
 
-function router(on: any, reply: any, count = { n: 0 }) {
-  on('model.complete', () => {
+function router(on: any, reply: any, count = { n: 0 }, requests: any[] = []) {
+  on('model.complete', (_: any, e: any) => {
     count.n++
+    requests.push(e)
     return typeof reply === 'function' ? reply() : reply
   })
   return count
@@ -206,11 +208,13 @@ function router(on: any, reply: any, count = { n: 0 }) {
 
 test('auto routing sends a general agent to the tier the router names', async ($, on) => {
   const seen: any[] = []
+  const requests: any[] = []
   engine(on, seen, [], JSON.stringify(AUTO))
-  router(on, answered('{"category":"search","tier":"quick"}'))
+  router(on, answered('{"category":"search","tier":"quick"}'), { n: 0 }, requests)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'find the config' })
   expect([seen[0].model, seen[0].effort]).toEqual(['haiku', 'low'])
+  expect(requests[0]).toEqual(routerRequest(AUTO, 'model-router', { subagent_type: undefined, description: 'find', prompt: 'find the config' }))
 })
 
 test('auto routing moves a tier type to the routed type', async ($, on) => {
@@ -286,6 +290,18 @@ test("/route auto off restores today's router and survives a new session", async
   expect(String(back.text)).toContain('Auto routing: on')
   await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
   expect([seen[2].model, seen[2].effort]).toEqual(['haiku', 'low'])
+})
+
+test('the today policy never shows auto text or an on status, even with the table default on', async ($, on) => {
+  const TODAY_AUTO = { ...AUTO, router: { ...AUTO.router, policy: 'today' } }
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(TODAY_AUTO))
+  const count = router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(count.n).toBe(0)
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'medium'])
+  expect(String((await $.command.run({ command: 'route', args: '' })).text)).toContain('Auto routing: off (policy today')
 })
 
 test('with the table default off, nothing is routed until /route auto on', async ($, on) => {

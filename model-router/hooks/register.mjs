@@ -25,7 +25,7 @@
 // Cost: with auto routing off, zero tokens per call; on, one small router call
 // (or one Jev call) per Agent call, bounded by router.timeoutMs.
 
-import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, tierOfType, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan } from './route.mjs'
+import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, routerRequest, jevRequest, routedPlan, routesCall, policyTier } from './route.mjs'
 
 const settings = {
   fill: true, // the safety net described above; off, only the Opus cap still applies
@@ -73,13 +73,13 @@ function autoOn() {
 
 function autoLine() {
   const r = table.router
-  return `Auto routing: ${autoOn() ? 'on' : 'off'} (policy ${r.policy}, router ${r.policy === 'jev' ? r.jev.model : `${r.model} ${r.effort}`}).`
+  const on = autoOn() && r.policy !== 'today'
+  return `Auto routing: ${on ? 'on' : 'off'} (policy ${r.policy}, router ${r.policy === 'jev' ? r.jev.model : `${r.model} ${r.effort}`}).`
 }
 
 // Whether the policy routes this call: not a fork, not the frontier type Claude may name under /route fable
 function routes(e) {
-  if (!autoOn() || table.router.policy === 'today' || e.subagent_type === 'fork') return false
-  return !(settings.ceiling === 'fable' && table.frontier && tierOfType(table, plugin, e.subagent_type) === table.frontier)
+  return autoOn() && routesCall(table, plugin, e, settings.ceiling)
 }
 
 // The policy's tier for one call, or '' when it has none (refused, failed, timed out, unusable): never throws
@@ -93,12 +93,12 @@ async function decide($, e) {
       const req = jevRequest(table, plugin, e)
       const init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(req.body) }
       const res = await Promise.race([$.http.fetch(base + req.path, init), $.clock.sleep(r.timeoutMs).then(() => null)])
-      return (res && res.ok && pickJevTier(table, JSON.parse(res.text))) || ''
+      const reply = res && res.ok ? JSON.parse(res.text) : null
+      return (policyTier(table, plugin, e, reply) || {}).tier || ''
     }
-    const reply = await $.model.complete(routerRequest(table, plugin, e))
-    const d = reply && reply.isAnswered ? parseRouterReply(table, reply.text) : null
-    if (!d) return ''
-    return (r.policy === 'rules' ? applyRules(table, plugin, e, d) : d).tier
+    const res = await $.model.complete(routerRequest(table, plugin, e))
+    const reply = res && res.isAnswered ? res.text : null
+    return (policyTier(table, plugin, e, reply) || {}).tier || ''
   } catch {
     return ''
   }
@@ -209,7 +209,7 @@ export function register(on) {
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     if (!table || !registered.length || !e.tools.includes('Agent')) return r
-    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin, settings.ceiling, autoOn()), scope: 'session' }] }
+    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin, settings.ceiling, autoOn() && table.router.policy !== 'today'), scope: 'session' }] }
   })
 
   on('command.run', { command: ['route', 'model-router'] }, async ($, e) => {
