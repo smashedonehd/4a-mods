@@ -1,6 +1,6 @@
 // Run: node model-router/test/eval.test.mjs
 // Replays the committed eval: the recorded decisions must come from the shipped policy, and a fresh
-// score over the held-out gold must match the recorded result. Reads only repo files (no private
+// score over the held-out and the train gold must match the recorded results. Reads only repo files (no private
 // eval data, no model call), so it runs in CI and in the cloud refresh.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -13,6 +13,10 @@ const gold = read('../eval/gold.json')
 const decisions = read('../eval/decisions.json')
 const results = read('../eval/results.json')
 const heldoutGold = gold.filter((g) => g.split === 'heldout')
+const trainGold = gold.filter((g) => g.split === 'train')
+// costRatio and costOver follow routing.json prices, which a refresh may change and then rescore
+// only results.winner; 'recorded results match a fresh score' guards them against the current prices
+const routing = ({ costRatio, costOver, ...m }) => m
 let n = 0
 function check(name, fn) {
   fn()
@@ -31,10 +35,16 @@ check('the recorded decisions are the ones the held-out run measured', () => {
   const run = results.heldout[results.winner.row]
   assert.ok(run, `no held-out run for the winner ${results.winner.row}`)
   assert.equal(run.policyHash, decisions.policyHash)
-  // costRatio and costOver follow routing.json prices, which a refresh may change and then rescore
-  // only results.winner; check 4 guards them against the current prices
-  const routing = ({ costRatio, costOver, ...m }) => m
   assert.deepEqual(routing(results.winner.metrics), routing(run.metrics))
+})
+
+check('the recorded train decisions are the ones the final train run measured', () => {
+  const final = results.tuning.final[results.winner.row]
+  assert.ok(final, `no final train run for the winner ${results.winner.row}`)
+  assert.equal(final.policyHash, decisions.policyHash)
+  // A final train row keeps no per-category counts
+  const { byCategory, ...fresh } = score(table, trainGold, decisions.decisions)
+  assert.deepEqual(routing(fresh), routing(final.metrics))
 })
 
 check('gold covers 400 calls, 80 held out, each with a decision', () => {
