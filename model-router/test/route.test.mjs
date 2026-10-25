@@ -170,6 +170,7 @@ check('our type names compare as the host matches them: case, spaces, dashes and
   assert.equal(tierOfType(table, P, 'Model-Router:Deep'), 'deep')
   // A built-in or general name is matched exactly: a custom agent named `explore` keeps its own definition
   assert.equal(tierOfType(table, P, 'explore'), '')
+  assert.equal(planAgentCall(table, P, { subagent_type: 'constructor' }).action, 'keep')
   assert.equal(planAgentCall(table, P, { subagent_type: 'general_purpose' }).action, 'keep')
   assert.equal(tierOfType(table, P, 'model-router:nope'), '')
   assert.equal(tierOfType(table, P, 'other-plugin:deep'), '')

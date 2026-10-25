@@ -70,7 +70,8 @@ export function tierOfType(table, plugin, type) {
   const t = hostName(type)
   const prefix = `${hostName(plugin)}:`
   if (t.startsWith(prefix)) return table.order.find((n) => hostName(n) === t.slice(prefix.length)) || ''
-  return (table.builtinTypes || {})[String(type || '')] || ''
+  const builtins = table.builtinTypes || {}
+  return Object.hasOwn(builtins, String(type || '')) ? builtins[String(type || '')] : ''
 }
 
 // What to do with one Agent call: { action, set?, tier, model, effort }
