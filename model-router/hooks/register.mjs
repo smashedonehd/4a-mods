@@ -7,8 +7,9 @@
 // Why types and not a classifier: the main Claude sees the whole conversation,
 // so it judges a task better than keywords or a small model reading one prompt.
 // The hook below is only a safety net: a general agent Claude started with
-// nothing set gets the table's default (Opus at medium), a model or effort
-// Claude chose is kept, a fork is left alone, and nothing is ever refused.
+// nothing set gets the table's default (Opus at medium), one given only a model
+// gets the effort of that model's first tier instead of the session's, a model
+// and effort Claude chose are kept, a fork is left alone, and nothing is ever refused.
 // Current: the table ships with the plugin and changes through pull requests
 // (UPDATING.md); aliases already follow each line's newest model.
 // Cost: zero tokens per call; the policy is one cached system prompt section.
