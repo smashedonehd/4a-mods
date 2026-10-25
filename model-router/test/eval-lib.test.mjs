@@ -104,6 +104,9 @@ check('judge replies parse and disagreements follow the rule', () => {
   assert.deepEqual(parseJudge(table, 'Thinking...\n{"category":"review","tier":"deep","reason":"A diff review."}'), { tier: 'deep', category: 'review', reason: 'A diff review.' })
   assert.equal(parseJudge(table, '{"category":"review","tier":"frontier","reason":"x"}'), null)
   assert.equal(parseJudge(table, 'no json'), null)
+  // Braces inside the reason (a judge quoting `{model, effort}`) must not split the object
+  assert.deepEqual(parseJudge(table, '{"category": "review", "tier": "deep", "reason": "Every type × {model, effort} pair."}'), { tier: 'deep', category: 'review', reason: 'Every type × {model, effort} pair.' })
+  assert.deepEqual(parseJudge(table, 'Draft {"tier": "quick"} then {"category": "search", "tier": "light", "reason": "x"}'), { tier: 'light', category: 'search', reason: 'x' })
   const v = (tier, category) => ({ tier, category, reason: '' })
   assert.equal(disagrees(table, v('quick', 'search'), v('light', 'search')), true)
   assert.equal(disagrees(table, v('deep', 'review'), v('deep', 'implement')), true)

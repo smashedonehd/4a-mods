@@ -171,17 +171,20 @@ export function judgeRequest(table, plugin, call, variant, verdicts) {
 
 // A judge's verdict: the last JSON object in the reply with a routable tier
 export function parseJudge(table, text) {
-  const found = String(text || '').match(/\{[^{}]*\}/g) || []
-  for (const raw of found.reverse()) {
-    let o
-    try {
-      o = JSON.parse(raw)
-    } catch {
-      continue
+  // Every '{' … '}' span is tried, so braces quoted inside the reason do not split the object
+  const s = String(text || '')
+  for (let i = s.lastIndexOf('{'); i >= 0; i = i > 0 ? s.lastIndexOf('{', i - 1) : -1) {
+    for (let j = s.indexOf('}', i); j >= 0; j = s.indexOf('}', j + 1)) {
+      let o
+      try {
+        o = JSON.parse(s.slice(i, j + 1))
+      } catch {
+        continue
+      }
+      if (!o || !routableTiers(table).includes(o.tier)) break
+      const category = table.categories.includes(o.category) ? o.category : 'other'
+      return { tier: o.tier, category, reason: String(o.reason || '').trim().slice(0, 400) }
     }
-    if (!o || !routableTiers(table).includes(o.tier)) continue
-    const category = table.categories.includes(o.category) ? o.category : 'other'
-    return { tier: o.tier, category, reason: String(o.reason || '').trim().slice(0, 400) }
   }
   return null
 }
