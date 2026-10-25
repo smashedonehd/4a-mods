@@ -68,13 +68,13 @@ test('an unset general agent gets Opus at medium, a tier type is left alone', as
   expect(seen[1].subagent_type).toBe('model-router:quick')
 })
 
-test('a general agent given only a model runs at that model\'s tier effort', async ($, on) => {
+test('a general agent given only the default\'s model runs at the default\'s effort', async ($, on) => {
   const seen: any[] = []
   engine(on, seen, [])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x', model: 'opus' })
   await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x', model: 'opus', effort: 'low' })
-  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'medium'])
   expect([seen[1].model, seen[1].effort]).toEqual(['opus', 'low'])
 })
 

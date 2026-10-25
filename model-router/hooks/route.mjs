@@ -79,8 +79,8 @@ export function tierOfType(table, plugin, type) {
 // - typed: one of the tier types, whose definition already carries model and effort
 // - builtin: a built-in type the table maps to a tier
 // - fill: a general agent with nothing set gets the table's default
-// - effort: a general or mapped built-in agent given only a model gets the effort of that model's first tier;
-//   it has no effort of its own and would run at the session's
+// - effort: a general or mapped built-in agent given only a model gets the effort of that model's first tier,
+//   or the default's effort for the default's model; it has no effort of its own and would run at the session's
 export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
@@ -96,6 +96,11 @@ export function planAgentCall(table, plugin, e, fill = true) {
   if (e.effort) return kept
   if (!fill) return { action: 'keep', why: 'fill off', tier: '', model: e.model }
   if (e.model) {
+    // The default's model given alone runs as the default does, not at its first tier's effort
+    if (e.model === table.fill.model) {
+      const { effort } = table.fill
+      return { action: 'effort', tier: '', model: e.model, effort, set: { effort } }
+    }
     const modelTier = table.order.find((n) => table.tiers[n].model === e.model)
     if (!modelTier) return kept
     const { effort } = table.tiers[modelTier]
@@ -154,7 +159,7 @@ export function policyText(table, plugin, ceiling = 'opus') {
   return [
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
-    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort; a general or built-in agent given only a model runs at the effort of that model's first tier. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
+    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort; a general or built-in agent given only a model runs at the effort of that model's first tier, except ${table.fill.model}, which runs at ${table.fill.effort}. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
   ].join('\n')
 }
 
