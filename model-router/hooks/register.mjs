@@ -101,7 +101,10 @@ async function decide($, e) {
       const res = await Promise.race([$.http.fetch(url, init), $.clock.sleep(r.timeoutMs).then(() => null)])
       reply = res && res.ok ? JSON.parse(res.text) : null
     } else {
-      const res = await $.model.complete(routerRequest(table, plugin, e))
+      // The model id the policy hash pins and the eval measured (eval/claude.mjs runs the same id), not the
+      // alias, which follows its line's newest model
+      const req = routerRequest(table, plugin, e)
+      const res = await $.model.complete({ ...req, model: table.models[req.model].id })
       reply = res && res.isAnswered ? res.text : null
     }
     return (policyTier(table, plugin, e, reply) || {}).tier || ''

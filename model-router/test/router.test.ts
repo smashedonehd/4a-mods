@@ -214,7 +214,11 @@ test('auto routing sends a general agent to the tier the router names', async ($
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'find the config' })
   expect([seen[0].model, seen[0].effort]).toEqual(['haiku', 'low'])
-  expect(requests[0]).toEqual(routerRequest(AUTO, 'model-router', { subagent_type: undefined, description: 'find', prompt: 'find the config' }))
+  // The request as the eval sends it, on the router model's pinned id rather than its alias
+  const req = routerRequest(AUTO, 'model-router', { subagent_type: undefined, description: 'find', prompt: 'find the config' })
+  expect(requests[0]).toEqual({ ...req, model: AUTO.models.haiku.id })
+  expect(AUTO.router.model).toBe('haiku')
+  expect(requests[0].model).toBe('h')
 })
 
 test('auto routing moves a tier type up to the routed type, never down', async ($, on) => {
