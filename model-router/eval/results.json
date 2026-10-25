@@ -969,6 +969,356 @@
     },
     "gold": "final",
     "at": "2026-10-25"
+   },
+   {
+    "round": 15,
+    "change": "re-record-after-simplify-pass",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-haiku-5-5"
+    },
+    "policyHash": "fa1869c275c2accd38ef3a31165a9d631045ec31c536311bd0a6bfe008b97811",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.70625,
+     "under": 0.128125,
+     "underCritical": 9,
+     "underCriticalRate": 0.05421686746987952,
+     "costRatio": 1.0903843289140476,
+     "costOver": 0.09038432891404757,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 5
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 46,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 15,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 6,
+       "under": 17
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 16,
+    "change": "re-record-after-simplify-pass",
+    "policy": "today",
+    "router": {
+     "policy": "today",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-sonnet-5-5"
+    },
+    "policyHash": "3263dca15241af2b7fcdb295d092cf2f9c9ca69ae21ba8504728e67912feb17b",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.26875,
+     "under": 0.440625,
+     "underCritical": 87,
+     "underCriticalRate": 0.5240963855421686,
+     "costRatio": 0.9517577834053351,
+     "costOver": -0.04824221659466488,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 24,
+       "under": 49
+      },
+      "other": {
+       "n": 40,
+       "agree": 14,
+       "under": 13
+      },
+      "search": {
+       "n": 32,
+       "agree": 5,
+       "under": 15
+      },
+      "implement": {
+       "n": 64,
+       "agree": 16,
+       "under": 29
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 7,
+       "under": 22
+      },
+      "security": {
+       "n": 20,
+       "agree": 5,
+       "under": 9
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 14,
+       "under": 3
+      },
+      "research": {
+       "n": 4,
+       "agree": 1,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 17,
+    "change": "re-record-after-simplify-pass",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-haiku-5-5"
+    },
+    "policyHash": "ac1f615a29337a2f8f2baa05fbd021e838c5469ef63899f89e1d900c0bac0727",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.765625,
+     "under": 0.109375,
+     "underCritical": 12,
+     "underCriticalRate": 0.07228915662650602,
+     "costRatio": 1.0343736034559812,
+     "costOver": 0.03437360345598117,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 27,
+       "under": 6
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 48,
+       "under": 5
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 30,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 17,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 18,
+       "under": 6
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 18,
+    "change": "re-record-after-simplify-pass",
+    "policy": "rules",
+    "router": {
+     "policy": "rules",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-sonnet-5-5"
+    },
+    "policyHash": "859900637f03486dc5dd97437dd6424ae7f6a8f40c19b77e7e2eb21691bd945c",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.78125,
+     "under": 0.04375,
+     "underCritical": 5,
+     "underCriticalRate": 0.030120481927710843,
+     "costRatio": 1.1364889021301954,
+     "costOver": 0.13648890213019538,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 70,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 25,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 59,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 34,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 1
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 19,
+    "change": "re-record-after-simplify-pass",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-sonnet-5-5"
+    },
+    "policyHash": "da2b4488f5b8d2f9923d92ce2882e29ee4f63880766990d8ab7cbf05e049b0dd",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.690625,
+     "under": 0.034375,
+     "underCritical": 7,
+     "underCriticalRate": 0.04216867469879518,
+     "costRatio": 1.2450096827052004,
+     "costOver": 0.2450096827052004,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 71,
+       "under": 2
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 4
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 1
+      },
+      "implement": {
+       "n": 64,
+       "agree": 33,
+       "under": 0
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 15,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
    }
   ],
   "final": {
@@ -985,7 +1335,7 @@
      "modelId": "claude-haiku-5-5"
     },
     "descriptionsFrom": "9d94540",
-    "policyHash": "b35f19dc96b85b966bd0a0010a5ce8790c70a370968581f3564676c050e0df55",
+    "policyHash": "fa1869c275c2accd38ef3a31165a9d631045ec31c536311bd0a6bfe008b97811",
     "metrics": {
      "n": 320,
      "agreement": 0.70625,
@@ -1052,7 +1402,7 @@
      "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "9a75c5d2361ba6a3af3f46be1ef0d2fb695520a8ef5f4af7f20f47426a96d90f",
+    "policyHash": "3263dca15241af2b7fcdb295d092cf2f9c9ca69ae21ba8504728e67912feb17b",
     "metrics": {
      "n": 320,
      "agreement": 0.26875,
@@ -1119,7 +1469,7 @@
      "modelId": "claude-haiku-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "34249885bc958d54af67f1a5e57d91eb99ea1dbe6f8dc7492787fb8d3aa0130c",
+    "policyHash": "ac1f615a29337a2f8f2baa05fbd021e838c5469ef63899f89e1d900c0bac0727",
     "metrics": {
      "n": 320,
      "agreement": 0.765625,
@@ -1186,7 +1536,7 @@
      "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "d32fba18a7aa21c943209c5b1c273e9765107ac2adbaf8294d1956a96c294ccc",
+    "policyHash": "859900637f03486dc5dd97437dd6424ae7f6a8f40c19b77e7e2eb21691bd945c",
     "metrics": {
      "n": 320,
      "agreement": 0.78125,
@@ -1253,7 +1603,7 @@
      "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "83f44f28106fdc608956fe3a1077eedc611f9b4485046ce020515d3d45ea6bf5",
+    "policyHash": "da2b4488f5b8d2f9923d92ce2882e29ee4f63880766990d8ab7cbf05e049b0dd",
     "metrics": {
      "n": 320,
      "agreement": 0.690625,
