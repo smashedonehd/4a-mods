@@ -81,7 +81,7 @@ export function tierOfType(table, plugin, type) {
 //   it has no effort of its own and would run at the session's
 export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
-  if (hostName(type) === 'fork') return { action: 'keep', why: 'fork' }
+  if (type === 'fork') return { action: 'keep', why: 'fork' }
   const tier = tierOfType(table, plugin, type)
   // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
   const own = tier && ownType(plugin, type)

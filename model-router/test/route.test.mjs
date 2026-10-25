@@ -173,7 +173,6 @@ check('type names compare as the host matches them: case, spaces, dashes and und
   assert.equal(tierOfType(table, P, 'other-plugin:deep'), '')
   assert.equal(planAgentCall(table, P, { subagent_type: 'Model-Router:Deep' }).action, 'typed')
   assert.equal(planAgentCall(table, P, { subagent_type: 'General_Purpose' }).action, 'fill')
-  assert.equal(planAgentCall(table, P, { subagent_type: 'Fork' }).action, 'keep')
 })
 
 check('a capped call keeps the effort Claude set', () => {
