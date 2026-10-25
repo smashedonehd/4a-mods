@@ -1,6 +1,1103 @@
 {
- "heldoutRuns": 0,
- "heldout": {},
+ "heldoutRuns": 5,
+ "heldout": {
+  "today": {
+   "metrics": {
+    "n": 80,
+    "agreement": 0.3375,
+    "under": 0.4625,
+    "underCritical": 19,
+    "underCriticalRate": 0.5757575757575758,
+    "costRatio": 0.7677830940988829,
+    "costOver": -0.2322169059011171,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 13,
+      "under": 9
+     },
+     "review": {
+      "n": 28,
+      "agree": 7,
+      "under": 18
+     },
+     "research": {
+      "n": 7,
+      "agree": 1,
+      "under": 6
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 0,
+      "under": 1
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 3,
+      "under": 1
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "search": {
+      "n": 4,
+      "agree": 2,
+      "under": 1
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 10,
+      "under": 2
+     },
+     "other": {
+      "n": 10,
+      "agree": 3,
+      "under": 5
+     },
+     "research": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 0,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 4,
+      "under": 17
+     },
+     "search": {
+      "n": 8,
+      "agree": 4,
+      "under": 4
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 3,
+      "under": 7
+     },
+     "security": {
+      "n": 5,
+      "agree": 3,
+      "under": 1
+     }
+    }
+   },
+   "weighted": {
+    "n": 80,
+    "agreement": 0.31308976976295444,
+    "under": 0.5133307814449407,
+    "underCritical": 27.41159124418817,
+    "underCriticalRate": 0.6423464750251177,
+    "costRatio": 0.7127478615725794,
+    "costOver": -0.2872521384274206,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 13,
+      "under": 9
+     },
+     "review": {
+      "n": 28,
+      "agree": 7,
+      "under": 18
+     },
+     "research": {
+      "n": 7,
+      "agree": 1,
+      "under": 6
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 0,
+      "under": 1
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 3,
+      "under": 1
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "search": {
+      "n": 4,
+      "agree": 2,
+      "under": 1
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 10,
+      "under": 2
+     },
+     "other": {
+      "n": 10,
+      "agree": 3,
+      "under": 5
+     },
+     "research": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 0,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 4,
+      "under": 17
+     },
+     "search": {
+      "n": 8,
+      "agree": 4,
+      "under": 4
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 3,
+      "under": 7
+     },
+     "security": {
+      "n": 5,
+      "agree": 3,
+      "under": 1
+     }
+    }
+   },
+   "criteria": {
+    "pass": false,
+    "missed": [
+     "under",
+     "underCritical"
+    ]
+   },
+   "router": {
+    "policy": "today",
+    "model": "sonnet",
+    "effort": "low",
+    "timeoutMs": 8000,
+    "jev": {
+     "model": "jev-1.13.0",
+     "theta": 0.8
+    },
+    "modelId": "claude-sonnet-5-5"
+   },
+   "policy": "today",
+   "policyHash": "3263dca15241af2b7fcdb295d092cf2f9c9ca69ae21ba8504728e67912feb17b",
+   "routerCostUsd": 0,
+   "at": "2026-10-25T13:23:37.484Z"
+  },
+  "text-today": {
+   "metrics": {
+    "n": 80,
+    "agreement": 0.6,
+    "under": 0.0875,
+    "underCritical": 0,
+    "underCriticalRate": 0,
+    "costRatio": 1.3318979266347677,
+    "costOver": 0.3318979266347677,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 12,
+      "under": 0
+     },
+     "review": {
+      "n": 28,
+      "agree": 20,
+      "under": 0
+     },
+     "research": {
+      "n": 7,
+      "agree": 6,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 1,
+      "under": 6
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 6,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 7,
+      "under": 1
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 0,
+      "under": 6
+     },
+     "review": {
+      "n": 24,
+      "agree": 17,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 5,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 7,
+      "under": 0
+     },
+     "security": {
+      "n": 5,
+      "agree": 5,
+      "under": 0
+     }
+    }
+   },
+   "weighted": {
+    "n": 80,
+    "agreement": 0.6452038675286397,
+    "under": 0.032119768628784774,
+    "underCritical": 0,
+    "underCriticalRate": 0,
+    "costRatio": 1.3672983415268063,
+    "costOver": 0.3672983415268063,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 12,
+      "under": 0
+     },
+     "review": {
+      "n": 28,
+      "agree": 20,
+      "under": 0
+     },
+     "research": {
+      "n": 7,
+      "agree": 6,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 1,
+      "under": 6
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 6,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 7,
+      "under": 1
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 0,
+      "under": 6
+     },
+     "review": {
+      "n": 24,
+      "agree": 17,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 5,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 7,
+      "under": 0
+     },
+     "security": {
+      "n": 5,
+      "agree": 5,
+      "under": 0
+     }
+    }
+   },
+   "criteria": {
+    "pass": false,
+    "missed": [
+     "under",
+     "costOver"
+    ]
+   },
+   "router": {
+    "policy": "text",
+    "model": "haiku",
+    "effort": "medium",
+    "timeoutMs": 8000,
+    "jev": {
+     "model": "jev-1.13.0",
+     "theta": 0.8
+    },
+    "modelId": "claude-haiku-5-5"
+   },
+   "policy": "text",
+   "policyHash": "fa1869c275c2accd38ef3a31165a9d631045ec31c536311bd0a6bfe008b97811",
+   "routerCostUsd": 0.04252225999999999,
+   "at": "2026-10-25T13:25:45.534Z"
+  },
+  "text": {
+   "metrics": {
+    "n": 80,
+    "agreement": 0.6875,
+    "under": 0.0875,
+    "underCritical": 1,
+    "underCriticalRate": 0.030303030303030304,
+    "costRatio": 1.1585326953748003,
+    "costOver": 0.1585326953748003,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 14,
+      "under": 4
+     },
+     "review": {
+      "n": 28,
+      "agree": 18,
+      "under": 1
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 1
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 9,
+      "under": 1
+     },
+     "other": {
+      "n": 10,
+      "agree": 7,
+      "under": 1
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 1
+     },
+     "search": {
+      "n": 8,
+      "agree": 4,
+      "under": 2
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 2
+     },
+     "security": {
+      "n": 5,
+      "agree": 4,
+      "under": 0
+     }
+    }
+   },
+   "weighted": {
+    "n": 80,
+    "agreement": 0.7029920891459693,
+    "under": 0.06109291709198097,
+    "underCritical": 1.6456844731768672,
+    "underCriticalRate": 0.03856396408847136,
+    "costRatio": 1.1952229191388346,
+    "costOver": 0.1952229191388346,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 14,
+      "under": 4
+     },
+     "review": {
+      "n": 28,
+      "agree": 18,
+      "under": 1
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 1
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 9,
+      "under": 1
+     },
+     "other": {
+      "n": 10,
+      "agree": 7,
+      "under": 1
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 1
+     },
+     "search": {
+      "n": 8,
+      "agree": 4,
+      "under": 2
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 2
+     },
+     "security": {
+      "n": 5,
+      "agree": 4,
+      "under": 0
+     }
+    }
+   },
+   "criteria": {
+    "pass": false,
+    "missed": [
+     "under",
+     "costOver"
+    ]
+   },
+   "router": {
+    "policy": "text",
+    "model": "haiku",
+    "effort": "medium",
+    "timeoutMs": 8000,
+    "jev": {
+     "model": "jev-1.13.0",
+     "theta": 0.8
+    },
+    "modelId": "claude-haiku-5-5"
+   },
+   "policy": "text",
+   "policyHash": "ac1f615a29337a2f8f2baa05fbd021e838c5469ef63899f89e1d900c0bac0727",
+   "routerCostUsd": 0.0432615,
+   "at": "2026-10-25T13:27:04.128Z"
+  },
+  "rules": {
+   "metrics": {
+    "n": 80,
+    "agreement": 0.8125,
+    "under": 0.025,
+    "underCritical": 0,
+    "underCriticalRate": 0,
+    "costRatio": 1.1411483253588512,
+    "costOver": 0.14114832535885125,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 23,
+      "under": 1
+     },
+     "review": {
+      "n": 28,
+      "agree": 21,
+      "under": 0
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 15,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 9,
+      "under": 0
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 2
+     },
+     "security": {
+      "n": 5,
+      "agree": 4,
+      "under": 0
+     }
+    }
+   },
+   "weighted": {
+    "n": 80,
+    "agreement": 0.822543807417487,
+    "under": 0.003266417148690009,
+    "underCritical": 0,
+    "underCriticalRate": 0,
+    "costRatio": 1.17457174944906,
+    "costOver": 0.17457174944905995,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 23,
+      "under": 1
+     },
+     "review": {
+      "n": 28,
+      "agree": 21,
+      "under": 0
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 0,
+      "under": 1
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 15,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 9,
+      "under": 0
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 2
+     },
+     "security": {
+      "n": 5,
+      "agree": 4,
+      "under": 0
+     }
+    }
+   },
+   "criteria": {
+    "pass": true,
+    "missed": []
+   },
+   "router": {
+    "policy": "rules",
+    "model": "sonnet",
+    "effort": "low",
+    "timeoutMs": 8000,
+    "jev": {
+     "model": "jev-1.13.0",
+     "theta": 0.8
+    },
+    "modelId": "claude-sonnet-5-5"
+   },
+   "policy": "rules",
+   "policyHash": "859900637f03486dc5dd97437dd6424ae7f6a8f40c19b77e7e2eb21691bd945c",
+   "routerCostUsd": 0.7456459999999997,
+   "at": "2026-10-25T13:28:20.131Z"
+  },
+  "jev": {
+   "metrics": {
+    "n": 80,
+    "agreement": 0.6625,
+    "under": 0.025,
+    "underCritical": 1,
+    "underCriticalRate": 0.030303030303030304,
+    "costRatio": 1.300637958532695,
+    "costOver": 0.30063795853269504,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 11,
+      "under": 1
+     },
+     "review": {
+      "n": 28,
+      "agree": 19,
+      "under": 1
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 7,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 6,
+      "under": 0
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 1
+     },
+     "security": {
+      "n": 5,
+      "agree": 3,
+      "under": 1
+     }
+    }
+   },
+   "weighted": {
+    "n": 80,
+    "agreement": 0.6549527900646505,
+    "under": 0.011874787342633489,
+    "underCritical": 0.8193263014630847,
+    "underCriticalRate": 0.01919959176947687,
+    "costRatio": 1.32691204723964,
+    "costOver": 0.32691204723964007,
+    "byCategory": {
+     "implement": {
+      "n": 27,
+      "agree": 11,
+      "under": 1
+     },
+     "review": {
+      "n": 28,
+      "agree": 19,
+      "under": 1
+     },
+     "research": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "summarize": {
+      "n": 7,
+      "agree": 7,
+      "under": 0
+     },
+     "architecture": {
+      "n": 4,
+      "agree": 4,
+      "under": 0
+     },
+     "long-run": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "search": {
+      "n": 4,
+      "agree": 3,
+      "under": 0
+     },
+     "security": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "mechanical-edit": {
+      "n": 1,
+      "agree": 0,
+      "under": 0
+     }
+    },
+    "byStratum": {
+     "implement": {
+      "n": 16,
+      "agree": 7,
+      "under": 0
+     },
+     "other": {
+      "n": 10,
+      "agree": 6,
+      "under": 0
+     },
+     "research": {
+      "n": 1,
+      "agree": 1,
+      "under": 0
+     },
+     "summarize": {
+      "n": 6,
+      "agree": 6,
+      "under": 0
+     },
+     "review": {
+      "n": 24,
+      "agree": 18,
+      "under": 0
+     },
+     "search": {
+      "n": 8,
+      "agree": 6,
+      "under": 0
+     },
+     "architecture": {
+      "n": 10,
+      "agree": 6,
+      "under": 1
+     },
+     "security": {
+      "n": 5,
+      "agree": 3,
+      "under": 1
+     }
+    }
+   },
+   "criteria": {
+    "pass": false,
+    "missed": [
+     "costOver"
+    ]
+   },
+   "router": {
+    "policy": "jev",
+    "model": "sonnet",
+    "effort": "low",
+    "timeoutMs": 8000,
+    "jev": {
+     "model": "jev-1.13.0",
+     "theta": 0.8
+    },
+    "modelId": "claude-sonnet-5-5"
+   },
+   "policy": "jev",
+   "policyHash": "da2b4488f5b8d2f9923d92ce2882e29ee4f63880766990d8ab7cbf05e049b0dd",
+   "routerCostUsd": 0,
+   "at": "2026-10-25T13:28:22.381Z"
+  }
+ },
  "tuning": {
   "rounds": [
    {
@@ -1658,5 +2755,6 @@
     "at": "2026-10-25"
    }
   }
- }
+ },
+ "heldoutHistory": []
 }
