@@ -2,7 +2,7 @@
 // and today's router replayed on a recorded call. No I/O here except loadAgentDefs.
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { EFFORTS, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan } from '../hooks/route.mjs'
+import { EFFORTS, POLICIES, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan, parseRouterReply, applyRules, pickJevTier } from '../hooks/route.mjs'
 
 export const SEED = 20261025
 
@@ -250,4 +250,46 @@ export function todayDecision(table, plugin, call, defs) {
   const model = familyOf(set.model || plan.model || e.model) || familyOf(def.model) || familyOf(call.parentModel) || 'opus'
   const effort = [set.effort, plan.effort, e.effort, def.effort, call.parentEffort].find((x) => EFFORTS.includes(x)) || 'medium'
   return { model, effort }
+}
+
+// One policy's decision for a recorded call, from the router's reply (text, rules) or Jev's (jev):
+// the routed tier, or today's plan when the reply is unusable, as the hook falls back
+export function policyDecision(table, plugin, call, policy, reply, defs, theta) {
+  if (!POLICIES.includes(policy)) throw new Error(`unknown policy: ${policy}`)
+  const today = () => todayDecision(table, plugin, call, defs)
+  if (policy === 'today') return { decision: today(), category: null, fallback: false }
+  if (policy === 'jev') {
+    const tier = pickJevTier(table, reply, theta)
+    return tier ? { decision: tier, category: null, fallback: false } : { decision: today(), category: null, fallback: true }
+  }
+  let d = parseRouterReply(table, reply)
+  if (!d) return { decision: today(), category: null, fallback: true }
+  if (policy === 'rules') d = applyRules(table, plugin, { subagent_type: call.type, description: call.description }, d)
+  return { decision: d.tier, category: d.category, fallback: false }
+}
+
+// Gold for every sampled call: the shared tier where the judges agree (judge A's category), Filip's
+// ruling where they disagree. provisional fills a missing ruling with the recommendation, for a
+// baseline before the rulings are in; such gold never goes into the repo.
+export function buildGold(table, sample, judgments, rulings, { provisional = false } = {}) {
+  const byId = new Map(judgments.map((j) => [j.id, j]))
+  const tiers = routableTiers(table)
+  const gold = []
+  const missing = []
+  for (const c of [...sample].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    const j = byId.get(c.id)
+    if (!j || !j.A || !j.B) throw new Error(`no judgment for ${c.id}`)
+    const row = (v, source) => ({ id: c.id, tier: v.tier, category: v.category, split: c.split, stratum: c.stratum, source })
+    if (!disagrees(table, j.A, j.B)) {
+      gold.push(row(j.A, 'agreed'))
+      continue
+    }
+    const r = rulings[c.id]
+    if (r) {
+      if (!tiers.includes(r.tier) || !table.categories.includes(r.category)) throw new Error(`ruling for ${c.id} names no routable tier or known category`)
+      gold.push(row(r, 'filip'))
+    } else if (provisional && j.R) gold.push(row(j.R, 'recommendation'))
+    else missing.push(c.id)
+  }
+  return { gold, missing }
 }

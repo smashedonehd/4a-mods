@@ -115,3 +115,8 @@ export async function cached(name, req, run, { read = true } = {}) {
   c.map.set(key, value)
   return value
 }
+
+// Whether a request already has a cached reply, without running it (cost estimates before a run)
+export function isCached(name, req) {
+  return cacheOf(name).map.has(createHash('sha256').update(JSON.stringify(req)).digest('hex'))
+}

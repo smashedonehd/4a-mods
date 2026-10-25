@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions } from '../eval/lib.mjs'
+import { rng, stratumOf, STRATA, drawSample, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold } from '../eval/lib.mjs'
 import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
 import { policyInputs, policyHash } from '../eval/hash.mjs'
 
@@ -221,6 +221,48 @@ check("today's router on recorded calls", () => {
   assert.deepEqual(today({ type: 'mystery', parentModel: 'claude-sonnet-5', parentEffort: 'high' }), { model: 'sonnet', effort: 'high' })
   assert.equal(familyOf('claude-haiku-4-5-20251001'), 'haiku')
   assert.equal(familyOf('inherit'), '')
+})
+
+check('a policy decides from the reply, and an unusable reply falls back to today', () => {
+  const defs = new Map()
+  const call = { type: 'general-purpose', description: 'Review Task 3', prompt: 'x', model: '', effort: '', parentModel: 'claude-opus-5-5', parentEffort: '' }
+  const d = (policy, reply, c = call) => policyDecision(table, P, c, policy, reply, defs)
+  assert.deepEqual(d('text', '{"category":"search","tier":"quick"}'), { decision: 'quick', category: 'search', fallback: false })
+  assert.deepEqual(d('rules', '{"category":"search","tier":"quick"}'), { decision: 'deep', category: 'search', fallback: false })
+  assert.deepEqual(d('text', 'no json'), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
+  assert.deepEqual(d('text', '{"tier":"frontier"}'), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
+  assert.deepEqual(d('jev', { answers: { tier: { probabilities: { quick: 0.9, light: 0.1 } } } }), { decision: 'quick', category: null, fallback: false })
+  assert.deepEqual(d('jev', {}), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
+  assert.deepEqual(d('today', null), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: false })
+  assert.throws(() => d('x', null), /unknown policy/)
+})
+
+check('gold takes agreed verdicts and rulings, and names what is missing', () => {
+  const sample = [
+    { id: 'a', split: 'train', stratum: 'search' },
+    { id: 'b', split: 'heldout', stratum: 'review' },
+    { id: 'c', split: 'train', stratum: 'other' },
+  ]
+  const v = (tier, category) => ({ tier, category, reason: 'r' })
+  const judgments = [
+    { id: 'a', A: v('quick', 'search'), B: v('quick', 'summarize') },
+    { id: 'b', A: v('standard', 'implement'), B: v('deep', 'review'), R: v('deep', 'review') },
+    { id: 'c', A: v('light', 'other'), B: v('standard', 'other'), R: v('light', 'other') },
+  ]
+  const full = buildGold(table, sample, judgments, { b: { tier: 'deep', category: 'review' }, c: { tier: 'standard', category: 'writing' } })
+  assert.deepEqual(full.missing, [])
+  assert.deepEqual(full.gold, [
+    { id: 'a', tier: 'quick', category: 'search', split: 'train', stratum: 'search', source: 'agreed' },
+    { id: 'b', tier: 'deep', category: 'review', split: 'heldout', stratum: 'review', source: 'filip' },
+    { id: 'c', tier: 'standard', category: 'writing', split: 'train', stratum: 'other', source: 'filip' },
+  ])
+  const part = buildGold(table, sample, judgments, { b: { tier: 'deep', category: 'review' } })
+  assert.deepEqual(part.missing, ['c'])
+  const prov = buildGold(table, sample, judgments, {}, { provisional: true })
+  assert.deepEqual(prov.missing, [])
+  assert.deepEqual(prov.gold.map((g) => [g.id, g.tier, g.source]), [['a', 'quick', 'agreed'], ['b', 'deep', 'recommendation'], ['c', 'light', 'recommendation']])
+  assert.throws(() => buildGold(table, sample, judgments, { b: { tier: 'frontier', category: 'review' } }), /ruling for b/)
+  assert.throws(() => buildGold(table, sample, [judgments[0]], {}), /no judgment for b/)
 })
 
 // The runner's cache and pool, against a temporary DATA directory; no model is spawned
