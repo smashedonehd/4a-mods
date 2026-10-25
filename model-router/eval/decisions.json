@@ -1,6 +1,6 @@
 {
  "policy": "rules",
- "policyHash": "859900637f03486dc5dd97437dd6424ae7f6a8f40c19b77e7e2eb21691bd945c",
+ "policyHash": "247209b4091425e6b2cf5408d20b3c9876a961466d3d55fc489c044245be8960",
  "router": {
   "policy": "rules",
   "model": "sonnet",
@@ -19,8 +19,14 @@
   "toolu_011BsPrqbJLEFZw5VgVn72zu": "deep",
   "toolu_011J2SsYEdbAShZDVqJGYBst": "standard",
   "toolu_011PZtecZvGhJAxcVJSDPJa8": "standard",
-  "toolu_011QZWAkzwaVziuxEfEh32Zq": "standard",
-  "toolu_011RSpsMZgDJiqKANBvFyqLb": "standard",
+  "toolu_011QZWAkzwaVziuxEfEh32Zq": {
+   "model": "opus",
+   "effort": "medium"
+  },
+  "toolu_011RSpsMZgDJiqKANBvFyqLb": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_011T9LVyLjoawaM21Ss8vh2e": "deep",
   "toolu_011YS5yT1zXXxuBfDQHav68h": "standard",
   "toolu_011YiCkudCr311vzNUF6NAeg": "standard",
@@ -36,14 +42,23 @@
   "toolu_0121YiqXkvGBqcyRzKL1B652": "standard",
   "toolu_0123nYyhPoTXvydbGd83CK4k": "quick",
   "toolu_0124eotK2RCv2zZpz4UZTZbB": "standard",
-  "toolu_012JY3pmXKE7pACUoV7CsbLm": "standard",
+  "toolu_012JY3pmXKE7pACUoV7CsbLm": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_012MpB2dF2k59Bjzt46noBUv": "standard",
-  "toolu_012PFwpeqKH3jaYPFXzqpkcq": "standard",
+  "toolu_012PFwpeqKH3jaYPFXzqpkcq": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_012PnnpoyjGq4RAt2Q74qGKs": "standard",
   "toolu_012UhqYeoAwUkpBK1Atqq3c6": "standard",
   "toolu_012Y1gidP4DWd8gS9ko6e5nL": "deep",
   "toolu_012psZJTkbjGxDzdXvwmuRf2": "standard",
-  "toolu_012r3mdkNscW9pyNXjsZvFJo": "standard",
+  "toolu_012r3mdkNscW9pyNXjsZvFJo": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_012vGJokhSx9raTH3xdXHfVu": "standard",
   "toolu_012yJY2vf9p9guRgtev3jx3v": "standard",
   "toolu_0133WehoFTjL7q38HVKqwJaQ": "deep",
@@ -73,7 +88,10 @@
   "toolu_014nDTZJVhngioA74GkjGhbC": "deep",
   "toolu_014sbizK1us9iyLyYmghxUTv": "standard",
   "toolu_014tPn8u9ghQKWYrdyauzNv3": "deep",
-  "toolu_014tYUCZ54hN6CKyopBn8yY5": "standard",
+  "toolu_014tYUCZ54hN6CKyopBn8yY5": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_014w2vqQVWhSFpgxwfRgJUDv": "standard",
   "toolu_014ybzBwTFHEujcrxZDNKwuc": "deep",
   "toolu_0152P9BUpZVGwtZT3Qe3LkyZ": "standard",
@@ -96,14 +114,26 @@
   "toolu_016HMpdVoswVLCxSxpTiLdWN": "deep",
   "toolu_016J1Do8n2o1CuzUbFiv7AWt": "standard",
   "toolu_016JLUYDuFPE98rx8ixNVjjf": "deep",
-  "toolu_016NEmpi9u6Y9GVTvyNEoKU5": "standard",
+  "toolu_016NEmpi9u6Y9GVTvyNEoKU5": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_016WXPAXmYVduCgbhJnBzuSR": "deep",
   "toolu_016aCFGTtZJQxrKLzLBnFLNh": "standard",
-  "toolu_016mPNGBsp6eCGPJeqaT7F1S": "standard",
+  "toolu_016mPNGBsp6eCGPJeqaT7F1S": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_016oG8yUEDLNV2j2F1dzBdsw": "deep",
   "toolu_016rSjvBHgFACr3KySTdaWsf": "deep",
-  "toolu_016vBsfhrARkyUsVR2RTwD4P": "deep",
-  "toolu_016xeDLFxPnHgGtamMCE4Y5j": "deep",
+  "toolu_016vBsfhrARkyUsVR2RTwD4P": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
+  "toolu_016xeDLFxPnHgGtamMCE4Y5j": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_0171TCDefe88ZGHNXeD1UbqV": "deep",
   "toolu_0175XuPHVhbscsMv7vSL9yf3": "standard",
   "toolu_0175uMVG89khTu317zC3cKR6": "deep",
@@ -119,18 +149,30 @@
   "toolu_017teThtEaDPcVRrWX4zAgc6": "deep",
   "toolu_017yZaiS9sKjtA7JNW2Er241": "deep",
   "toolu_0181xAHYN8GwyvWJoNN17gDv": "deep",
-  "toolu_0183ck2pzfQpMK222Q9NgydL": "deep",
+  "toolu_0183ck2pzfQpMK222Q9NgydL": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_0187Yj1uG9FH2vBXgPRLQdMD": "deep",
   "toolu_018DwG4nfrDS6HazHw246UYi": "deep",
   "toolu_018GeRNVBJvDkVG59F8cBhgc": "deep",
-  "toolu_018KC3RnKPAkrHL98cNsN52G": "standard",
+  "toolu_018KC3RnKPAkrHL98cNsN52G": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_018MrtEbnkSBWHmJCEpSovnn": "long",
   "toolu_018QFVGoA58QHuVj3PUsno3w": "deep",
-  "toolu_018UyKmKo1VcKkBd1Y64y7hR": "standard",
+  "toolu_018UyKmKo1VcKkBd1Y64y7hR": {
+   "model": "opus",
+   "effort": "high"
+  },
   "toolu_018ZPpK43rS4wRK5KX44WcwR": "deep",
   "toolu_018ax6CGzsRC23x8bfa7VpKk": "deep",
   "toolu_018vGM5dC4idVA5SiT6FSTiM": "deep",
-  "toolu_018wjcfydHYETnTZi7TWP77d": "standard",
+  "toolu_018wjcfydHYETnTZi7TWP77d": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_018yMKaV61N4ojmcG8tAJzCr": "deep",
   "toolu_018zBSaRKF8RXcuU58XLJhr4": "deep",
   "toolu_0194ZK47r5bALeppwtD9i5Gs": "standard",
@@ -158,7 +200,10 @@
   "toolu_01AdvmAa1iuMYLEWTHZsorh7": "standard",
   "toolu_01AeFXFuSvYUxta1kupBuvYx": "deep",
   "toolu_01AeLdy4qNit4cBQqzyjTv9J": "deep",
-  "toolu_01AiUkFbunuLbKdELxmQL4eQ": "standard",
+  "toolu_01AiUkFbunuLbKdELxmQL4eQ": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01AjY3uLFGQ6x4pRNjZQrHth": "deep",
   "toolu_01AkyGdq389H6mEhp19BADno": "deep",
   "toolu_01ArY1ryHiFwBbuFbWU37YjT": "deep",
@@ -194,10 +239,16 @@
   "toolu_01DQoQn6ZzjM6Sb8eJW4saoa": "deep",
   "toolu_01DR6YPaCkTgzqeLzEVR5qXS": "deep",
   "toolu_01Dq5SCAGNLDw22EcdVgStU7": "standard",
-  "toolu_01Dzztb8dcXNbTH5Mxzh6Xbi": "standard",
+  "toolu_01Dzztb8dcXNbTH5Mxzh6Xbi": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01E6Scu5qBXTNvPQoArREDUU": "standard",
   "toolu_01ECEeeQB44czw36chWk8C7F": "deep",
-  "toolu_01EDY1jnx2JXv6TmyTxH9aJr": "quick",
+  "toolu_01EDY1jnx2JXv6TmyTxH9aJr": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01ES1cxPvmVjjo7ukm4deifd": "deep",
   "toolu_01EZaPxBCRy8v8xMsioXnmPh": "standard",
   "toolu_01EdaLL5FAexP6W94G4x2RZj": "long",
@@ -206,7 +257,10 @@
   "toolu_01EkZQBRx1i6wtxmSoiegceV": "deep",
   "toolu_01EoWxdDAYSWoQ3MeuRN5bGh": "deep",
   "toolu_01EpmWGwC8t4VYLky1KwgK3R": "standard",
-  "toolu_01F1RF74nii1gUYjEajxJ3jZ": "quick",
+  "toolu_01F1RF74nii1gUYjEajxJ3jZ": {
+   "model": "sonnet",
+   "effort": "medium"
+  },
   "toolu_01F7MDV3MJERZgjyLAjAKyNf": "deep",
   "toolu_01F7UvbGw9UXSF9JM23q65Rr": "deep",
   "toolu_01FBUwEBGL4ct9YETQ7eksVH": "deep",
@@ -228,15 +282,24 @@
   "toolu_01GXaNr7jzFjNFC4uf22735k": "standard",
   "toolu_01GmVYP5gfVzbEXmQVHLmb2Y": "deep",
   "toolu_01Gt4P93C8tCprQvM2p5qiYJ": "deep",
-  "toolu_01H3gYnWNU8GqEqn7pVfkN8c": "standard",
+  "toolu_01H3gYnWNU8GqEqn7pVfkN8c": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01H4CBiiz4QtinU1SksTEKuz": "deep",
   "toolu_01H75p1Xe4h3VFzYTLG7Q489": "deep",
   "toolu_01H7A7AHPj6FYu4Tq6etcDPc": "deep",
   "toolu_01H9phqNZLTV9r1k5pqfayo1": "standard",
   "toolu_01HAmoovJCrohHvHtNT7CNoJ": "standard",
   "toolu_01HGVDfecZY9hWduAtkQy1oa": "deep",
-  "toolu_01HUfj3wJ91pS4DpWiJRz8qm": "standard",
-  "toolu_01Hf6qD5DG1VrqDj3F42BqDr": "standard",
+  "toolu_01HUfj3wJ91pS4DpWiJRz8qm": {
+   "model": "opus",
+   "effort": "high"
+  },
+  "toolu_01Hf6qD5DG1VrqDj3F42BqDr": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01HsGcPpKHKeTJkuyYF7HHry": "deep",
   "toolu_01HwTBSreH7TRkfmDM1t7LwG": "standard",
   "toolu_01HzZQnVs9R8XtEwmjFEn6yn": "deep",
@@ -244,20 +307,29 @@
   "toolu_01JBxcYbgSmqFzcDvVGkUYps": "deep",
   "toolu_01JCmdBTkXEMQGzy9c8sKDGg": "standard",
   "toolu_01JJSLkxvkuXbE8hG9JMtnRt": "deep",
-  "toolu_01JQjDV8o232kG7b91m3Tudy": "standard",
+  "toolu_01JQjDV8o232kG7b91m3Tudy": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01JYZutPDW4hPALVgx7Jb3ow": "deep",
   "toolu_01JZpt5VA3FPidLtn8weZTgn": "quick",
   "toolu_01JbifyZuhME5Tt9Bn3u5nTe": "deep",
   "toolu_01JgKSQqgZ8Wr6DdqzkoCbDM": "standard",
   "toolu_01JigeztbwomN7xZPjZcTcpo": "standard",
   "toolu_01Jnx9eusY2K4hWsqF3TGsg5": "standard",
-  "toolu_01Jy4gxirskig7SNH93jAUtX": "deep",
+  "toolu_01Jy4gxirskig7SNH93jAUtX": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01K7jJFfrskKKQcxkm8wFRr2": "deep",
   "toolu_01KDA3c6UYNHYuyBc1u2A7Ef": "deep",
   "toolu_01KE8uQ6jQSYt3NSXY39s5hf": "deep",
   "toolu_01KEWHCYT3K68zV99qjDjs7c": "standard",
   "toolu_01KHqjmRhkkE8GFJbj2iSq6h": "deep",
-  "toolu_01KJSJZZHqjFDTY7RXaFSJ53": "standard",
+  "toolu_01KJSJZZHqjFDTY7RXaFSJ53": {
+   "model": "opus",
+   "effort": "high"
+  },
   "toolu_01KKDbh8ZBAehMKVDs7bAhk7": "deep",
   "toolu_01KKGRTU13qSRmBEYUDqop6M": "deep",
   "toolu_01KMLMDaqB5KkoBMfwf5tUcL": "deep",
@@ -285,7 +357,10 @@
   "toolu_01MeSzPnSbiauFpGw6hvSDfH": "standard",
   "toolu_01MhPhU2z7DUUisKigB2HHGB": "deep",
   "toolu_01MrmYB496Bh1f3Qs9RUeYyV": "deep",
-  "toolu_01MtFUmzJapXd5tP73aqbMqq": "standard",
+  "toolu_01MtFUmzJapXd5tP73aqbMqq": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01N6DfQN6owiWzrqkad4vThg": "standard",
   "toolu_01NDGA3LXY8FKzfgSttjMWTQ": "standard",
   "toolu_01NDvUARQ1aRxRZAiBhaioGd": "deep",
@@ -309,7 +384,10 @@
   "toolu_01QfvzdBfSFgxNSEGjhpY3TD": "standard",
   "toolu_01QgZKLHXFpBQxhzjbA1Qow5": "standard",
   "toolu_01Qjkr46tPsk7bPmfgejEFLC": "deep",
-  "toolu_01Qnop2j3wBYiw1Q3e6CNJsa": "standard",
+  "toolu_01Qnop2j3wBYiw1Q3e6CNJsa": {
+   "model": "opus",
+   "effort": "high"
+  },
   "toolu_01Qs6BV7fYuiejWa11gNuPSV": "standard",
   "toolu_01RGWzbjaGACnDJCGkN9DWws": "deep",
   "toolu_01RNcdv7JLJHL4ExAQQBie1x": "deep",
@@ -322,39 +400,63 @@
   "toolu_01RiJCeWvftiu13BzUZo3Tez": "deep",
   "toolu_01RqReEo6tgxwWqtFWcFYv27": "deep",
   "toolu_01S2ZscuyKhWrM6LGup4tRCb": "standard",
-  "toolu_01S66BMJwCyY7Ev9uJx9CbQc": "light",
-  "toolu_01S6DdRcmxTLXXu5qjkLJ7PL": "deep",
+  "toolu_01S66BMJwCyY7Ev9uJx9CbQc": {
+   "model": "opus",
+   "effort": "high"
+  },
+  "toolu_01S6DdRcmxTLXXu5qjkLJ7PL": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01S8wm7ZPnayJFQMYf8zGuLG": "deep",
-  "toolu_01SEdkE8MLiMTksQfrUUL8dD": "standard",
+  "toolu_01SEdkE8MLiMTksQfrUUL8dD": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01SJR8hCXThocRBkk1UXj1gT": "deep",
   "toolu_01ScNvtnwVoMUCkfiEehcumt": "long",
   "toolu_01SeVqUG8taE9gubaDCnVoUT": "deep",
   "toolu_01SiU3HPZBMe2GoDVURJiukT": "light",
   "toolu_01SpjFyQMZxvrVuoCEUN47nw": "deep",
   "toolu_01SuBq1wzk7DPSrNocKnXRu4": "deep",
-  "toolu_01SupTXNg5bALLadhDoWR2Rn": "standard",
+  "toolu_01SupTXNg5bALLadhDoWR2Rn": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01Sy5577GvMRB2yzZWJXXWQp": "deep",
   "toolu_01Szk7wgRcqrdKg2x21UxJZN": "deep",
   "toolu_01T2dMdgbSRWDRkQzDJaPWBK": "deep",
   "toolu_01T41ASEi2Rr8MEZ3ohfm9MJ": "standard",
-  "toolu_01T4Veqs1CP7XrtBiUD7Wyeu": "standard",
+  "toolu_01T4Veqs1CP7XrtBiUD7Wyeu": {
+   "model": "opus",
+   "effort": "high"
+  },
   "toolu_01T6nhF6op7TEsPetZw8NC3G": "deep",
   "toolu_01THdZfWk9oHBm2RceUsRi9b": "deep",
   "toolu_01TL9Y1RpYw4LmiNQwNGuQS9": "deep",
   "toolu_01TLnzZXtj5nGV9Uc4yyyvQx": "deep",
   "toolu_01TNMA2Dcx3BwKnBXCXFcWrB": "deep",
-  "toolu_01TNw7tk28w4ZBSfHy2RGdxt": "light",
+  "toolu_01TNw7tk28w4ZBSfHy2RGdxt": {
+   "model": "sonnet",
+   "effort": "medium"
+  },
   "toolu_01TUweb2YXJHiLe1pzkrXntV": "light",
   "toolu_01TZkVKo6A5nzFrteuwdNVTY": "deep",
   "toolu_01TbkHKHjK8SVLpabFsHx9Es": "deep",
   "toolu_01TeU2v45wzGm73aABd6kTYc": "deep",
   "toolu_01Tf1DW7DpujZjUEqJtrKu36": "deep",
-  "toolu_01ThK1J3BdQ4HrVr5aPnduR7": "quick",
+  "toolu_01ThK1J3BdQ4HrVr5aPnduR7": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01Tiad4ASx9Vvf1CEwW1q7pd": "deep",
   "toolu_01TirGaR5vGTqVzchcMQAB9G": "standard",
   "toolu_01Tj35hmp32GjTS1X7Lx78PT": "long",
   "toolu_01ToLj1wyvPPcpDx3D2Y6Egx": "standard",
-  "toolu_01ToQy1Jjp8miu3o3K5gZHvK": "deep",
+  "toolu_01ToQy1Jjp8miu3o3K5gZHvK": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01TsnJkV3PBRWkRoXFUhDmaR": "deep",
   "toolu_01TtM557g4NZZvgdHzRkqdJa": "standard",
   "toolu_01Tz44en6BM3uTEmv3AXXeWo": "standard",
@@ -376,21 +478,30 @@
   "toolu_01VFivHcF9ED53geEAowoVLX": "deep",
   "toolu_01VMjcB3mrnifbjAb5kHAHVP": "deep",
   "toolu_01VN9bWvW1DJjeBbtnd7x8ei": "deep",
-  "toolu_01VQNs9R3RkCiziLTEowDMzh": "standard",
+  "toolu_01VQNs9R3RkCiziLTEowDMzh": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01VQifUCBca9WUHL9HnQ8Ces": "standard",
   "toolu_01VR1LQu5RQYoVLbrf1nAFrM": "quick",
   "toolu_01VapRNVUF9uKuoXDjSUBLDR": "standard",
   "toolu_01VsW2tnm2ZEadhx634NzdkB": "deep",
   "toolu_01VuK4Hknen1rqHNoKykBJ2r": "deep",
   "toolu_01Vyr6xe4DCGF3SXa5fNizcT": "standard",
-  "toolu_01W6Qx7yRskEotQv42voeFjf": "standard",
+  "toolu_01W6Qx7yRskEotQv42voeFjf": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01W8uf6ubx6FUVSMXzAqwann": "deep",
   "toolu_01WDzweK9jX8jNJVihdYs1QJ": "deep",
   "toolu_01WH2LbsBAEoR9EWQQE2GNDR": "deep",
   "toolu_01WM8gt7XMj4rQN4dSsxNucp": "deep",
   "toolu_01WN7S7QrkQv2V4o7RhKuFft": "deep",
   "toolu_01WQkHheLQG38LdFkefaRLiH": "deep",
-  "toolu_01WSgwZeHcC8HVnd6SqciZM7": "standard",
+  "toolu_01WSgwZeHcC8HVnd6SqciZM7": {
+   "model": "opus",
+   "effort": "high"
+  },
   "toolu_01WTq9wmbPbd4miB7NGwcbBt": "deep",
   "toolu_01WcQCixPGG74FmWQVzZ22ti": "deep",
   "toolu_01WehXvo4ZPCKYNJFb4qmfgM": "standard",
@@ -402,14 +513,20 @@
   "toolu_01XQyLgpCAXoWaE5aVM4TRvx": "deep",
   "toolu_01XTk17CWsNQJvZktSTXurJH": "standard",
   "toolu_01XU3WNxcnJg3PfBmJmYWeQS": "standard",
-  "toolu_01XXqRD6ZqJcuxbJFn2G5STY": "deep",
+  "toolu_01XXqRD6ZqJcuxbJFn2G5STY": {
+   "model": "opus",
+   "effort": "xhigh"
+  },
   "toolu_01XYu1zZU3SncjtAMzn1UvJb": "standard",
   "toolu_01Xc4Xkh7u9i3JCmQMxaLfD1": "deep",
   "toolu_01XiQY1VeHrcNVk6sP3U6ogo": "deep",
   "toolu_01Xn8QwsyaJoQrmRppcLoAJ2": "deep",
   "toolu_01Xqe56u5BYgkzk9UFTtcdvz": "standard",
   "toolu_01Y68XdCTW8UU6SdLJLhSXYo": "deep",
-  "toolu_01Y8ZUBuqNud4xU6wYrqf6m6": "standard",
+  "toolu_01Y8ZUBuqNud4xU6wYrqf6m6": {
+   "model": "opus",
+   "effort": "medium"
+  },
   "toolu_01Y8oNQCP4JGMGCNG4tg7mp4": "deep",
   "toolu_01YEySfWm6ttyFZuApmhd5wu": "deep",
   "toolu_01YS3e2dMRpcL8ru9oVU5rbk": "deep",
