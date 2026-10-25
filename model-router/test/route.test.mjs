@@ -2,7 +2,7 @@
 // Checks the shipped routing.json and the router's decision for each kind of Agent call.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType } from '../hooks/route.mjs'
+import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType, routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan } from '../hooks/route.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -208,6 +208,91 @@ check('a broken table is refused with a reason', () => {
   assert.match(invalidTable({ ...table, tiers: { ...table.tiers, deep: { ...table.tiers.deep, model: 'gpt' } } }), /unknown model gpt/)
   assert.match(invalidTable({ ...table, tiers: { ...table.tiers, quick: { ...table.tiers.quick, effort: 'ultra' } } }), /effort ultra/)
   assert.match(invalidTable({ ...table, fill: { model: 'opus' } }), /fill/)
+})
+
+check('the shipped table is schema 3 and valid', () => {
+  assert.equal(table.schema, 3)
+  assert.equal(invalidTable(table), '')
+  assert.match(invalidTable({ ...table, router: { ...table.router, policy: 'x' } }), /router policy/)
+  assert.match(invalidTable({ ...table, router: { ...table.router, default: 'maybe' } }), /router default/)
+  assert.match(invalidTable({ ...table, router: { ...table.router, model: 'gpt' } }), /router model/)
+  assert.match(invalidTable({ ...table, critical: ['nope'] }), /critical/)
+  assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], floor: 'ultra' }] }), /floor/)
+  assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: '(' }] }), /match/)
+  assert.match(invalidTable({ ...table, costModel: { ...table.costModel, effort: { low: 1 } } }), /costModel/)
+  assert.match(invalidTable({ ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 'x', out: 1 } } } }), /price/)
+})
+
+check('the blind view hides the chosen model', () => {
+  for (const type of ['opus-high', 'model-router:deep', 'claude', '', undefined]) {
+    const v = blindView(table, P, { subagent_type: type, description: 'Find a file', prompt: 'List files.' })
+    assert.match(v, /^Agent type: general-purpose$/m)
+    assert.ok(!v.includes('opus-high') && !v.includes('model-router'))
+  }
+  assert.match(blindView(table, P, { subagent_type: 'irene-reviewer', description: 'd', prompt: 'p' }), /^Agent type: irene-reviewer$/m)
+  assert.match(blindView(table, P, { subagent_type: 'Explore', description: 'd', prompt: 'p' }), /^Agent type: Explore$/m)
+})
+
+check('the blind view cuts a huge prompt and survives an empty one', () => {
+  const v = blindView(table, P, { description: 'd', prompt: 'x'.repeat(100000) })
+  assert.ok(v.length < 12500)
+  assert.match(v, /characters cut/)
+  assert.match(blindView(table, P, {}), /Task prompt:/)
+})
+
+check('the router never offers the frontier', () => {
+  assert.ok(!routableTiers(table).includes('frontier'))
+  const req = routerRequest(table, P, { description: 'd', prompt: 'p' })
+  for (const text of [tierTable(table), req.system]) assert.ok(!/frontier|fable/i.test(text))
+  assert.deepEqual([req.model, req.effort, req.timeoutMs], ['haiku', 'low', 8000])
+  assert.ok(req.maxTokens >= 1024)
+  assert.match(req.prompt, /Task description: d/)
+  for (const t of routableTiers(table)) assert.ok(req.system.includes(`- ${t} (`))
+  for (const c of table.categories) assert.ok(req.system.includes(c))
+})
+
+check('router replies parse strictly', () => {
+  assert.deepEqual(parseRouterReply(table, '{"category":"search","tier":"quick"}'), { tier: 'quick', category: 'search' })
+  assert.deepEqual(parseRouterReply(table, 'Sure.\n{"category": "search", "tier": "quick"}\nDone'), { tier: 'quick', category: 'search' })
+  for (const text of ['{"category":"search","tier":"frontier"}', '{"tier":"ultra"}', 'quick', '', '{not json}', undefined]) {
+    assert.equal(parseRouterReply(table, text), null)
+  }
+  assert.deepEqual(parseRouterReply(table, '{"category":"poetry","tier":"light"}'), { tier: 'light', category: 'other' })
+})
+
+check('rules raise review, security and architecture to the floor', () => {
+  assert.deepEqual(applyRules(table, P, { description: 'Review Task 3' }, { tier: 'quick', category: 'search' }), { tier: 'deep', category: 'search', ruled: true })
+  assert.equal(applyRules(table, P, { description: 'Look at this' }, { tier: 'quick', category: 'security' }).tier, 'deep')
+  assert.deepEqual(applyRules(table, P, { description: 'Review Task 3' }, { tier: 'long', category: 'review' }), { tier: 'long', category: 'review' })
+  assert.deepEqual(applyRules(table, P, { description: 'Implement Task 2' }, { tier: 'standard', category: 'implement' }), { tier: 'standard', category: 'implement' })
+  // A rule reads the type and the description, never the prompt
+  assert.equal(applyRules(table, P, { description: 'Implement Task 2', prompt: 'then review it' }, { tier: 'standard', category: 'implement' }).tier, 'standard')
+  assert.equal(applyRules(table, P, { subagent_type: 'lisa-reviewer', description: 'PR 12' }, { tier: 'standard', category: 'other' }).tier, 'deep')
+})
+
+check('Jev picks the cheapest tier whose cumulative probability reaches theta', () => {
+  const reply = { answers: { tier: { probabilities: { quick: 0.5, light: 0.2, standard: 0.2, deep: 0.1, long: 0 } } } }
+  assert.equal(pickJevTier(table, reply, 0.5), 'quick')
+  assert.equal(pickJevTier(table, reply, 0.8), 'standard')
+  assert.equal(pickJevTier(table, reply, 0.95), 'deep')
+  assert.equal(pickJevTier(table, reply), 'standard')
+  // Probabilities that do not sum to 1 are read as shares of their sum
+  assert.equal(pickJevTier(table, { answers: { tier: { probabilities: { quick: 0.45, light: 0.05 } } } }, 0.8), 'quick')
+  for (const r of [null, {}, { answers: {} }, { answers: { tier: { probabilities: { quick: 0 } } } }]) assert.equal(pickJevTier(table, r), null)
+  const req = jevRequest(table, P, { description: 'd', prompt: 'p' })
+  assert.equal(req.path, '/v1/systemone')
+  assert.deepEqual([req.body.model, req.body.questions.tier.type], ['jev-1.13.0', 'choice'])
+  assert.deepEqual(Object.keys(req.body.questions.tier.criteria), routableTiers(table))
+  assert.match(req.body.state, /Task description: d/)
+})
+
+check('a routed plan sets model and effort, and moves only our own type', () => {
+  assert.deepEqual(routedPlan(table, P, { subagent_type: 'model-router:deep' }, 'standard'), {
+    action: 'routed', tier: 'standard', model: 'sonnet', effort: 'medium',
+    set: { subagent_type: 'model-router:standard', model: 'sonnet', effort: 'medium' },
+  })
+  assert.deepEqual(routedPlan(table, P, { subagent_type: 'irene-reviewer' }, 'standard').set, { model: 'sonnet', effort: 'medium' })
+  assert.deepEqual(routedPlan(table, P, {}, 'quick').set, { model: 'haiku', effort: 'low' })
 })
 
 check('age in days', () => assert.equal(ageDays({ updated: '2026-10-24' }, Date.parse('2026-11-03T12:00:00Z')), 10))

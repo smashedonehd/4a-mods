@@ -1,7 +1,7 @@
 {
-  "schema": 2,
-  "updated": "2026-10-24",
-  "notes": "Tier table for model-router. Each tier becomes the agent type model-router:<tier>, and Claude picks the type that fits the task. Model names are Claude Code aliases, so they follow the newest model of each line without an edit here. Changed by hand or by the weekly refresh (UPDATING.md), always through a pull request.",
+  "schema": 3,
+  "updated": "2026-10-25",
+  "notes": "Tier table and routing policy for model-router, the one source of truth for which model and effort a delegated task gets. Each tier becomes the agent type model-router:<tier>. With auto routing on, the router below picks the tier of every Agent call but forks; the eval (eval/, UPDATING.md) guards the descriptions, categories, rules and router. Model names are Claude Code aliases, so they follow the newest model of each line without an edit here. Changed by hand or by the weekly refresh (UPDATING.md), always through a pull request.",
   "sources": [
     "https://platform.claude.com/docs/en/about-claude/models/overview",
     "https://platform.claude.com/docs/en/build-with-claude/effort",
@@ -9,11 +9,34 @@
     "https://code.claude.com/docs/en/subagents"
   ],
   "models": {
-    "haiku": { "id": "claude-haiku-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"] },
-    "sonnet": { "id": "claude-sonnet-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"] },
-    "opus": { "id": "claude-opus-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"] },
-    "fable": { "id": "claude-fable-5-1", "efforts": ["low", "medium", "high", "xhigh", "max"] }
+    "haiku": { "id": "claude-haiku-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "price": { "in": 0.1, "out": 0.5 } },
+    "sonnet": { "id": "claude-sonnet-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "price": { "in": 2, "out": 10 } },
+    "opus": { "id": "claude-opus-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "price": { "in": 4, "out": 20 } },
+    "fable": { "id": "claude-fable-5-1", "efforts": ["low", "medium", "high", "xhigh", "max"], "price": { "in": 10, "out": 50 } }
   },
+  "costModel": {
+    "inputShare": 0.8,
+    "effort": { "low": 0.5, "medium": 1, "high": 1.6, "xhigh": 2.5, "max": 4 },
+    "note": "Assumption, not a measurement: no source gives how many tokens an agent spends per effort level. A tier's relative cost is its model's price per MTok (prices in USD from the claude-api skill, 2026-10-06), weighted 80 % input and 20 % output, times the effort factor above. The eval's cost criterion compares these relative costs."
+  },
+  "categories": ["search", "summarize", "mechanical-edit", "implement", "debug", "research", "writing", "review", "security", "architecture", "long-run", "other"],
+  "critical": ["review", "security", "architecture"],
+  "rules": [
+    {
+      "floor": "deep",
+      "categories": ["review", "security", "architecture"],
+      "match": "\\b(review|re-review|revize|recenz|audit|security|bezpečnost|architekt|architecture|threat)"
+    }
+  ],
+  "router": {
+    "policy": "text",
+    "default": "off",
+    "model": "haiku",
+    "effort": "low",
+    "timeoutMs": 8000,
+    "jev": { "model": "jev-1.13.0", "theta": 0.8 }
+  },
+  "thresholds": { "agreement": 0.95, "under": 0.01, "underCritical": 0, "costOver": 0.15 },
   "tiers": {
     "quick": {
       "model": "haiku",

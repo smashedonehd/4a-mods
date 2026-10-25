@@ -3,13 +3,19 @@ import { expect, test } from 'claude-code/testing'
 // The hooks' wiring against the engine; the shipped routing.json and the
 // decisions themselves are checked by route.test.mjs under plain node.
 const TABLE = {
-  schema: 2,
+  schema: 3,
   updated: '2026-10-24',
   models: {
-    haiku: { id: 'h', efforts: ['low', 'medium'] },
-    opus: { id: 'o', efforts: ['low', 'medium', 'high'] },
-    fable: { id: 'f', efforts: ['high'] },
+    haiku: { id: 'h', efforts: ['low', 'medium'], price: { in: 0.1, out: 0.5 } },
+    opus: { id: 'o', efforts: ['low', 'medium', 'high'], price: { in: 4, out: 20 } },
+    fable: { id: 'f', efforts: ['high'], price: { in: 10, out: 50 } },
   },
+  costModel: { inputShare: 0.8, effort: { low: 0.5, medium: 1, high: 1.6, xhigh: 2.5, max: 4 } },
+  categories: ['search', 'implement', 'review', 'security', 'architecture', 'other'],
+  critical: ['review', 'security', 'architecture'],
+  rules: [{ floor: 'deep', categories: ['review', 'security', 'architecture'], match: '\\breview' }],
+  router: { policy: 'text', default: 'off', model: 'haiku', effort: 'low', timeoutMs: 8000, jev: { model: 'jev-1.13.0', theta: 0.8 } },
+  thresholds: { agreement: 0.95, under: 0.01, underCritical: 0, costOver: 0.15 },
   tiers: {
     quick: { model: 'haiku', effort: 'low', description: 'Quick lookups and other read-only answers.' },
     deep: { model: 'opus', effort: 'high', description: 'Hard engineering, architecture and reviews.' },
