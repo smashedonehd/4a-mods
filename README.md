@@ -5,7 +5,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | Mod | Commands | What it does |
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
-| [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, so each delegated task runs on the model it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, Fable only when Opus fell short |
+| [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, so each delegated task runs on the model it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, and Fable only after `/route fable` |
 
 ## Requirements
 
@@ -59,7 +59,8 @@ Claude Code runs a subagent on its parent's model unless told otherwise, so a gr
 - **Safety net:** a general agent Claude starts with nothing set runs on Opus at medium effort. A general or mapped built-in agent (Explore, Plan) given only a model runs at the effort of that model's first tier (Sonnet at medium, Opus at high) instead of inheriting the main chat's effort. A tier type, a model and effort Claude set, an effort alone, a fork, and a custom agent type with its own model are left as they are. No Agent call is ever refused or delayed, and the hook makes no model calls.
 - **The main chat is never switched.** Changing the model there would throw away its prompt cache; pick its model with `/model` yourself.
 - **Staying current:** the tiers name aliases, so a new Opus or Sonnet is used without a change. Which tier gets which line and effort changes through a pull request (`model-router/UPDATING.md`), and a plugin update brings it. The status line warns when the table is over 30 days old.
-- **`/route`** routes from Haiku up to Opus, which is the default: the Fable type is hidden from Claude, and an Agent call that names Fable runs on Opus at xhigh instead. **`/route fable`** routes from Haiku up to Fable. Both stay set across chats and show the agent types, the default, and how many Agent calls went where; the status line shows the range (`router haiku → opus`). `/route fill off` turns the safety net off, `/route stats reset` clears the counts.
+- **`/route`** routes from Haiku up to Opus, which is the default: the Fable type is hidden from Claude, and an Agent call that names Fable, by model or by the Fable type, runs as `model-router:long` on Opus instead, at xhigh or at the effort Claude set. A custom agent type whose own definition picks Fable is not changed, and neither is a fork or a custom type with no model in a Fable main chat: those can still run on Fable. **`/route fable`** routes from Haiku up to Fable. Both stay set across chats and show the agent types, the default, and how many Agent calls went where, so with Fable on, `/route fable` shows them without closing it; the status line shows the range (`router haiku → opus`). `/route fill off` turns the safety net off, `/route stats reset` clears the counts.
+- **Updating from 2.0.0** starts at Opus, since 2.0.0 stored no range: run `/route fable` once to keep Fable.
 
 If you installed the earlier Model Router from the `smashedonehd-mods` marketplace, uninstall it first, or both will hook the same Agent calls.
 

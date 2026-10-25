@@ -72,8 +72,10 @@ export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
   const tier = tierOfType(table, plugin, type)
-  const kept = { action: 'keep', why: 'set by Claude', tier: e.model ? '' : tier, model: e.model, effort: e.effort }
-  if (tier && type.startsWith(`${plugin}:`)) {
+  // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
+  const own = tier && type.startsWith(`${plugin}:`)
+  const kept = { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
+  if (own) {
     return e.model || e.effort ? kept : { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
   }
   if (!tier && !table.fill.types.includes(type)) return e.model || e.effort ? kept : { action: 'keep', why: 'own definition' }
@@ -107,12 +109,22 @@ export function capTier(table) {
   return below[below.length - 1]
 }
 
-// Under the 'opus' ceiling a call bound for the frontier model runs on the cap tier instead
-export function capPlan(table, plan, ceiling) {
-  if (ceiling === 'fable' || !isFrontier(table, plan)) return plan
+// Under the 'opus' ceiling a call bound for the frontier model runs on the cap tier's model instead,
+// at the effort Claude set if that model takes it, else the cap tier's. The host refuses a type it
+// does not offer, so a call naming the frontier type also moves to the cap tier's type.
+export function capPlan(table, plugin, e, plan, ceiling) {
+  if (ceiling === 'fable' || !table.frontier) return plan
+  const hidden = String(e.subagent_type || '') === `${plugin}:${table.frontier}`
+  const frontier = isFrontier(table, plan)
+  if (!hidden && !frontier) return plan
   const tier = capTier(table)
-  const { model, effort } = table.tiers[tier]
-  return { ...plan, action: 'capped', tier, model, effort, set: { model, effort } }
+  const move = hidden ? { subagent_type: `${plugin}:${tier}` } : {}
+  // The frontier type with a model below the frontier: only the type moves, the model Claude set is kept
+  if (!frontier) return { ...plan, action: 'capped', tier, effort: e.effort || table.tiers[tier].effort, set: move }
+  const { model } = table.tiers[tier]
+  const takes = table.models[model].efforts
+  const effort = e.effort && (!Array.isArray(takes) || takes.includes(e.effort)) ? e.effort : table.tiers[tier].effort
+  return { ...plan, action: 'capped', tier, model, effort, set: { ...move, model, effort } }
 }
 
 // The section added to Claude's system prompt: which type to pick for which task

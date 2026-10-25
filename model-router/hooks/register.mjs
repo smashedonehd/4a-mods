@@ -127,10 +127,10 @@ export function register(on) {
     return next(e)
   })
 
-  // The safety net: never refuses, never touches subagent_type or prompt
+  // The safety net: never refuses and never touches the prompt; subagent_type changes only for the hidden frontier type
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!table) return next(e)
-    const plan = capPlan(table, planAgentCall(table, plugin, e, settings.fill), settings.ceiling)
+    const plan = capPlan(table, plugin, e, planAgentCall(table, plugin, e, settings.fill), settings.ceiling)
     const frontier = isFrontier(table, plan)
     remember({ ...plan, what: `${e.subagent_type || 'agent'}: ${String(e.description || '').slice(0, 20)}` })
     try {
@@ -148,7 +148,8 @@ export function register(on) {
     return next(e)
   })
 
-  // Under the Opus ceiling the frontier type is neither listed to Claude nor dispatched
+  // Under the Opus ceiling the frontier type is neither listed to Claude nor dispatched;
+  // tool.call has already moved a call naming it to the cap tier's type
   on('agent.offer', async ($, e, next) => {
     if (table && table.frontier && e.agent === `${plugin}:${table.frontier}` && settings.ceiling !== 'fable') return { isOffered: false }
     return next(e)
@@ -181,6 +182,6 @@ export function register(on) {
       await $.store.set('stats', null)
       return { text: 'Model Router counts reset.' }
     }
-    return { text: `Unknown option ${key}. ${await statusText($)}` }
+    return { text: `Not an option: /${commandName} ${String(e.args || '').trim()}. ${await statusText($)}` }
   })
 }
