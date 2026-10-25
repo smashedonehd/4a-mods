@@ -2,7 +2,7 @@
 // Checks the shipped routing.json and the router's decision for each kind of Agent call.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays } from '../hooks/route.mjs'
+import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan } from '../hooks/route.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -86,10 +86,37 @@ check('the frontier tier is recognised by type and by model', () => {
   assert.equal(isFrontier(table, planAgentCall(table, P, { subagent_type: 'model-router:long' })), false)
 })
 
-check('the policy names every type and the frontier rule', () => {
-  const text = policyText(table, P)
+check('the policy under /route fable names every type and the frontier rule', () => {
+  const text = policyText(table, P, 'fable')
   for (const t of table.order) assert.ok(text.includes(`${P}:${t}`))
   assert.match(text, /only as its description says/)
+})
+
+check('the Opus ceiling (plain /route) offers Haiku up to Opus only', () => {
+  const tiers = offeredTiers(table, 'opus')
+  assert.ok(!tiers.includes('frontier'))
+  assert.deepEqual([...new Set(tiers.map((t) => table.tiers[t].model))], ['haiku', 'sonnet', 'opus'])
+  assert.equal(capTier(table), 'long')
+  assert.deepEqual(offeredTiers(table, 'fable'), table.order)
+  const text = policyText(table, P, 'opus')
+  assert.ok(!text.includes(`${P}:frontier`))
+  assert.match(text, /fable is switched off/)
+})
+
+check('under the Opus ceiling a Fable call runs on Opus xhigh; under /route fable it stays', () => {
+  for (const e of [{ model: 'fable' }, { subagent_type: 'model-router:frontier' }]) {
+    const capped = capPlan(table, planAgentCall(table, P, e), 'opus')
+    assert.deepEqual([capped.action, capped.model, capped.effort], ['capped', 'opus', 'xhigh'])
+    assert.deepEqual(capped.set, { model: 'opus', effort: 'xhigh' })
+    assert.equal(isFrontier(table, capped), false)
+    const open = capPlan(table, planAgentCall(table, P, e), 'fable')
+    assert.equal(isFrontier(table, open), true)
+    assert.equal(open.set, undefined)
+  }
+  const effortOnly = capPlan(table, planAgentCall(table, P, { subagent_type: 'model-router:frontier', effort: 'max' }), 'opus')
+  assert.deepEqual([effortOnly.action, effortOnly.model], ['capped', 'opus'])
+  const deep = planAgentCall(table, P, { subagent_type: 'model-router:deep' })
+  assert.equal(capPlan(table, deep, 'opus'), deep)
 })
 
 check('counts add up', () => {

@@ -54,12 +54,12 @@ Claude Code runs a subagent on its parent's model unless told otherwise, so a gr
 | `model-router:standard` | Sonnet, medium | well-specified coding, tests, ordinary bugs, docs |
 | `model-router:deep` | Opus, high | architecture, multi-file refactors, tricky bugs, reviews |
 | `model-router:long` | Opus, xhigh | long autonomous runs over a whole codebase |
-| `model-router:frontier` | Fable, high | only after Opus fell short on the same task, or when you ask for it |
+| `model-router:frontier` | Fable, high | only with `/route fable` on, and then only after Opus fell short on the same task |
 
 - **Safety net:** a general agent Claude starts with nothing set runs on Opus at medium effort. A model or effort Claude set, a fork, and a custom agent type with its own model are left as they are. No Agent call is ever refused or delayed, and the hook makes no model calls.
 - **The main chat is never switched.** Changing the model there would throw away its prompt cache; pick its model with `/model` yourself.
 - **Staying current:** the tiers name aliases, so a new Opus or Sonnet is used without a change. Which tier gets which line and effort changes through a pull request (`model-router/UPDATING.md`), and a plugin update brings it. The status line warns when the table is over 30 days old.
-- **`/route`** shows the agent types, the default, and how many Agent calls went where. `/route fill off` turns the safety net off, `/route stats reset` clears the counts.
+- **`/route`** routes from Haiku up to Opus, which is the default: the Fable type is hidden from Claude, and an Agent call that names Fable runs on Opus at xhigh instead. **`/route fable`** routes from Haiku up to Fable. Both stay set across chats and show the agent types, the default, and how many Agent calls went where; the status line shows the range (`router haiku → opus`). `/route fill off` turns the safety net off, `/route stats reset` clears the counts.
 
 If you installed the earlier Model Router from the `smashedonehd-mods` marketplace, uninstall it first, or both will hook the same Agent calls.
 
