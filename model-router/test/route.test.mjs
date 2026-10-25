@@ -81,6 +81,15 @@ check('a model Claude set without an effort runs at the effort of that model\'s 
   assert.equal(planAgentCall(table, P, { subagent_type: 'opus-high', model: 'sonnet' }).action, 'keep')
 })
 
+check('with the safety net off a general or built-in call is kept, and a Fable call is still capped', () => {
+  for (const e of [{ prompt: 'x' }, { subagent_type: 'Explore' }, { model: 'sonnet' }]) {
+    const p = planAgentCall(table, P, e, false)
+    assert.deepEqual([p.action, p.tier, p.set], ['keep', '', undefined])
+  }
+  assert.equal(planAgentCall(table, P, { subagent_type: 'model-router:quick' }, false).action, 'typed')
+  assert.deepEqual(capPlan(table, planAgentCall(table, P, { model: 'fable' }, false), 'opus').set, { model: 'opus', effort: 'xhigh' })
+})
+
 check('a fork and a custom agent keep their own model', () => {
   assert.equal(planAgentCall(table, P, { subagent_type: 'fork' }).action, 'keep')
   assert.equal(planAgentCall(table, P, { subagent_type: 'opus-high' }).action, 'keep')
