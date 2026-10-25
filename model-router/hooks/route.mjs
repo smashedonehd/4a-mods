@@ -60,18 +60,18 @@ export function hostName(name) {
   return String(name || '').normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]+/gu, '')
 }
 
-// Whether a type is one of ours (`model-router:<anything>`)
-function ownType(plugin, type) {
-  return hostName(type).startsWith(`${hostName(plugin)}:`)
+// The tier one of our types names (`Model-Router:Deep` -> deep), or '' for any other type
+function ownTier(table, plugin, type) {
+  const t = hostName(type)
+  const prefix = `${hostName(plugin)}:`
+  return t.startsWith(prefix) ? table.order.find((n) => hostName(n) === t.slice(prefix.length)) || '' : ''
 }
 
 // The tier an Agent call's own type names: one of ours (`model-router:deep`), or a built-in the table maps
 export function tierOfType(table, plugin, type) {
-  const t = hostName(type)
-  const prefix = `${hostName(plugin)}:`
-  if (t.startsWith(prefix)) return table.order.find((n) => hostName(n) === t.slice(prefix.length)) || ''
   const builtins = table.builtinTypes || {}
-  return Object.hasOwn(builtins, String(type || '')) ? builtins[String(type || '')] : ''
+  const t = String(type || '')
+  return ownTier(table, plugin, t) || (Object.hasOwn(builtins, t) ? builtins[t] : '')
 }
 
 // What to do with one Agent call: { action, set?, tier, model, effort }
@@ -84,9 +84,9 @@ export function tierOfType(table, plugin, type) {
 export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
+  const own = ownTier(table, plugin, type)
   const tier = tierOfType(table, plugin, type)
   // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
-  const own = tier && ownType(plugin, type)
   const kept = { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
   if (own) {
     return e.model || e.effort ? kept : { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
@@ -127,7 +127,7 @@ export function capTier(table) {
 // does not offer, so a call naming the frontier type also moves to the cap tier's type.
 export function capPlan(table, plugin, e, plan, ceiling) {
   if (ceiling === 'fable' || !table.frontier) return plan
-  const hidden = hostName(e.subagent_type) === hostName(`${plugin}:${table.frontier}`)
+  const hidden = ownTier(table, plugin, e.subagent_type) === table.frontier
   const frontier = isFrontier(table, plan)
   if (!hidden && !frontier) return plan
   const tier = capTier(table)
