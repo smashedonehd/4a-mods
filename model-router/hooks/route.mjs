@@ -62,27 +62,34 @@ export function tierOfType(table, plugin, type) {
 }
 
 // What to do with one Agent call: { action, set?, tier, model, effort }
-// - keep: Claude set the model or effort itself, or the type is a fork or a custom agent with its own frontmatter
+// - keep: Claude set the model or effort itself, the safety net is off, or the type is a fork or a custom agent with its own frontmatter
 // - typed: one of the tier types, whose definition already carries model and effort
 // - builtin: a built-in type the table maps to a tier
 // - fill: a general agent with nothing set gets the table's default
-export function planAgentCall(table, plugin, e) {
+// - effort: a general or mapped built-in agent given only a model gets the effort of that model's first tier;
+//   it has no effort of its own and would run at the session's
+export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
   const tier = tierOfType(table, plugin, type)
   // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
   const own = tier && type.startsWith(`${plugin}:`)
-  if (e.model || e.effort) return { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
-  if (own) return { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
-  if (tier) {
-    const { model, effort } = table.tiers[tier]
-    return { action: 'builtin', tier, model, effort, set: { model, effort } }
+  const kept = { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
+  if (own) {
+    return e.model || e.effort ? kept : { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
   }
-  if (table.fill.types.includes(type)) {
-    const { model, effort } = table.fill
-    return { action: 'fill', tier: '', model, effort, set: { model, effort } }
+  if (!tier && !table.fill.types.includes(type)) return e.model || e.effort ? kept : { action: 'keep', why: 'own definition' }
+  // A general or mapped built-in agent: the safety net fills in what Claude left unset
+  if (e.effort) return kept
+  if (!fill) return { action: 'keep', why: 'fill off', tier: '', model: e.model }
+  if (e.model) {
+    const modelTier = table.order.find((n) => table.tiers[n].model === e.model)
+    if (!modelTier) return kept
+    const { effort } = table.tiers[modelTier]
+    return { action: 'effort', tier: modelTier, model: e.model, effort, set: { effort } }
   }
-  return { action: 'keep', why: 'own definition' }
+  const { model, effort } = tier ? table.tiers[tier] : table.fill
+  return { action: tier ? 'builtin' : 'fill', tier, model, effort, set: { model, effort } }
 }
 
 // Whether a call lands on the frontier tier or names its model outright
@@ -132,7 +139,7 @@ export function policyText(table, plugin, ceiling = 'opus') {
   return [
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
-    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
+    `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort; a general or built-in agent given only a model runs at the effort of that model's first tier. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
   ].join('\n')
 }
 

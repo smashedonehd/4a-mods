@@ -67,7 +67,17 @@ test('an unset general agent gets Opus at medium, a tier type is left alone', as
   expect(seen[1].subagent_type).toBe('model-router:quick')
 })
 
-test('a model Claude chose is kept, a fork is left alone, Explore gets its tier', async ($, on) => {
+test('a general agent given only a model runs at that model\'s tier effort', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x', model: 'opus' })
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x', model: 'opus', effort: 'low' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
+  expect([seen[1].model, seen[1].effort]).toEqual(['opus', 'low'])
+})
+
+test('a model without a tier is kept, a fork is left alone, Explore gets its tier', async ($, on) => {
   const seen: any[] = []
   engine(on, seen, [])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -140,4 +150,24 @@ test('with the safety net off a Fable call is still capped', async ($, on) => {
   await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x' })
   expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
   expect(seen[1].model).toBe(undefined)
+})
+
+test('/route fill off leaves every call as it came except the Opus cap', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const off = await $.command.run({ command: 'route', args: 'fill off' })
+  expect(String(off.text)).toContain('safety net: off')
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'opus' })
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x' })
+  await $.tool.call({ tool: 'Agent', description: 'e', prompt: 'x', subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'Agent', description: 'c', prompt: 'x', model: 'fable' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', undefined])
+  expect([seen[1].model, seen[1].effort]).toEqual([undefined, undefined])
+  expect([seen[2].model, seen[2].effort]).toEqual([undefined, undefined])
+  expect([seen[3].model, seen[3].effort]).toEqual(['opus', 'high'])
+  const status = await $.command.run({ command: 'route', args: '' })
+  expect(String(status.text)).toContain('4 Agent calls (keep 3, capped 1)')
+  const back = await $.command.run({ command: 'route', args: 'fill on' })
+  expect(String(back.text)).toContain('safety net: on')
 })

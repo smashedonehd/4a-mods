@@ -62,10 +62,37 @@ check('Czech prompts are never read: "Proveď" and "Dokážeš" no longer reach 
   }
 })
 
-check('a model or effort Claude set is kept', () => {
-  assert.equal(planAgentCall(table, P, { model: 'sonnet', prompt: 'x' }).action, 'keep')
+check('a model and effort Claude set, or an effort alone, is kept', () => {
+  assert.equal(planAgentCall(table, P, { model: 'sonnet', effort: 'high', prompt: 'x' }).action, 'keep')
   assert.equal(planAgentCall(table, P, { effort: 'high', prompt: 'x' }).action, 'keep')
-  assert.equal(planAgentCall(table, P, { subagent_type: 'model-router:quick', model: 'opus' }).set, undefined)
+  const typed = planAgentCall(table, P, { subagent_type: 'model-router:quick', model: 'opus' })
+  assert.deepEqual([typed.action, typed.tier, typed.set], ['keep', '', undefined])
+  // The frontier type given a model below it keeps that model; only the hidden type moves
+  const e = { subagent_type: 'model-router:frontier', model: 'sonnet' }
+  const frontier = capPlan(table, P, e, planAgentCall(table, P, e), 'opus')
+  assert.deepEqual([frontier.model, frontier.set], ['sonnet', { subagent_type: 'model-router:long' }])
+})
+
+check('a model Claude set without an effort runs at the effort of that model\'s first tier', () => {
+  const want = { haiku: 'low', sonnet: 'medium', opus: 'high', fable: 'high' }
+  for (const [model, effort] of Object.entries(want)) {
+    for (const type of [undefined, 'general-purpose']) {
+      const p = planAgentCall(table, P, { subagent_type: type, model, prompt: 'x' })
+      assert.deepEqual([p.action, p.model, p.effort, p.set], ['effort', model, effort, { effort }])
+    }
+  }
+  assert.deepEqual(planAgentCall(table, P, { subagent_type: 'Explore', model: 'sonnet' }).set, { effort: 'medium' })
+  assert.equal(planAgentCall(table, P, { model: 'gpt-x' }).action, 'keep')
+  assert.equal(planAgentCall(table, P, { subagent_type: 'opus-high', model: 'sonnet' }).action, 'keep')
+})
+
+check('with the safety net off a general or built-in call is kept, and a Fable call is still capped', () => {
+  for (const e of [{ prompt: 'x' }, { subagent_type: 'Explore' }, { model: 'sonnet' }]) {
+    const p = planAgentCall(table, P, e, false)
+    assert.deepEqual([p.action, p.tier, p.set], ['keep', '', undefined])
+  }
+  assert.equal(planAgentCall(table, P, { subagent_type: 'model-router:quick' }, false).action, 'typed')
+  assert.deepEqual(capPlan(table, P, { model: 'fable' }, planAgentCall(table, P, { model: 'fable' }, false), 'opus').set, { model: 'opus', effort: 'xhigh' })
 })
 
 check('a fork and a custom agent keep their own model', () => {
@@ -105,14 +132,16 @@ check('the Opus ceiling (plain /route) offers Haiku up to Opus only', () => {
 
 check('under the Opus ceiling a Fable call runs on Opus xhigh; under /route fable it stays', () => {
   const cap = (e, ceiling = 'opus') => capPlan(table, P, e, planAgentCall(table, P, e), ceiling)
-  for (const e of [{ model: 'fable' }, { subagent_type: 'model-router:frontier' }, { subagent_type: 'Explore', model: 'fable' }]) {
+  // A bare `model: 'fable'` still gets the frontier tier's effort; the frontier type carries its own
+  const fable = { effort: 'high' }
+  for (const [e, set] of [[{ model: 'fable' }, fable], [{ subagent_type: 'model-router:frontier' }, undefined], [{ subagent_type: 'Explore', model: 'fable' }, fable]]) {
     const capped = cap(e)
     assert.deepEqual([capped.action, capped.tier, capped.model, capped.effort], ['capped', 'long', 'opus', 'xhigh'])
     assert.deepEqual([capped.set.model, capped.set.effort], ['opus', 'xhigh'])
     assert.equal(isFrontier(table, capped), false)
     const open = cap(e, 'fable')
     assert.equal(isFrontier(table, open), true)
-    assert.equal(open.set, undefined)
+    assert.deepEqual(open.set, set)
   }
   const deep = planAgentCall(table, P, { subagent_type: 'model-router:deep' })
   assert.equal(capPlan(table, P, { subagent_type: 'model-router:deep' }, deep, 'opus'), deep)
