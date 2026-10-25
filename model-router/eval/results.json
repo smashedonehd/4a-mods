@@ -2756,5 +2756,106 @@
    }
   }
  },
- "heldoutHistory": []
+ "heldoutHistory": [],
+ "winner": {
+  "row": "rules",
+  "metrics": {
+   "n": 80,
+   "agreement": 0.8125,
+   "under": 0.025,
+   "underCritical": 0,
+   "underCriticalRate": 0,
+   "costRatio": 1.1411483253588512,
+   "costOver": 0.14114832535885125,
+   "byCategory": {
+    "implement": {
+     "n": 27,
+     "agree": 23,
+     "under": 1
+    },
+    "review": {
+     "n": 28,
+     "agree": 21,
+     "under": 0
+    },
+    "research": {
+     "n": 7,
+     "agree": 7,
+     "under": 0
+    },
+    "summarize": {
+     "n": 7,
+     "agree": 6,
+     "under": 0
+    },
+    "architecture": {
+     "n": 4,
+     "agree": 4,
+     "under": 0
+    },
+    "long-run": {
+     "n": 1,
+     "agree": 0,
+     "under": 1
+    },
+    "search": {
+     "n": 4,
+     "agree": 3,
+     "under": 0
+    },
+    "security": {
+     "n": 1,
+     "agree": 0,
+     "under": 0
+    },
+    "mechanical-edit": {
+     "n": 1,
+     "agree": 1,
+     "under": 0
+    }
+   },
+   "byStratum": {
+    "implement": {
+     "n": 16,
+     "agree": 15,
+     "under": 0
+    },
+    "other": {
+     "n": 10,
+     "agree": 9,
+     "under": 0
+    },
+    "research": {
+     "n": 1,
+     "agree": 1,
+     "under": 0
+    },
+    "summarize": {
+     "n": 6,
+     "agree": 6,
+     "under": 0
+    },
+    "review": {
+     "n": 24,
+     "agree": 18,
+     "under": 0
+    },
+    "search": {
+     "n": 8,
+     "agree": 6,
+     "under": 0
+    },
+    "architecture": {
+     "n": 10,
+     "agree": 6,
+     "under": 2
+    },
+    "security": {
+     "n": 5,
+     "agree": 4,
+     "under": 0
+    }
+   }
+  }
+ }
 }

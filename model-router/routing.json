@@ -30,7 +30,7 @@
   ],
   "router": {
     "policy": "rules",
-    "default": "off",
+    "default": "on",
     "model": "sonnet",
     "effort": "low",
     "timeoutMs": 8000,
