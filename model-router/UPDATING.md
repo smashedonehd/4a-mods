@@ -20,19 +20,27 @@ Read these every time, and trust only what they say today:
 ## What may change
 
 - `models`: each alias's current model id and the effort levels it takes. A new line becomes a new alias only once an agent definition accepts it.
-- `tiers`: the alias, effort and description of each tier. Move a tier when the docs' guidance moves, for example when a newer Sonnet matches Opus on hard coding. Keep the order from the cheapest line to the dearest (a test checks it). A description is what Claude reads to pick the tier, so keep it about the task, not the model.
-- `fill`: the default for a general agent Claude starts with nothing set. Anthropic's guidance today is to start with Opus.
-- `builtinTypes`: a built-in agent type that should run on a given tier.
+- `models.*.price`: the price per MTok, from the docs' price list. It changes no decision, but it changes the eval's cost result (see below).
+- Not `tiers`, `order`, `fill`, `builtinTypes`, `categories`, `critical`, `rules` or `router`: they are the routing policy, and only a local eval changes them (see "Eval guards the policy"). When the docs' guidance moves, for example when a newer Sonnet matches Opus on hard coding, propose the tier change in the pull request as a recommendation.
 - `sources`: the pages that justified the change.
 - `updated`: today's date, whenever anything else changed.
 - `model-router/.claude-plugin/plugin.json` `version`: bump the patch number with every table change, or `claude plugin update` will not pick it up.
 
 Never change `schema` without also changing `hooks/route.mjs`: a table with another schema is refused, and the router then leaves every call as it came.
 
+## Eval guards the policy
+
+With auto routing on, the policy in `routing.json` and `hooks/route.mjs` picks every routed call's tier. The eval in `eval/` measured it against gold labels for 400 sampled calls: tuned on the 320 train calls, then run once on the 80 held-out calls. The repo keeps the result: `eval/gold.json` (ids, gold tiers, categories, splits), `eval/decisions.json` (the shipped policy's decision for each call and the policy hash) and `eval/results.json` (the metrics). `test/eval.test.mjs` replays them without calling a model and fails when the policy no longer hashes as recorded, when a fresh score differs from the recorded one, when the thresholds move, or when `router.default` is `"on"` but the held-out result misses a threshold.
+
+- The tiers (alias, effort, description), `order`, `fill`, `builtinTypes`, `categories`, `critical`, `rules` and `router` (all but `default`) change only through a local eval: tune on train (`node model-router/eval/run.mjs --policy <policy> --split train`), run held-out once (`--split heldout --heldout-row <name>`), then `node model-router/eval/run.mjs --record` for `decisions.json` and `--rescore` for `results.json`. The same holds for the policy code the hash covers (`POLICY_CODE` in `hooks/route.mjs`). The eval needs the private sample under `~/.claude/mods-data/model-router/eval/` and calls models, so it never runs in the cloud refresh.
+- The cloud refresh may change `models.*.id`, `efforts`, `price`, `sources` and `updated`. One exception: the id of the router's own model (`router.model`) is part of the policy hash, so a new id there needs the local eval too. After a `price` change, run `node model-router/eval/run.mjs --rescore` and commit `results.json`.
+- A tier change the docs suggest goes into the pull request as a recommendation, never into the table.
+
 ## Checks before a pull request
 
 ```bash
 node model-router/test/route.test.mjs
+node model-router/test/eval.test.mjs
 claude plugin test model-router
 ```
 

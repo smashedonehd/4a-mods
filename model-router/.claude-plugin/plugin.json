@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "2.2.1",
-  "description": "Gives Claude one agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering) from one tier table; /route routes Haiku up to Opus, /route fable up to Fable, an unset general agent gets Opus at medium effort, and one given only a model gets that model's tier effort",
+  "version": "3.0.0",
+  "description": "Routes every Agent call but a fork to the cheapest model and effort tier that does it well (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering), by a routing policy measured against gold labels and replayed as a test; /route auto on|off switches it, /route fable opens the Fable tier, and with auto routing off Claude picks from one agent type per tier with an Opus safety net",
   "author": {
     "name": "4AM"
   },

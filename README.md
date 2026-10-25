@@ -5,7 +5,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | Mod | Commands | What it does |
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
-| [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, so each delegated task runs on the model it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, and Fable only after `/route fable` |
+| [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, and routes each delegated task to the tier it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, and Fable only after `/route fable` |
 
 ## Requirements
 
@@ -45,7 +45,7 @@ Prices come from the Claude API price list. On a subscription plan they show up 
 
 ## Model Router
 
-Claude Code runs a subagent on its parent's model unless told otherwise, so a grep can run on Opus and a hard refactor on Haiku. Model Router turns each tier of its table (`model-router/routing.json`) into an agent type with that tier's model and effort, and tells Claude which type fits which task. Claude picks, because it sees the whole conversation and judges a task better than keywords or a small model reading one prompt.
+Claude Code runs a subagent on its parent's model unless told otherwise, so a grep can run on Opus and a hard refactor on Haiku. Model Router turns each tier of its table (`model-router/routing.json`) into an agent type with that tier's model and effort, and tells Claude which type fits which task. With auto routing on, which is the default, a routing policy picks the tier of every Agent call instead.
 
 | Agent type | Model, effort | For |
 |---|---|---|
@@ -56,7 +56,9 @@ Claude Code runs a subagent on its parent's model unless told otherwise, so a gr
 | `model-router:long` | Opus, xhigh | long autonomous runs over a whole codebase |
 | `model-router:frontier` | Fable, high | only with `/route fable` on, and then only after Opus fell short on the same task |
 
-- **Safety net:** a general agent Claude starts with nothing set runs on Opus at medium effort. A general or mapped built-in agent (Explore, Plan) given only a model runs at the effort of that model's first tier (Sonnet at medium, Opus at high) instead of inheriting the main chat's effort. A tier type, a model and effort Claude set, an effort alone, a fork, and a custom agent type with its own model are left as they are. No Agent call is ever refused or delayed, and the hook makes no model calls.
+- **Auto routing:** before each Agent call but a fork, a small router (Sonnet at low effort) reads the call's type, description and prompt (a very long prompt cut to its head and tail) and names the tier and the kind of task. A review, security or architecture task is lifted to at least `model-router:deep`. The call then runs on that tier's model and effort, whatever type or model Claude named, and a call to one of the tier types moves to the routed tier's type. It never routes to Fable, and under `/route fable` a call naming the Fable type is left as it is. If the router fails, is refused, times out (8 seconds) or answers nonsense, the safety net below decides. `/route auto off` leaves the choice to Claude again, `/route auto on` turns it back on; the setting stays across chats. The router call costs one small Sonnet request per Agent call.
+- **The eval:** the policy was measured against gold tiers for 400 real Agent calls, tuned on 320 and run once on the other 80, and a CI test replays it and fails when the policy changes without a new eval. On the 80 held-out calls the shipped policy (rules, router Sonnet at low effort) passed all three thresholds: it agreed with gold on 81.3 % of calls, under-routed 2.5 % (none of the critical review, security and architecture calls) and cost 14.1 % more than gold ([`model-router/eval/results.json`](model-router/eval/results.json)).
+- **Safety net:** with auto routing off, and whenever the router has no answer, a general agent Claude starts with nothing set runs on Opus at medium effort. A general or mapped built-in agent (Explore, Plan) given only a model runs at the effort of that model's first tier (Sonnet at medium, Opus at high) instead of inheriting the main chat's effort. A tier type, a model and effort Claude set, an effort alone, a fork, and a custom agent type with its own model are left as they are. No Agent call is ever refused, and the safety net makes no model calls.
 - **The main chat is never switched.** Changing the model there would throw away its prompt cache; pick its model with `/model` yourself.
 - **Staying current:** the tiers name aliases, so a new Opus or Sonnet is used without a change. Which tier gets which line and effort changes through a pull request (`model-router/UPDATING.md`), and a plugin update brings it. The status line warns when the table is over 30 days old.
 - **`/route`** routes from Haiku up to Opus, which is the default: the Fable type is hidden from Claude. An Agent call that names the Fable type moves to `model-router:long`. A call whose model is Fable runs on Opus instead, at xhigh or at the effort Claude set, and keeps its own type (`{model: 'fable'}` on Explore stays Explore). The Fable type given a model below Fable only moves to `model-router:long` and keeps that model. These calls are not capped and can still run on Fable:
@@ -71,7 +73,7 @@ If you installed the earlier Model Router from the `smashedonehd-mods` marketpla
 
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Model Router keeps only its settings and call counts in the plugin store. Neither makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Model Router keeps only its settings and call counts in the plugin store; with auto routing on, its router sends each Agent call's type, description and prompt to a small model request through Claude Code. Cache Keeper makes no network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
