@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "2.2.1",
-  "description": "Gives Claude one agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering) from one tier table; /route routes Haiku up to Opus, /route fable up to Fable, an unset general agent gets Opus at medium effort, and one given only a model gets that model's tier effort",
+  "version": "2.2.2",
+  "description": "Gives Claude one agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering) from one tier table; /route routes Haiku up to Opus, /route fable up to Fable, an unset general agent gets Opus at medium effort, and one given only a model gets that model's tier effort (Opus: medium)",
   "author": {
     "name": "4AM"
   },

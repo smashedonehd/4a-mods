@@ -9,8 +9,8 @@
 // The hook below is only a safety net: a general agent Claude started with
 // nothing set gets the table's default (Opus at medium), a general or mapped
 // built-in agent given only a model gets the effort of that model's first tier
-// instead of the session's, a tier type and a model and effort Claude chose are
-// kept, and a fork is left alone. The one exception is the Opus cap (plain
+// (Opus alone: the default's medium) instead of the session's, a tier type and
+// a model and effort Claude chose are kept, and a fork is left alone. The one exception is the Opus cap (plain
 // /route): a call with model Fable runs on Opus instead, and a call naming the
 // Fable type, which the host would refuse as not offered, moves to the cap type.
 // Current: the table ships with the plugin and changes through pull requests
@@ -93,7 +93,7 @@ async function statusText($) {
     lines.push(`  ${`${plugin}:${n}`.padEnd(26)} ${tag(table.tiers[n]).padEnd(14)} ${table.tiers[n].description}${off}`)
   }
   lines.push(`  general agent with nothing set -> ${tag(table.fill)}`)
-  lines.push(`  general or built-in agent with only a model -> the effort of that model's first tier`)
+  lines.push(`  general or built-in agent with only a model -> the effort of that model's first tier, ${table.fill.model} -> ${table.fill.effort}`)
   const s = await $.store.get('stats')
   if (s && s.total) {
     const by = Object.entries(s.byAction || {}).map(([k, n]) => `${k} ${n}`).join(', ')

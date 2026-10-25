@@ -73,14 +73,16 @@ check('a model and effort Claude set, or an effort alone, is kept', () => {
   assert.deepEqual([frontier.model, frontier.set], ['sonnet', { subagent_type: 'model-router:long' }])
 })
 
-check('a model Claude set without an effort runs at the effort of that model\'s first tier', () => {
-  const want = { haiku: 'low', sonnet: 'medium', opus: 'high', fable: 'high' }
+check('a model Claude set without an effort runs at the effort of that model\'s first tier, the default\'s model at the default\'s', () => {
+  const want = { haiku: 'low', sonnet: 'medium', opus: 'medium', fable: 'high' }
   for (const [model, effort] of Object.entries(want)) {
     for (const type of [undefined, 'general-purpose']) {
       const p = planAgentCall(table, P, { subagent_type: type, model, prompt: 'x' })
       assert.deepEqual([p.action, p.model, p.effort, p.set], ['effort', model, effort, { effort }])
     }
   }
+  assert.equal(planAgentCall(table, P, { model: 'opus' }).tier, '')
+  assert.deepEqual(planAgentCall(table, P, { subagent_type: 'Explore', model: 'opus' }).set, { effort: 'medium' })
   assert.deepEqual(planAgentCall(table, P, { subagent_type: 'Explore', model: 'sonnet' }).set, { effort: 'medium' })
   assert.equal(planAgentCall(table, P, { model: 'gpt-x' }).action, 'keep')
   assert.equal(planAgentCall(table, P, { subagent_type: 'opus-high', model: 'sonnet' }).action, 'keep')
