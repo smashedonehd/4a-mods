@@ -31,7 +31,10 @@ check('the recorded decisions are the ones the held-out run measured', () => {
   const run = results.heldout[results.winner.row]
   assert.ok(run, `no held-out run for the winner ${results.winner.row}`)
   assert.equal(run.policyHash, decisions.policyHash)
-  assert.deepEqual(results.winner.metrics, run.metrics)
+  // costRatio and costOver follow routing.json prices, which a refresh may change and then rescore
+  // only results.winner; check 4 guards them against the current prices
+  const routing = ({ costRatio, costOver, ...m }) => m
+  assert.deepEqual(routing(results.winner.metrics), routing(run.metrics))
 })
 
 check('gold covers 400 calls, 80 held out, each with a decision', () => {
