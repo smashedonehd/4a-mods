@@ -53,12 +53,25 @@ export function agentSpecs(table) {
   })
 }
 
+// A type name as the host matches it when no type has the exact name: `Model-Router:Frontier` and
+// `model-router:frontier` are one type. Only our own types are matched this way; a built-in or general
+// name is matched exactly, since the host would pick a custom agent named `plan` before Plan.
+export function hostName(name) {
+  return String(name || '').normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]+/gu, '')
+}
+
+// The tier one of our types names (`Model-Router:Deep` -> deep), or '' for any other type
+function ownTier(table, plugin, type) {
+  const t = hostName(type)
+  const prefix = `${hostName(plugin)}:`
+  return t.startsWith(prefix) ? table.order.find((n) => hostName(n) === t.slice(prefix.length)) || '' : ''
+}
+
 // The tier an Agent call's own type names: one of ours (`model-router:deep`), or a built-in the table maps
 export function tierOfType(table, plugin, type) {
+  const builtins = table.builtinTypes || {}
   const t = String(type || '')
-  const prefix = `${plugin}:`
-  if (t.startsWith(prefix) && table.order.includes(t.slice(prefix.length))) return t.slice(prefix.length)
-  return (table.builtinTypes || {})[t] || ''
+  return ownTier(table, plugin, t) || (Object.hasOwn(builtins, t) ? builtins[t] : '')
 }
 
 // What to do with one Agent call: { action, set?, tier, model, effort }
@@ -71,9 +84,9 @@ export function tierOfType(table, plugin, type) {
 export function planAgentCall(table, plugin, e, fill = true) {
   const type = String(e.subagent_type || '')
   if (type === 'fork') return { action: 'keep', why: 'fork' }
+  const own = ownTier(table, plugin, type)
   const tier = tierOfType(table, plugin, type)
   // A tier type given only an effort keeps its tier, so a frontier call is still capped; a built-in runs on its own model
-  const own = tier && type.startsWith(`${plugin}:`)
   const kept = { action: 'keep', why: 'set by Claude', tier: own && !e.model ? tier : '', model: e.model, effort: e.effort }
   if (own) {
     return e.model || e.effort ? kept : { action: 'typed', tier, model: table.tiers[tier].model, effort: table.tiers[tier].effort }
@@ -114,7 +127,7 @@ export function capTier(table) {
 // does not offer, so a call naming the frontier type also moves to the cap tier's type.
 export function capPlan(table, plugin, e, plan, ceiling) {
   if (ceiling === 'fable' || !table.frontier) return plan
-  const hidden = String(e.subagent_type || '') === `${plugin}:${table.frontier}`
+  const hidden = ownTier(table, plugin, e.subagent_type) === table.frontier
   const frontier = isFrontier(table, plan)
   if (!hidden && !frontier) return plan
   const tier = capTier(table)
@@ -131,11 +144,13 @@ export function capPlan(table, plugin, e, plan, ceiling) {
 export function policyText(table, plugin, ceiling = 'opus') {
   const tiers = offeredTiers(table, ceiling)
   const lines = tiers.map((n) => `- ${plugin}:${n} (${table.tiers[n].model}, ${table.tiers[n].effort}): ${table.tiers[n].description}`)
-  const frontier = !table.frontier
-    ? ''
-    : ceiling === 'fable'
-      ? ` Pick ${plugin}:${table.frontier} only as its description says.`
-      : ` ${table.tiers[table.frontier].model} is switched off: the strongest tier is ${plugin}:${capTier(table)}, and a call naming ${table.tiers[table.frontier].model} runs there.`
+  let frontier = ''
+  if (table.frontier && ceiling === 'fable') frontier = ` Pick ${plugin}:${table.frontier} only as its description says.`
+  else if (table.frontier) {
+    const top = table.tiers[table.frontier].model
+    const cap = capTier(table)
+    frontier = ` ${top} is switched off: the strongest tier is ${plugin}:${cap}. A call naming the ${top} type moves to ${plugin}:${cap}; a call with model ${top} and any other type keeps that type and runs on ${table.tiers[cap].model}.`
+  }
   return [
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
