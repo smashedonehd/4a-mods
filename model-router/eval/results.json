@@ -1,0 +1,1237 @@
+{
+ "heldoutRuns": 0,
+ "heldout": {},
+ "tuning": {
+  "rounds": [
+   {
+    "round": 1,
+    "change": "Baseline: descriptions as shipped before tuning (9d94540), text policy, haiku low router.",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "bd81607d22f924b9350c2a32a498d0b819ea6c8f4c50bb9cdba2d58e5606b247",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.68125,
+     "under": 0.146875,
+     "underCritical": 10,
+     "underCriticalRate": 0.060240963855421686,
+     "costRatio": 1.0934753463429172,
+     "costOver": 0.09347534634291721,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 79,
+       "under": 4
+      },
+      "other": {
+       "n": 40,
+       "agree": 27,
+       "under": 5
+      },
+      "search": {
+       "n": 32,
+       "agree": 25,
+       "under": 5
+      },
+      "implement": {
+       "n": 64,
+       "agree": 40,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 26,
+       "under": 8
+      },
+      "security": {
+       "n": 20,
+       "agree": 18,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 2,
+       "under": 21
+      },
+      "research": {
+       "n": 4,
+       "agree": 1,
+       "under": 2
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 2,
+    "change": "Round 1 descriptions: quick is one fact and leaves mapping to standard; light works on plain text and drops extract; standard adds mapping across files, scanned PDFs and images, and exact figures.",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "f8e5ba2a28287c68f2d22cd54e539adca9a441e8c8e04a830d9ae19c436063d4",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.740625,
+     "under": 0.1,
+     "underCritical": 16,
+     "underCriticalRate": 0.0963855421686747,
+     "costRatio": 1.0809623119320722,
+     "costOver": 0.08096231193207215,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 74,
+       "under": 4
+      },
+      "other": {
+       "n": 40,
+       "agree": 29,
+       "under": 7
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 8
+      },
+      "implement": {
+       "n": 64,
+       "agree": 45,
+       "under": 2
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 8
+      },
+      "security": {
+       "n": 20,
+       "agree": 18,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 20,
+       "under": 3
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 3,
+    "change": "Round 1 descriptions, text policy, router haiku medium.",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "d4a143e6eda95ada4430961c8c26a847a2ef81733531ac00953757b7ed96a0d2",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.765625,
+     "under": 0.109375,
+     "underCritical": 12,
+     "underCriticalRate": 0.07228915662650602,
+     "costRatio": 1.0343736034559812,
+     "costOver": 0.03437360345598117,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 27,
+       "under": 6
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 48,
+       "under": 5
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 30,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 17,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 18,
+       "under": 6
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 4,
+    "change": "Round 1 descriptions, text policy, router sonnet low.",
+    "policy": "text",
+    "router": {
+     "policy": "text",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "9f9d5c6594157a9faf5ce2fc10f46f73d0be85ba2e9c6709ed1ca7ac2aa6e684",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.865625,
+     "under": 0.06875,
+     "underCritical": 13,
+     "underCriticalRate": 0.0783132530120482,
+     "costRatio": 0.9912483241471769,
+     "costOver": -0.008751675852823104,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 86,
+       "under": 5
+      },
+      "other": {
+       "n": 40,
+       "agree": 32,
+       "under": 4
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 59,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 33,
+       "under": 5
+      },
+      "security": {
+       "n": 20,
+       "agree": 18,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 1
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 5,
+    "change": "Rules policy: review, security and architecture calls get a deep floor (rules[0] as shipped), router haiku low.",
+    "policy": "rules",
+    "router": {
+     "policy": "rules",
+     "model": "haiku",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "5a9f91e4fc6aad46d9472a5bee940eff5e3fe19304960c344bb30c92f540347f",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.66875,
+     "under": 0.059375,
+     "underCritical": 3,
+     "underCriticalRate": 0.018072289156626505,
+     "costRatio": 1.2374497244153149,
+     "costOver": 0.23744972441531487,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 59,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 24,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 44,
+       "under": 2
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 26,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 21,
+       "under": 2
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 6,
+    "change": "Rules policy, router haiku medium.",
+    "policy": "rules",
+    "router": {
+     "policy": "rules",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "9a155bb152096e0e10ca313c83533a6e22e83f834a7e735503952e8569a0c49a",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.69375,
+     "under": 0.075,
+     "underCritical": 3,
+     "underCriticalRate": 0.018072289156626505,
+     "costRatio": 1.179167287352898,
+     "costOver": 0.179167287352898,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 62,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 23,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 23,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 47,
+       "under": 5
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 30,
+       "under": 6
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 18,
+       "under": 6
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 7,
+    "change": "Rules policy, router sonnet low: the first router in the order that passes all three thresholds.",
+    "policy": "rules",
+    "router": {
+     "policy": "rules",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "0f0853776113a7f82d232dd65db6432196fff5a8c0ecc2ffa75c457a6db66fe6",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.78125,
+     "under": 0.04375,
+     "underCritical": 5,
+     "underCriticalRate": 0.030120481927710843,
+     "costRatio": 1.1364889021301954,
+     "costOver": 0.13648890213019538,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 70,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 25,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 59,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 34,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 1
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 8,
+    "change": "Jev with the round 1 descriptions, theta 0.5.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.5
+     }
+    },
+    "policyHash": "eaa70701c6a87fe67423e06de256f60b2d5ddede9f6b5bf4096514a0f1c71f8a",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.778125,
+     "under": 0.125,
+     "underCritical": 24,
+     "underCriticalRate": 0.14457831325301204,
+     "costRatio": 0.9990317294801133,
+     "costOver": -0.0009682705198866826,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 79,
+       "under": 6
+      },
+      "other": {
+       "n": 40,
+       "agree": 24,
+       "under": 14
+      },
+      "search": {
+       "n": 32,
+       "agree": 23,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 49,
+       "under": 4
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 29,
+       "under": 9
+      },
+      "security": {
+       "n": 20,
+       "agree": 18,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 24,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 9,
+    "change": "Jev with the round 1 descriptions, theta 0.6.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.6
+     }
+    },
+    "policyHash": "1f5088ebf199ca13486c6d87f27728dfded4c599d0cbfae085b48c2e4353f4d3",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.765625,
+     "under": 0.1,
+     "underCritical": 20,
+     "underCriticalRate": 0.12048192771084337,
+     "costRatio": 1.0447638909578436,
+     "costOver": 0.04476389095784361,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 4
+      },
+      "other": {
+       "n": 40,
+       "agree": 26,
+       "under": 11
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 5
+      },
+      "implement": {
+       "n": 64,
+       "agree": 45,
+       "under": 2
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 29,
+       "under": 9
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 24,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 10,
+    "change": "Jev with the round 1 descriptions, theta 0.7.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.7
+     }
+    },
+    "policyHash": "bbd7ec536a7da2481acf42eb402bf21952359ec8f8d8a6fee15f0f1f778688eb",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.709375,
+     "under": 0.06875,
+     "underCritical": 15,
+     "underCriticalRate": 0.09036144578313253,
+     "costRatio": 1.1497840011917184,
+     "costOver": 0.14978400119171842,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 73,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 27,
+       "under": 6
+      },
+      "search": {
+       "n": 32,
+       "agree": 18,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 39,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 28,
+       "under": 8
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 11,
+    "change": "Jev with the round 1 descriptions, theta 0.8.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "policyHash": "5aa9e6228083ecdc71e281396859d977228109e8675513275650c1a0580eb63b",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.690625,
+     "under": 0.034375,
+     "underCritical": 7,
+     "underCriticalRate": 0.04216867469879518,
+     "costRatio": 1.2450096827052004,
+     "costOver": 0.2450096827052004,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 71,
+       "under": 2
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 4
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 1
+      },
+      "implement": {
+       "n": 64,
+       "agree": 33,
+       "under": 0
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 15,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 12,
+    "change": "Jev with the round 1 descriptions, theta 0.9.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.9
+     }
+    },
+    "policyHash": "5ad9809c2907aff5cef0716ac207b341af6dfc87658f50fd9a64bcb5b1a2902b",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.6375,
+     "under": 0.0125,
+     "underCritical": 3,
+     "underCriticalRate": 0.018072289156626505,
+     "costRatio": 1.361500074482349,
+     "costOver": 0.3615000744823491,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 69,
+       "under": 2
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 0
+      },
+      "search": {
+       "n": 32,
+       "agree": 16,
+       "under": 0
+      },
+      "implement": {
+       "n": 64,
+       "agree": 26,
+       "under": 0
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 26,
+       "under": 2
+      },
+      "security": {
+       "n": 20,
+       "agree": 14,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   },
+   {
+    "round": 13,
+    "change": "Jev with the round 1 descriptions, theta 0.95.",
+    "policy": "jev",
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.95
+     }
+    },
+    "policyHash": "7b1a5de1542e00bd03f068651e46adbdd88a819e4c430b0a6994cf496a181d52",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.553125,
+     "under": 0.00625,
+     "underCritical": 2,
+     "underCriticalRate": 0.012048192771084338,
+     "costRatio": 1.4889766125428296,
+     "costOver": 0.48897661254282965,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 65,
+       "under": 2
+      },
+      "other": {
+       "n": 40,
+       "agree": 23,
+       "under": 0
+      },
+      "search": {
+       "n": 32,
+       "agree": 14,
+       "under": 0
+      },
+      "implement": {
+       "n": 64,
+       "agree": 21,
+       "under": 0
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 24,
+       "under": 0
+      },
+      "security": {
+       "n": 20,
+       "agree": 12,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 17,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 1,
+       "under": 0
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
+   }
+  ],
+  "final": {
+   "text-today": {
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "descriptionsFrom": "9d94540",
+    "policyHash": "0a91c652d562da7dad92720e8eb6b0560d46b436d63cc1185e6718f8f77f7a4e",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.70625,
+     "under": 0.128125,
+     "underCritical": 9,
+     "underCriticalRate": 0.05421686746987952,
+     "costRatio": 1.0903843289140476,
+     "costOver": 0.09038432891404757,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 5
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 46,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 15,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 6,
+       "under": 17
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "at": "2026-10-25"
+   },
+   "today": {
+    "router": {
+     "policy": "today",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "descriptionsFrom": null,
+    "policyHash": "54e2d7c0b503bdf0749aea14097a5d26c1cf49f54b9df563e2e8ea1430e2f810",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.26875,
+     "under": 0.440625,
+     "underCritical": 87,
+     "underCriticalRate": 0.5240963855421686,
+     "costRatio": 0.9517577834053351,
+     "costOver": -0.04824221659466488,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 24,
+       "under": 49
+      },
+      "other": {
+       "n": 40,
+       "agree": 14,
+       "under": 13
+      },
+      "search": {
+       "n": 32,
+       "agree": 5,
+       "under": 15
+      },
+      "implement": {
+       "n": 64,
+       "agree": 16,
+       "under": 29
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 7,
+       "under": 22
+      },
+      "security": {
+       "n": 20,
+       "agree": 5,
+       "under": 9
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 14,
+       "under": 3
+      },
+      "research": {
+       "n": 4,
+       "agree": 1,
+       "under": 1
+      }
+     }
+    },
+    "at": "2026-10-25"
+   },
+   "text": {
+    "router": {
+     "policy": "text",
+     "model": "haiku",
+     "effort": "medium",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "descriptionsFrom": null,
+    "policyHash": "d4a143e6eda95ada4430961c8c26a847a2ef81733531ac00953757b7ed96a0d2",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.765625,
+     "under": 0.109375,
+     "underCritical": 12,
+     "underCriticalRate": 0.07228915662650602,
+     "costRatio": 1.0343736034559812,
+     "costOver": 0.03437360345598117,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 78,
+       "under": 3
+      },
+      "other": {
+       "n": 40,
+       "agree": 27,
+       "under": 6
+      },
+      "search": {
+       "n": 32,
+       "agree": 24,
+       "under": 6
+      },
+      "implement": {
+       "n": 64,
+       "agree": 48,
+       "under": 5
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 30,
+       "under": 7
+      },
+      "security": {
+       "n": 20,
+       "agree": 17,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 18,
+       "under": 6
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 1
+      }
+     }
+    },
+    "at": "2026-10-25"
+   },
+   "rules": {
+    "router": {
+     "policy": "rules",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "descriptionsFrom": null,
+    "policyHash": "0f0853776113a7f82d232dd65db6432196fff5a8c0ecc2ffa75c457a6db66fe6",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.78125,
+     "under": 0.04375,
+     "underCritical": 5,
+     "underCriticalRate": 0.030120481927710843,
+     "costRatio": 1.1364889021301954,
+     "costOver": 0.13648890213019538,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 70,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 25,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 59,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 34,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 1
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "at": "2026-10-25"
+   },
+   "jev": {
+    "router": {
+     "policy": "jev",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     }
+    },
+    "descriptionsFrom": null,
+    "policyHash": "5aa9e6228083ecdc71e281396859d977228109e8675513275650c1a0580eb63b",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.690625,
+     "under": 0.034375,
+     "underCritical": 7,
+     "underCriticalRate": 0.04216867469879518,
+     "costRatio": 1.2450096827052004,
+     "costOver": 0.2450096827052004,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 71,
+       "under": 2
+      },
+      "other": {
+       "n": 40,
+       "agree": 28,
+       "under": 4
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 1
+      },
+      "implement": {
+       "n": 64,
+       "agree": 33,
+       "under": 0
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 27,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 15,
+       "under": 0
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 0
+      },
+      "research": {
+       "n": 4,
+       "agree": 3,
+       "under": 0
+      }
+     }
+    },
+    "at": "2026-10-25"
+   }
+  }
+ }
+}

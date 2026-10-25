@@ -244,7 +244,7 @@ check('the router never offers the frontier', () => {
   assert.ok(!routableTiers(table).includes('frontier'))
   const req = routerRequest(table, P, { description: 'd', prompt: 'p' })
   for (const text of [tierTable(table), req.system]) assert.ok(!/frontier|fable/i.test(text))
-  assert.deepEqual([req.model, req.effort, req.timeoutMs], ['haiku', 'low', 8000])
+  assert.deepEqual([req.model, req.effort, req.timeoutMs], [table.router.model, table.router.effort, table.router.timeoutMs])
   assert.ok(req.maxTokens >= 1024)
   assert.match(req.prompt, /Task description: d/)
   for (const t of routableTiers(table)) assert.ok(req.system.includes(`- ${t} (`))

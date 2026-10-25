@@ -29,9 +29,9 @@
     }
   ],
   "router": {
-    "policy": "text",
+    "policy": "rules",
     "default": "off",
-    "model": "haiku",
+    "model": "sonnet",
     "effort": "low",
     "timeoutMs": 8000,
     "jev": { "model": "jev-1.13.0", "theta": 0.8 }

@@ -183,7 +183,7 @@ check('the policy hash covers the policy and nothing else', () => {
   const changed = [
     { ...table, tiers: { ...table.tiers, quick: { ...table.tiers.quick, description: `${table.tiers.quick.description} More.` } } },
     { ...table, rules: [{ ...table.rules[0], floor: 'long' }] },
-    { ...table, router: { ...table.router, model: 'sonnet' } },
+    { ...table, router: { ...table.router, model: table.router.model === 'haiku' ? 'sonnet' : 'haiku' } },
     { ...table, router: { ...table.router, jev: { ...table.router.jev, theta: 0.9 } } },
     { ...table, categories: [...table.categories, 'poetry'] },
   ]
