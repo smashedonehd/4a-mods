@@ -899,6 +899,76 @@
     },
     "gold": "final",
     "at": "2026-10-25"
+   },
+   {
+    "round": 14,
+    "change": "Task 10 review fixes: shared policyTier core, parseRouterReply scans every brace span, router model id in hash and cache key; rules, router sonnet low.",
+    "policy": "rules",
+    "router": {
+     "policy": "rules",
+     "model": "sonnet",
+     "effort": "low",
+     "timeoutMs": 8000,
+     "jev": {
+      "model": "jev-1.13.0",
+      "theta": 0.8
+     },
+     "modelId": "claude-sonnet-5-5"
+    },
+    "policyHash": "d32fba18a7aa21c943209c5b1c273e9765107ac2adbaf8294d1956a96c294ccc",
+    "metrics": {
+     "n": 320,
+     "agreement": 0.78125,
+     "under": 0.04375,
+     "underCritical": 5,
+     "underCriticalRate": 0.030120481927710843,
+     "costRatio": 1.1364889021301954,
+     "costOver": 0.13648890213019538,
+     "byStratum": {
+      "review": {
+       "n": 96,
+       "agree": 70,
+       "under": 0
+      },
+      "other": {
+       "n": 40,
+       "agree": 25,
+       "under": 2
+      },
+      "search": {
+       "n": 32,
+       "agree": 21,
+       "under": 4
+      },
+      "implement": {
+       "n": 64,
+       "agree": 59,
+       "under": 1
+      },
+      "architecture": {
+       "n": 40,
+       "agree": 34,
+       "under": 4
+      },
+      "security": {
+       "n": 20,
+       "agree": 16,
+       "under": 1
+      },
+      "summarize": {
+       "n": 24,
+       "agree": 23,
+       "under": 1
+      },
+      "research": {
+       "n": 4,
+       "agree": 2,
+       "under": 1
+      }
+     }
+    },
+    "gold": "final",
+    "at": "2026-10-25"
    }
   ],
   "final": {
@@ -911,10 +981,11 @@
      "jev": {
       "model": "jev-1.13.0",
       "theta": 0.8
-     }
+     },
+     "modelId": "claude-haiku-5-5"
     },
     "descriptionsFrom": "9d94540",
-    "policyHash": "0a91c652d562da7dad92720e8eb6b0560d46b436d63cc1185e6718f8f77f7a4e",
+    "policyHash": "b35f19dc96b85b966bd0a0010a5ce8790c70a370968581f3564676c050e0df55",
     "metrics": {
      "n": 320,
      "agreement": 0.70625,
@@ -977,10 +1048,11 @@
      "jev": {
       "model": "jev-1.13.0",
       "theta": 0.8
-     }
+     },
+     "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "54e2d7c0b503bdf0749aea14097a5d26c1cf49f54b9df563e2e8ea1430e2f810",
+    "policyHash": "9a75c5d2361ba6a3af3f46be1ef0d2fb695520a8ef5f4af7f20f47426a96d90f",
     "metrics": {
      "n": 320,
      "agreement": 0.26875,
@@ -1043,10 +1115,11 @@
      "jev": {
       "model": "jev-1.13.0",
       "theta": 0.8
-     }
+     },
+     "modelId": "claude-haiku-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "d4a143e6eda95ada4430961c8c26a847a2ef81733531ac00953757b7ed96a0d2",
+    "policyHash": "34249885bc958d54af67f1a5e57d91eb99ea1dbe6f8dc7492787fb8d3aa0130c",
     "metrics": {
      "n": 320,
      "agreement": 0.765625,
@@ -1109,10 +1182,11 @@
      "jev": {
       "model": "jev-1.13.0",
       "theta": 0.8
-     }
+     },
+     "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "0f0853776113a7f82d232dd65db6432196fff5a8c0ecc2ffa75c457a6db66fe6",
+    "policyHash": "d32fba18a7aa21c943209c5b1c273e9765107ac2adbaf8294d1956a96c294ccc",
     "metrics": {
      "n": 320,
      "agreement": 0.78125,
@@ -1175,10 +1249,11 @@
      "jev": {
       "model": "jev-1.13.0",
       "theta": 0.8
-     }
+     },
+     "modelId": "claude-sonnet-5-5"
     },
     "descriptionsFrom": null,
-    "policyHash": "5aa9e6228083ecdc71e281396859d977228109e8675513275650c1a0580eb63b",
+    "policyHash": "83f44f28106fdc608956fe3a1077eedc611f9b4485046ce020515d3d45ea6bf5",
     "metrics": {
      "n": 320,
      "agreement": 0.690625,

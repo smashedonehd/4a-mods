@@ -260,6 +260,9 @@ if (flag('--one')) {
     if (provisional) die('--heldout-row needs the final gold.json, not provisional gold')
     const prev = results.heldout[row]
     if (prev && prev.policyHash === hash && !flag('--again')) die(`held-out row ${row} already ran with this policy (${prev.at}); the held-out split runs once. --again to rerun`)
+    // Before any call: a refused row must not be run, since its metrics would be seen and not recorded
+    const refused = heldoutRecord(results, row, hash, null).error
+    if (refused) die(refused)
   }
   guard(table, calls)
   const res = await decideAll(table, calls)
