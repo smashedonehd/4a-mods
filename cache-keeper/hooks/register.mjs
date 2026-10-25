@@ -252,8 +252,9 @@ async function settleHold($) {
 // no notTurn is for the running turn. The band's handoff taken over this way is
 // still queued: the engine runs it once this turn ends (see H.another).
 function armHandoff(insideTurn, after = 'none') {
-  const queued = insideTurn && H.armed && H.notTurn !== '' && H.notTurn === S.turnId
-  const again = insideTurn && H.armed && (H.notTurn === '' || queued)
+  const live = insideTurn && H.armed
+  const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
+  const again = live && (H.notTurn === '' || queued)
   if (!(again && H.after === 'clear')) H.after = after
   if (!again) H.draft = ''
   H.another = queued || (again && H.another)
@@ -431,13 +432,13 @@ async function captureHandoff($, e) {
     return
   }
   const clearing = ended && after === 'clear'
+  // A turn other than a handoff's own began over this hook (one the hold could
+  // not stop): what it does is not in this handoff. The queued handoff's turn,
+  // re-armed above, is a handoff's own, as turn.start counts it.
+  const overrun = clearing && S.working && !isHandoffTurn(S.turnId)
   // Set before the first await: the hold must not lapse while the files are
   // written. A later /handoff decides too: one that only asks ends the hold.
-  H.clearDue = clearing
-  // A turn other than the queued handoff's began over this hook (one the hold
-  // could not stop): what it does is not in this handoff
-  const overrun = clearing && S.working && !another
-  if (overrun) H.clearDue = 'stale'
+  H.clearDue = overrun ? 'stale' : clearing
   H.text = body
   H.fromDisk = false
   H.at = now
@@ -446,26 +447,22 @@ async function captureHandoff($, e) {
   H.fid = saved.fid
   const where = saved.path ? `Handoff saved to ${saved.path}.` : 'Handoff captured (the backup file could not be written).'
   const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
+  const lead = where + lost
   if (another) {
     // This turn's handoff is saved; the queued one runs next and decides what follows
-    $.ui.toast(`${where}${lost} The queued handoff still runs next${clearing ? ', and the chat then clears and continues with it' : ''}.`, { timeoutMs: 8000 })
-    return
-  }
-  if (overrun) {
-    // The scheduled run waits for that turn, then writes a fresh handoff (refreshHandoff)
-    $.ui.toast(`${where}${lost} Claude works on, so the chat clears with a fresh handoff once this turn ends.`, { timeoutMs: 8000 })
-    clearAndContinueLater($, 300, true)
+    $.ui.toast(`${lead} The queued handoff still runs next${clearing ? ', and the chat then clears and continues with it' : ''}.`, { timeoutMs: 8000 })
     return
   }
   if (clearing) {
-    // Off the hook too: /clear must not run inside the ending turn
-    $.ui.toast(`${where}${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
+    // Off the hook too: /clear must not run inside the ending turn. Overrun, the
+    // scheduled run waits for that turn, then writes a fresh handoff (refreshHandoff)
+    $.ui.toast(`${lead} ${overrun ? 'Claude works on, so the chat clears with a fresh handoff once this turn ends.' : 'Clearing this chat and continuing with it.'}`, { timeoutMs: 8000 })
     clearAndContinueLater($, 300, true)
     return
   }
   // Nothing clears: what was held while the handoff ran goes on in this chat
   await settleHold($)
-  $.ui.toast(`${where}${lost} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
+  $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
   // Off the hook: the turn is ending, and a dialog would hold it open. The
   // Desktop app shows no dialog asked between turns, so there the band's
   // "clear and continue" button is the way on.
@@ -1355,7 +1352,7 @@ export function register(on) {
     now = await $.clock.now()
     // The next turn may have started while this hook waited: the chat is
     // still working then, and that turn's own end makes it idle
-    const overlapped = !!e.turnId && !!S.turnId && S.turnId !== e.turnId
+    const overlapped = e.turnId && S.turnId && S.turnId !== e.turnId
     if (!overlapped) {
       S.working = false
       S.tool = ''
