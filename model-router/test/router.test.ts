@@ -217,13 +217,40 @@ test('auto routing sends a general agent to the tier the router names', async ($
   expect(requests[0]).toEqual(routerRequest(AUTO, 'model-router', { subagent_type: undefined, description: 'find', prompt: 'find the config' }))
 })
 
-test('auto routing moves a tier type to the routed type', async ($, on) => {
+test('auto routing moves a tier type up to the routed type, never down', async ($, on) => {
   const seen: any[] = []
   engine(on, seen, [], JSON.stringify(AUTO))
-  router(on, answered('{"category":"search","tier":"quick"}'))
+  let tier = 'deep'
+  router(on, () => answered(`{"category":"implement","tier":"${tier}"}`))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'fix', prompt: 'x', subagent_type: 'model-router:quick' })
+  expect([seen[0].subagent_type, seen[0].model, seen[0].effort]).toEqual(['model-router:deep', 'opus', 'high'])
+  tier = 'quick'
   await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'x', subagent_type: 'model-router:deep' })
-  expect([seen[0].subagent_type, seen[0].model, seen[0].effort]).toEqual(['model-router:quick', 'haiku', 'low'])
+  expect([seen[1].subagent_type, seen[1].model, seen[1].effort]).toEqual(['model-router:deep', undefined, undefined])
+})
+
+test('an explicit model or effort is a floor: the router raises a call, never lowers it', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  let tier = 'quick'
+  router(on, () => answered(`{"category":"implement","tier":"${tier}"}`))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x', model: 'opus', effort: 'high' })
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'x', subagent_type: 'opus-high' })
+  await $.tool.call({ tool: 'Agent', description: 'c', prompt: 'x', model: 'fable' })
+  tier = 'deep'
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x', model: 'haiku' })
+  // Nothing set is no request: the router may send a general agent below the safety net's Opus
+  tier = 'quick'
+  await $.tool.call({ tool: 'Agent', description: 'e', prompt: 'x' })
+  expect(seen.map((s) => [s.subagent_type, s.model, s.effort])).toEqual([
+    [undefined, 'opus', 'high'],
+    ['opus-high', undefined, undefined],
+    [undefined, 'opus', 'high'],
+    [undefined, 'opus', 'high'],
+    [undefined, 'haiku', 'low'],
+  ])
 })
 
 test('a fork is never routed and the router is not asked', async ($, on) => {

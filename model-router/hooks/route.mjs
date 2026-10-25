@@ -181,7 +181,7 @@ export function policyText(table, plugin, ceiling = 'opus', auto = false) {
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
     `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort; a general or built-in agent given only a model runs at the effort of that model's first tier. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
-    ...(auto ? [`Auto routing is on: every Agent call but a fork is routed automatically to the tier its task needs, whatever type or model you name, so describe the task plainly in the prompt. The user turns it off with /route auto off.`] : []),
+    ...(auto ? [`Auto routing is on: every Agent call but a fork is routed automatically to the tier its task needs, so describe the task plainly in the prompt. A model or effort you set, or a type that names one (a ${plugin} tier type, or a name such as opus-xhigh), is a floor: the router may raise such a call but never runs it below what you asked. The user turns it off with /route auto off.`] : []),
   ].join('\n')
 }
 
@@ -210,11 +210,17 @@ export function routableTiers(table) {
   return offeredTiers(table, 'opus')
 }
 
+// The model and effort a type's name says it runs on (`opus-xhigh`), or null
+function namedType(type) {
+  const m = new RegExp(`^(${FAMILIES.join('|')})-(${EFFORTS.join('|')})$`).exec(String(type || ''))
+  return m ? { model: m[1], effort: m[2] } : null
+}
+
 // What a router or judge sees of an Agent call: its type, the description, and the prompt cut to its
 // head and tail. A type whose name says which model it runs on is hidden, so nobody copies that choice.
 export function blindView(table, plugin, e) {
   const type = String(e.subagent_type || '')
-  const named = new RegExp(`^(${FAMILIES.join('|')})-(${EFFORTS.join('|')})$`).test(type) || hostName(type).startsWith(`${hostName(plugin)}:`)
+  const named = namedType(type) !== null || hostName(type).startsWith(`${hostName(plugin)}:`)
   const hidden = !type || type === 'claude' || named
   const prompt = String(e.prompt || '')
   const head = 9000
@@ -349,6 +355,37 @@ export function pickJevTier(table, reply, theta = table.router.jev.theta) {
   return tiers[tiers.length - 1]
 }
 
+// What an Agent call asks for itself: the model and effort set on it, else what its type names (one of our
+// tier types, or a <family>-<effort> name such as opus-xhigh); '' where it names nothing. A general or
+// built-in agent with nothing set asks for nothing, so the safety net's default is no floor; nor is a custom
+// agent's own frontmatter, which the hook cannot see.
+export function askOf(table, plugin, e) {
+  const type = String(e.subagent_type || '')
+  const own = ownTier(table, plugin, type)
+  const typed = own ? table.tiers[own] : namedType(type) || {}
+  return { model: e.model || typed.model || '', effort: e.effort || typed.effort || '' }
+}
+
+// Whether a model and effort fall below what a call asks for: the model line first (FAMILIES), then the
+// effort, each compared only where the call names it. A model the call names outside FAMILIES cannot be
+// compared, so nothing counts as reaching it.
+export function weaker(pair, ask) {
+  if (ask.model) {
+    const want = FAMILIES.indexOf(ask.model)
+    const got = FAMILIES.indexOf(pair.model)
+    if (want < 0 || got < want) return true
+    if (got > want) return false
+  }
+  return Boolean(ask.effort) && EFFORTS.indexOf(pair.effort) < EFFORTS.indexOf(ask.effort)
+}
+
+// The tier auto routing gives one call from the policy's tier ('' when it has none), or '' to keep today's
+// plan (planAgentCall, then capPlan), which carries what the call asked for. An explicit request is a floor:
+// the router may raise a call, never lower it below what was asked (askOf).
+export function autoTier(table, plugin, e, tier) {
+  return tier && !weaker(table.tiers[tier], askOf(table, plugin, e)) ? tier : ''
+}
+
 // The plan for a call the policy routed: the tier's model and effort, and our own type moved to the routed tier's
 export function routedPlan(table, plugin, e, tier) {
   const { model, effort } = table.tiers[tier]
@@ -360,6 +397,6 @@ export function routedPlan(table, plugin, e, tier) {
 // which the `today` policy is and every policy falls back to
 export const POLICY_CODE = [
   hostName, ownTier, tierOfType, planAgentCall, isFrontier, offeredTiers, capTier, capPlan,
-  routableTiers, blindView, tierTable, routerRequest, jsonSpans, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
-  routesCall, policyTier,
+  routableTiers, namedType, blindView, tierTable, routerRequest, jsonSpans, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
+  routesCall, policyTier, askOf, weaker, autoTier,
 ]

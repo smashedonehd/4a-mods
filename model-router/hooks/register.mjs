@@ -8,8 +8,10 @@
 // policy decides: a small router model (text), the router plus hard floors for
 // review, security and architecture (rules), or Jev Choice (jev) reads the call
 // as the eval read it (eval/ calls the same functions from route.mjs) and names
-// the tier; Claude's own choice is only an input. A fork is never routed, and
-// under /route fable the frontier type stays manual.
+// the tier. What Claude asked for explicitly (a model or effort, a tier type, a
+// name such as opus-xhigh) is a floor: the router may raise the call, never
+// lower it. A fork is never routed, and under /route fable the frontier type
+// stays manual.
 //
 // The safety net is the fallback, and the whole router while auto routing is
 // off: a general agent Claude started with nothing set gets the table's default
@@ -25,7 +27,7 @@
 // Cost: with auto routing off, zero tokens per call; on, one small router call
 // (or one Jev call) per Agent call, bounded by router.timeoutMs.
 
-import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, routerRequest, jevRequest, jevHttp, routedPlan, routesCall, policyTier } from './route.mjs'
+import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, routerRequest, jevRequest, jevHttp, routedPlan, routesCall, policyTier, autoTier } from './route.mjs'
 
 const settings = {
   fill: true, // the safety net described above; off, only the Opus cap still applies
@@ -193,7 +195,7 @@ export function register(on) {
   // to move our own tier type to the routed tier's, or the hidden frontier type to the cap's
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!table) return next(e)
-    const tier = routes(e) ? await decide($, e) : ''
+    const tier = routes(e) ? autoTier(table, plugin, e, await decide($, e)) : ''
     const plan = tier ? routedPlan(table, plugin, e, tier) : capPlan(table, plugin, e, planAgentCall(table, plugin, e, settings.fill), settings.ceiling)
     const frontier = isFrontier(table, plan)
     remember({ ...plan, what: `${e.subagent_type || 'agent'}: ${String(e.description || '').slice(0, 20)}` })

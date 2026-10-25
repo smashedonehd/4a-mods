@@ -2,7 +2,7 @@
 // and today's router replayed on a recorded call. No I/O here except loadAgentDefs.
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { EFFORTS, FAMILIES, POLICIES, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan, policyTier, jsonSpans } from '../hooks/route.mjs'
+import { EFFORTS, FAMILIES, POLICIES, CATEGORY_GUIDE, routableTiers, blindView, tierTable, planAgentCall, capPlan, policyTier, autoTier, jsonSpans } from '../hooks/route.mjs'
 
 export const SEED = 20261025
 
@@ -255,14 +255,20 @@ export function todayDecision(table, plugin, call, defs) {
 }
 
 // The table's policy's decision for a recorded call, from the router's reply (text, rules) or Jev's (jev):
-// the routed tier, or today's plan when the reply is unusable, as the hook falls back
+// the routed tier, or today's plan when the reply is unusable or the call's explicit request is a floor
+// above the routed tier, as the hook decides
 export function policyDecision(table, plugin, call, reply, defs) {
   const { policy } = table.router
   if (!POLICIES.includes(policy)) throw new Error(`unknown policy: ${policy}`)
   const today = () => todayDecision(table, plugin, call, defs)
   if (policy === 'today') return { decision: today(), category: null, fallback: false }
-  const picked = policyTier(table, plugin, eventOf(call), reply)
-  return picked ? { decision: picked.tier, category: picked.category, fallback: false } : { decision: today(), category: null, fallback: true }
+  const e = eventOf(call)
+  const picked = policyTier(table, plugin, e, reply)
+  // A call whose explicit request is above the routed tier keeps today's plan, as the hook does. Such a
+  // decision is not always a tier, so it is scored at the model and effort it runs on (todayDecision): the
+  // metrics take a { model, effort } pair, and its price is the real cost of the kept call.
+  const tier = autoTier(table, plugin, e, picked ? picked.tier : '')
+  return { decision: tier || today(), category: picked ? picked.category : null, fallback: !picked }
 }
 
 // Why a held-out run may not run or be recorded, or '': results.tuning.final[row] must exist and

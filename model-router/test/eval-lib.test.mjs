@@ -7,7 +7,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { rng, stratumOf, STRATA, drawSample, filterCalls, heldoutRecord, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
+import { rng, stratumOf, STRATA, drawSample, eventOf, filterCalls, heldoutRecord, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
+import { jevRequest, routerRequest } from '../hooks/route.mjs'
 import { costOf, rankOf, score, criteria, kappa, agreement, weightsFor, invalidMetrics } from '../eval/metrics.mjs'
 import { policyInputs, policyHash, noEol } from '../eval/hash.mjs'
 
@@ -291,6 +292,25 @@ check('a policy decides from the reply, and an unusable reply falls back to toda
   assert.deepEqual(d('jev', {}), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
   assert.deepEqual(d('today', null), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: false })
   assert.throws(() => d('x', null), /unknown policy/)
+})
+
+check('an explicit request above the routed tier keeps today\'s plan, scored at the model and effort it runs on', () => {
+  const defs = new Map([['opus-xhigh', { model: 'opus', effort: 'xhigh' }]])
+  const base = { description: 'Implement Task 2', prompt: 'x', model: '', effort: '', parentModel: 'claude-opus-5-5', parentEffort: '' }
+  const d = (call, tier) => policyDecision(table, P, { ...base, ...call }, `{"category":"implement","tier":"${tier}"}`, defs)
+  assert.deepEqual(d({ type: 'general-purpose', model: 'opus', effort: 'xhigh' }, 'standard'), { decision: { model: 'opus', effort: 'xhigh' }, category: 'implement', fallback: false })
+  assert.deepEqual(d({ type: 'general-purpose', model: 'haiku' }, 'deep'), { decision: 'deep', category: 'implement', fallback: false })
+  assert.equal(d({ type: 'general-purpose' }, 'quick').decision, 'quick')
+  assert.deepEqual(d({ type: 'model-router:long' }, 'standard').decision, { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(d({ type: 'opus-xhigh' }, 'deep').decision, { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(d({ type: 'general-purpose', effort: 'xhigh' }, 'deep').decision, { model: 'opus', effort: 'xhigh' })
+  // A kept pair scores like the tier it lands on
+  const gold = [{ id: 'a', tier: 'long', category: 'implement', stratum: 'implement' }]
+  assert.deepEqual(score(table, gold, { a: { model: 'opus', effort: 'xhigh' } }), score(table, gold, { a: 'long' }))
+  // The router never sees what the call asked for, so the request (and its cache key) does not change with it
+  const plain = routerRequest(table, P, eventOf({ ...base, type: 'general-purpose' }))
+  assert.deepEqual(routerRequest(table, P, eventOf({ ...base, type: 'general-purpose', model: 'opus', effort: 'xhigh' })), plain)
+  assert.deepEqual(jevRequest(table, P, eventOf({ ...base, model: 'haiku', effort: 'low' })), jevRequest(table, P, eventOf(base)))
 })
 
 check('gold takes agreed verdicts and rulings, and names what is missing', () => {

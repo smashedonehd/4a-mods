@@ -2,7 +2,7 @@
 // Checks the shipped routing.json and the router's decision for each kind of Agent call.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType, routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan, routesCall, policyTier } from '../hooks/route.mjs'
+import { invalidTable, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, ageDays, offeredTiers, capTier, capPlan, tierOfType, routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan, routesCall, policyTier, askOf, weaker, autoTier } from '../hooks/route.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
 const P = 'model-router'
@@ -302,6 +302,61 @@ check('a routed plan sets model and effort, and moves only our own type', () => 
   assert.deepEqual(routedPlan(table, P, {}, 'quick').set, { model: 'haiku', effort: 'low' })
 })
 
+check('what a call asks for: a model or effort it sets, else what its type names; a general or custom agent asks for nothing', () => {
+  assert.deepEqual(askOf(table, P, { model: 'opus', effort: 'xhigh' }), { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(askOf(table, P, { subagent_type: 'model-router:long' }), { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(askOf(table, P, { subagent_type: 'Model-Router:Quick', model: 'opus' }), { model: 'opus', effort: 'low' })
+  assert.deepEqual(askOf(table, P, { subagent_type: 'opus-xhigh' }), { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(askOf(table, P, { subagent_type: 'haiku-low', effort: 'high' }), { model: 'haiku', effort: 'high' })
+  assert.deepEqual(askOf(table, P, { subagent_type: 'Explore', effort: 'high' }), { model: '', effort: 'high' })
+  for (const type of [undefined, '', 'general-purpose', 'claude', 'Explore', 'Plan', 'irene-reviewer', 'opus-ultra', 'other-plugin:deep']) {
+    assert.deepEqual(askOf(table, P, { subagent_type: type, description: 'Review', prompt: 'x' }), { model: '', effort: '' })
+  }
+})
+
+check('strength compares the model line first, then the effort, only where the call names it', () => {
+  const t = table.tiers
+  assert.equal(weaker(t.standard, { model: 'opus', effort: 'xhigh' }), true)
+  assert.equal(weaker(t.deep, { model: 'opus', effort: 'xhigh' }), true)
+  assert.equal(weaker(t.long, { model: 'opus', effort: 'xhigh' }), false)
+  assert.equal(weaker(t.deep, { model: 'haiku', effort: '' }), false)
+  assert.equal(weaker(t.deep, { model: 'sonnet', effort: 'max' }), false)
+  assert.equal(weaker(t.light, { model: 'haiku', effort: 'medium' }), false)
+  assert.equal(weaker(t.quick, { model: 'haiku', effort: 'medium' }), true)
+  assert.equal(weaker(t.long, { model: 'fable', effort: '' }), true)
+  assert.equal(weaker(t.quick, { model: '', effort: '' }), false)
+  assert.equal(weaker(t.deep, { model: '', effort: 'xhigh' }), true)
+  assert.equal(weaker(t.deep, { model: '', effort: 'low' }), false)
+  // A model outside the known lines cannot be compared, so the call keeps it
+  assert.equal(weaker(t.long, { model: 'gpt-x', effort: '' }), true)
+})
+
+check('an explicit request is a floor: the router may raise a call, never lower it', () => {
+  const today = (e) => capPlan(table, P, e, planAgentCall(table, P, e), 'opus')
+  const opus = { model: 'opus', effort: 'xhigh', description: 'd', prompt: 'x' }
+  assert.equal(autoTier(table, P, opus, 'standard'), '')
+  assert.deepEqual([today(opus).model, today(opus).effort], ['opus', 'xhigh'])
+  assert.equal(autoTier(table, P, { model: 'haiku', description: 'd' }, 'deep'), 'deep')
+  assert.equal(autoTier(table, P, { subagent_type: 'general-purpose', description: 'd' }, 'quick'), 'quick')
+  assert.equal(autoTier(table, P, { description: 'd' }, 'quick'), 'quick')
+  const long = { subagent_type: 'model-router:long', description: 'd' }
+  assert.equal(autoTier(table, P, long, 'standard'), '')
+  assert.deepEqual([today(long).action, today(long).tier, today(long).set], ['typed', 'long', undefined])
+  assert.equal(autoTier(table, P, { subagent_type: 'model-router:quick' }, 'deep'), 'deep')
+  assert.equal(autoTier(table, P, { subagent_type: 'opus-xhigh' }, 'deep'), '')
+  assert.equal(autoTier(table, P, { subagent_type: 'haiku-low' }, 'standard'), 'standard')
+  assert.equal(autoTier(table, P, { subagent_type: 'Explore' }, 'standard'), 'standard')
+  assert.equal(autoTier(table, P, { subagent_type: 'irene-reviewer' }, 'quick'), 'quick')
+  assert.equal(autoTier(table, P, { effort: 'xhigh' }, 'deep'), '')
+  assert.equal(autoTier(table, P, { effort: 'low' }, 'deep'), 'deep')
+  // A Fable request is above every routable tier: it keeps today's plan, which the Opus cap still caps
+  const fable = { model: 'fable', description: 'd' }
+  assert.equal(autoTier(table, P, fable, 'long'), '')
+  assert.deepEqual([today(fable).action, today(fable).model, today(fable).effort], ['capped', 'opus', 'xhigh'])
+  assert.equal(autoTier(table, P, { subagent_type: 'model-router:frontier' }, 'long'), '')
+  assert.equal(autoTier(table, P, opus, ''), '')
+})
+
 check('routesCall is false for today, for a fork, and for the frontier type under /route fable', () => {
   assert.equal(routesCall(table, P, { subagent_type: 'general-purpose' }, 'opus'), true)
   assert.equal(routesCall({ ...table, router: { ...table.router, policy: 'today' } }, P, { subagent_type: 'general-purpose' }, 'opus'), false)
@@ -329,6 +384,8 @@ check('the policy text says routing is automatic only when auto is on', () => {
   const on = policyText(table, P, 'opus', true)
   assert.match(on, /routed automatically/)
   assert.match(on, /\/route auto off/)
+  assert.match(on, /A model or effort you set, or a type that names one .* is a floor/)
+  assert.doesNotMatch(on, /whatever type or model/)
   assert.equal(policyText(table, P, 'opus'), policyText(table, P, 'opus', false))
   assert.doesNotMatch(policyText(table, P, 'opus'), /routed automatically/)
   assert.ok(on.startsWith(policyText(table, P, 'opus')))
