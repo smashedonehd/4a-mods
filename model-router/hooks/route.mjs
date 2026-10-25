@@ -171,7 +171,7 @@ export function capPlan(table, plugin, e, plan, ceiling) {
 }
 
 // The section added to Claude's system prompt: which type to pick for which task
-export function policyText(table, plugin, ceiling = 'opus') {
+export function policyText(table, plugin, ceiling = 'opus', auto = false) {
   const tiers = offeredTiers(table, ceiling)
   const lines = tiers.map((n) => `- ${plugin}:${n} (${table.tiers[n].model}, ${table.tiers[n].effort}): ${table.tiers[n].description}`)
   let frontier = ''
@@ -185,6 +185,7 @@ export function policyText(table, plugin, ceiling = 'opus') {
     `Model routing (${plugin}, table of ${table.updated}). When you delegate with the Agent tool, pick the agent type by the task's difficulty:`,
     ...lines,
     `Give cheap work (searching, reading, summarizing many files) its own ${plugin}:quick or ${plugin}:light agents, and keep hard judgment for the tiers that need it.${frontier} A general agent you start with no model runs on ${table.fill.model} at ${table.fill.effort} effort; a general or built-in agent given only a model runs at the effort of that model's first tier. A specialised agent type (Explore, Plan, a custom one) still wins when it fits the task better.`,
+    ...(auto ? [`Auto routing is on: every Agent call but a fork is routed automatically to the tier its task needs, whatever type or model you name, so describe the task plainly in the prompt. The user turns it off with /route auto off.`] : []),
   ].join('\n')
 }
 

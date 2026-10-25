@@ -191,3 +191,157 @@ test('/route fill without on or off is not an option and changes nothing', async
   expect(String(r.text)).toContain('safety net on')
   expect(store.get('settings')).toBe(undefined)
 })
+
+// Auto routing: the same table with the router on by default
+const AUTO = { ...TABLE, router: { ...TABLE.router, default: 'on' } }
+const answered = (text: string) => ({ value: { isAnswered: true, text, usage: { input_tokens: 1, output_tokens: 1 } } })
+
+function router(on: any, reply: any, count = { n: 0 }) {
+  on('model.complete', () => {
+    count.n++
+    return typeof reply === 'function' ? reply() : reply
+  })
+  return count
+}
+
+test('auto routing sends a general agent to the tier the router names', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'find the config' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['haiku', 'low'])
+})
+
+test('auto routing moves a tier type to the routed type', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'x', subagent_type: 'model-router:deep' })
+  expect([seen[0].subagent_type, seen[0].model, seen[0].effort]).toEqual(['model-router:quick', 'haiku', 'low'])
+})
+
+test('a fork is never routed and the router is not asked', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  const count = router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'f', prompt: 'x', subagent_type: 'fork' })
+  expect(count.n).toBe(0)
+  expect(seen[0].model).toBe(undefined)
+})
+
+test('a failed, empty or out-of-range router reply falls back to the safety net', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  const replies = [
+    { value: { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: {} } },
+    answered('frontier'),
+    answered('{"tier":"frontier"}'),
+    answered(''),
+  ]
+  let i = 0
+  router(on, () => replies[i++])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  for (let k = 0; k < replies.length; k++) await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(seen.map((s) => [s.model, s.effort])).toEqual(replies.map(() => ['opus', 'medium']))
+})
+
+test('a router call that is refused falls back to the safety net', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  router(on, () => ({ deny: 'refused' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'medium'])
+})
+
+test('under /route fable the frontier type stays manual', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify(AUTO))
+  const count = router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'route', args: 'fable' })
+  await $.tool.call({ tool: 'Agent', description: 'f', prompt: 'x', subagent_type: 'model-router:frontier' })
+  expect(count.n).toBe(0)
+  expect([seen[0].subagent_type, seen[0].model]).toEqual(['model-router:frontier', undefined])
+})
+
+test("/route auto off restores today's router and survives a new session", async ($, on) => {
+  const seen: any[] = []
+  const store = engine(on, seen, [], JSON.stringify(AUTO))
+  const count = router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const off = await $.command.run({ command: 'route', args: 'auto off' })
+  expect(String(off.text)).toContain('Auto routing: off')
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'medium'])
+  expect(count.n).toBe(0)
+  expect(store.get('settings').auto).toBe(false)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(count.n).toBe(0)
+  const back = await $.command.run({ command: 'route', args: 'auto on' })
+  expect(String(back.text)).toContain('Auto routing: on')
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect([seen[2].model, seen[2].effort]).toEqual(['haiku', 'low'])
+})
+
+test('with the table default off, nothing is routed until /route auto on', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [])
+  const count = router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(count.n).toBe(0)
+  expect(String((await $.command.run({ command: 'route', args: '' })).text)).toContain('Auto routing: off (policy text, router haiku low)')
+})
+
+test('the rules policy lifts a review to deep', async ($, on) => {
+  const seen: any[] = []
+  engine(on, seen, [], JSON.stringify({ ...AUTO, router: { ...AUTO.router, policy: 'rules' } }))
+  router(on, answered('{"category":"search","tier":"quick"}'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'Review Task 3', prompt: 'x' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['opus', 'high'])
+})
+
+const JEV = JSON.stringify({ ...AUTO, router: { ...AUTO.router, policy: 'jev' } })
+
+test('the jev policy routes by probabilities', async ($, on) => {
+  const seen: any[] = []
+  const calls: any[] = []
+  engine(on, seen, [], JEV)
+  on('env.get', (_: any, e: any) => ({ value: e.name === 'TYPESAFE_API_KEY' ? 'k' : undefined }))
+  on('http.fetch', (_: any, e: any) => {
+    calls.push(e)
+    return { value: { ok: true, status: 200, headers: {}, text: '{"answers":{"tier":{"probabilities":{"quick":0.9,"deep":0.1}}}}' } }
+  })
+  on('clock.sleep', () => new Promise(() => {}))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect([seen[0].model, seen[0].effort]).toEqual(['haiku', 'low'])
+  expect(calls[0].url).toBe('https://api.typesafe.ai/v1/systemone')
+  expect(calls[0].init.headers.authorization).toBe('Bearer k')
+})
+
+test('the jev policy without a key, or with a slow proxy, falls back', async ($, on) => {
+  const seen: any[] = []
+  let key: string | undefined
+  let fetched = 0
+  engine(on, seen, [], JEV)
+  on('env.get', (_: any, e: any) => ({ value: e.name === 'TYPESAFE_API_KEY' ? key : undefined }))
+  on('http.fetch', () => {
+    fetched++
+    return new Promise(() => {})
+  })
+  on('clock.sleep', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(fetched).toBe(0)
+  key = 'k'
+  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
+  expect(fetched).toBe(1)
+  expect(seen.map((s) => [s.model, s.effort])).toEqual([['opus', 'medium'], ['opus', 'medium']])
+})

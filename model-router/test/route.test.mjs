@@ -297,4 +297,13 @@ check('a routed plan sets model and effort, and moves only our own type', () => 
 
 check('age in days', () => assert.equal(ageDays({ updated: '2026-10-24' }, Date.parse('2026-11-03T12:00:00Z')), 10))
 
+check('the policy text says routing is automatic only when auto is on', () => {
+  const on = policyText(table, P, 'opus', true)
+  assert.match(on, /routed automatically/)
+  assert.match(on, /\/route auto off/)
+  assert.equal(policyText(table, P, 'opus'), policyText(table, P, 'opus', false))
+  assert.doesNotMatch(policyText(table, P, 'opus'), /routed automatically/)
+  assert.ok(on.startsWith(policyText(table, P, 'opus')))
+})
+
 console.log(`${n} checks passed`)
