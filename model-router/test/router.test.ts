@@ -356,7 +356,9 @@ test('the jev policy without a key, or with a slow proxy, falls back', async ($,
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
   expect(fetched).toBe(0)
+  // The key is read at the start, so a session started with it set calls Jev
   key = 'k'
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'x' })
   expect(fetched).toBe(1)
   expect(seen.map((s) => [s.model, s.effort])).toEqual([['opus', 'medium'], ['opus', 'medium']])

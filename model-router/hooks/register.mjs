@@ -25,7 +25,7 @@
 // Cost: with auto routing off, zero tokens per call; on, one small router call
 // (or one Jev call) per Agent call, bounded by router.timeoutMs.
 
-import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, routerRequest, jevRequest, routedPlan, routesCall, policyTier } from './route.mjs'
+import { invalidTable, ageDays, agentSpecs, planAgentCall, isFrontier, policyText, countDecision, offeredTiers, capPlan, capTier, routerRequest, jevRequest, jevHttp, routedPlan, routesCall, policyTier } from './route.mjs'
 
 const settings = {
   fill: true, // the safety net described above; off, only the Opus cap still applies
@@ -39,6 +39,7 @@ let problem = '' // why no table is in use
 let registered = [] // the agent types registered this session
 let attempts = 0 // registrations tried: one at the start, again before a prompt while any is missing
 let commandName = 'route'
+let jev = { key: '', base: '' } // TYPESAFE_API_KEY and TYPESAFE_BASE_URL, read at the start under the jev policy
 const recent = [] // the last decisions, newest last
 
 function remember(d) {
@@ -71,10 +72,14 @@ function autoOn() {
   return typeof settings.auto === 'boolean' ? settings.auto : table.router.default === 'on'
 }
 
+// Whether auto routing is in effect: switched on, and a policy that routes
+function autoActive() {
+  return autoOn() && table.router.policy !== 'today'
+}
+
 function autoLine() {
   const r = table.router
-  const on = autoOn() && r.policy !== 'today'
-  return `Auto routing: ${on ? 'on' : 'off'} (policy ${r.policy}, router ${r.policy === 'jev' ? r.jev.model : `${r.model} ${r.effort}`}).`
+  return `Auto routing: ${autoActive() ? 'on' : 'off'} (policy ${r.policy}, router ${r.policy === 'jev' ? r.jev.model : `${r.model} ${r.effort}`}).`
 }
 
 // Whether the policy routes this call: not a fork, not the frontier type Claude may name under /route fable
@@ -86,18 +91,17 @@ function routes(e) {
 async function decide($, e) {
   try {
     const r = table.router
+    let reply = null
     if (r.policy === 'jev') {
-      const key = await $.env.get('TYPESAFE_API_KEY')
-      if (!key) return ''
-      const base = (await $.env.get('TYPESAFE_BASE_URL')) || 'https://api.typesafe.ai'
-      const req = jevRequest(table, plugin, e)
-      const init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(req.body) }
-      const res = await Promise.race([$.http.fetch(base + req.path, init), $.clock.sleep(r.timeoutMs).then(() => null)])
-      const reply = res && res.ok ? JSON.parse(res.text) : null
-      return (policyTier(table, plugin, e, reply) || {}).tier || ''
+      if (!jev.key) return ''
+      const { url, init } = jevHttp(jev.base, jev.key, jevRequest(table, plugin, e))
+      // The host's fetch takes no timeout or abort signal: a slow reply loses the race and is left unread
+      const res = await Promise.race([$.http.fetch(url, init), $.clock.sleep(r.timeoutMs).then(() => null)])
+      reply = res && res.ok ? JSON.parse(res.text) : null
+    } else {
+      const res = await $.model.complete(routerRequest(table, plugin, e))
+      reply = res && res.isAnswered ? res.text : null
     }
-    const res = await $.model.complete(routerRequest(table, plugin, e))
-    const reply = res && res.isAnswered ? res.text : null
     return (policyTier(table, plugin, e, reply) || {}).tier || ''
   } catch {
     return ''
@@ -163,6 +167,15 @@ export function register(on) {
     if (typeof settings.auto !== 'boolean') settings.auto = undefined
     await loadTable($)
     if (table) await registerTypes($)
+    jev = { key: '', base: '' }
+    if (table && table.router.policy === 'jev') {
+      try {
+        const [key, base] = await Promise.all([$.env.get('TYPESAFE_API_KEY'), $.env.get('TYPESAFE_BASE_URL')])
+        jev = { key: key || '', base: base || '' }
+      } catch {
+        // no key: every call falls back to the safety net
+      }
+    }
     for (const name of ['route', 'model-router']) {
       try {
         await $.command.register({ name, description: 'Model Router: route Haiku up to Opus (/route) or up to Fable (/route fable), and what the router did', argumentHint: '[fable|auto on|off|fill on|off|stats reset]', immediate: true })
@@ -209,7 +222,7 @@ export function register(on) {
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     if (!table || !registered.length || !e.tools.includes('Agent')) return r
-    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin, settings.ceiling, autoOn() && table.router.policy !== 'today'), scope: 'session' }] }
+    return { sections: [...r.sections, { id: 'model-router:policy', text: policyText(table, plugin, settings.ceiling, autoActive()), scope: 'session' }] }
   })
 
   on('command.run', { command: ['route', 'model-router'] }, async ($, e) => {

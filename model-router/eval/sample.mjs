@@ -3,18 +3,13 @@
 //
 //   node model-router/eval/sample.mjs
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { readJsonl, writeJsonl } from './io.mjs'
 import { drawSample } from './lib.mjs'
 import { CALLS, SAMPLE } from './paths.mjs'
 
 const FIELDS = ['id', 'session', 'stratum', 'split', 'type', 'model', 'effort', 'parentModel', 'parentEffort', 'description', 'prompt']
 
-const calls = readFileSync(CALLS, 'utf8')
-  .split('\n')
-  .filter((l) => l.trim())
-  .map((l) => JSON.parse(l))
-const rows = drawSample(calls).map((c) => Object.fromEntries(FIELDS.map((k) => [k, c[k] ?? ''])))
+const rows = drawSample(readJsonl(CALLS)).map((c) => Object.fromEntries(FIELDS.map((k) => [k, c[k] ?? ''])))
 
 const count = (pred) => rows.filter(pred).length
 const sessions = (split) => new Set(rows.filter((r) => r.split === split).map((r) => r.session))
@@ -28,6 +23,5 @@ for (const k of [...new Set(rows.map((r) => r.stratum))]) {
 console.log(`total ${rows.length}, held-out ${count((r) => r.split === 'heldout')}, train ${count((r) => r.split === 'train')}`)
 console.log(`sessions: train ${train.size}, held-out ${held.size}, shared ${shared}`)
 
-mkdirSync(dirname(SAMPLE), { recursive: true })
-writeFileSync(SAMPLE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
+writeJsonl(SAMPLE, rows)
 console.log(`-> ${SAMPLE}`)

@@ -7,20 +7,14 @@
 //   node model-router/eval/gold.mjs --provisional   (missing rulings take the recommendation;
 //                                                    writes DATA/gold-provisional.json, never the repo)
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { loadTable, readJson, readJsonl, writeJson } from './io.mjs'
 import { buildGold } from './lib.mjs'
-import { DATA, GOLD, JUDGMENTS, RULINGS, SAMPLE, TABLE } from './paths.mjs'
+import { GOLD, GOLD_PROVISIONAL, JUDGMENTS, RULINGS, SAMPLE } from './paths.mjs'
 
-const jsonl = (f) =>
-  readFileSync(f, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l))
 const provisional = process.argv.includes('--provisional')
-const table = JSON.parse(readFileSync(TABLE, 'utf8'))
-const rulings = existsSync(RULINGS) ? JSON.parse(readFileSync(RULINGS, 'utf8')) : {}
-const { gold, missing } = buildGold(table, jsonl(SAMPLE), jsonl(JUDGMENTS), rulings, { provisional, safer: !provisional })
+const table = loadTable()
+const sample = readJsonl(SAMPLE)
+const { gold, missing } = buildGold(table, sample, readJsonl(JUDGMENTS), readJson(RULINGS, {}), { fill: provisional ? 'recommendation' : 'safer' })
 if (missing.length) {
   console.error(`${missing.length} disagreements have no ruling in ${RULINGS}: ${missing.join(', ')}`)
   process.exit(1)
@@ -32,11 +26,11 @@ for (const split of ['train', 'heldout']) {
   console.log(`${split} ${rows.length}\n  tiers: ${count(rows, 'tier')}\n  categories: ${count(rows, 'category')}\n  sources: ${count(rows, 'source')}`)
 }
 const re = new RegExp(table.rules[0].match, 'iu')
-const sample = new Map(jsonl(SAMPLE).map((r) => [r.id, r]))
+const byId = new Map(sample.map((r) => [r.id, r]))
 const crit = gold.filter((g) => g.split === 'train' && table.critical.includes(g.category))
-const unmatched = crit.filter((g) => !re.test(`${sample.get(g.id).type || ''} ${sample.get(g.id).description || ''}`)).length
+const unmatched = crit.filter((g) => !re.test(`${byId.get(g.id).type || ''} ${byId.get(g.id).description || ''}`)).length
 console.log(`train critical ${crit.length}, of them not caught by rules[0].match ${unmatched}`)
 
-const out = provisional ? join(DATA, 'gold-provisional.json') : GOLD
-writeFileSync(out, JSON.stringify(gold, null, 1) + '\n')
+const out = provisional ? GOLD_PROVISIONAL : GOLD
+writeJson(out, gold)
 console.log(`-> ${out}`)

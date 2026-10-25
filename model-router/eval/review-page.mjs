@@ -5,21 +5,17 @@
 //
 //   node model-router/eval/review-page.mjs
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { routableTiers } from '../hooks/route.mjs'
+import { loadTable, readJsonl } from './io.mjs'
 import { disagrees } from './lib.mjs'
-import { kappa } from './metrics.mjs'
-import { DATA, JUDGMENTS, SAMPLE, TABLE } from './paths.mjs'
+import { agreement } from './metrics.mjs'
+import { DATA, JUDGMENTS, SAMPLE } from './paths.mjs'
 
-const jsonl = (f) =>
-  readFileSync(f, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l))
-const table = JSON.parse(readFileSync(TABLE, 'utf8'))
-const sample = new Map(jsonl(SAMPLE).map((r) => [r.id, r]))
-const judged = jsonl(JUDGMENTS).filter((r) => r.A && r.B)
+const table = loadTable()
+const sample = new Map(readJsonl(SAMPLE).map((r) => [r.id, r]))
+const judged = readJsonl(JUDGMENTS).filter((r) => r.A && r.B)
 const items = judged
   .filter((r) => disagrees(table, r.A, r.B))
   .map((r) => {
@@ -29,7 +25,7 @@ const items = judged
 const tiers = routableTiers(table).map((k) => ({ k, model: table.tiers[k].model, effort: table.tiers[k].effort }))
 const a = judged.map((r) => r.A.tier)
 const b = judged.map((r) => r.B.tier)
-const summary = { rows: judged.length, raw: a.filter((x, i) => x === b[i]).length / judged.length, kappa: kappa(a, b) }
+const summary = { rows: judged.length, ...agreement(a, b) }
 const data = JSON.stringify({ items, tiers, categories: table.categories, critical: table.critical, summary }).replace(/</g, '\\u003c')
 
 const html = `<title>Routing Gold Rulings</title>

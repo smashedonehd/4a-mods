@@ -3,9 +3,10 @@
 // up hooks, CLAUDE.md, plugins or MCP servers, so every spawn gets the same isolating flags.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { readJsonl } from './io.mjs'
 import { CACHE_DIR } from './paths.mjs'
 
 export const CLAUDE_BIN = process.env.CLAUDE_BIN || (process.platform === 'win32' ? join(homedir(), '.local', 'bin', 'claude.exe') : 'claude')
@@ -25,15 +26,10 @@ function accountEnv() {
 const ISOLATE =['--safe-mode', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json']
 
 // req: {model: alias, effort, system, prompt, timeoutMs?}. Resolves to {text, usage, costUsd}.
-export function complete(table, req) {
+export async function complete(table, req) {
   const m = table.models[req.model]
-  if (!m) return Promise.reject(new Error(`unknown model alias: ${req.model}`))
-  let env
-  try {
-    env = accountEnv()
-  } catch (e) {
-    return Promise.reject(e)
-  }
+  if (!m) throw new Error(`unknown model alias: ${req.model}`)
+  const env = accountEnv()
   const dir = mkdtempSync(join(tmpdir(), 'mr-eval-'))
   const sys = join(dir, 'system.txt')
   writeFileSync(sys, req.system || '')
@@ -86,28 +82,21 @@ const caches = new Map()
 function cacheOf(name) {
   if (caches.has(name)) return caches.get(name)
   const file = join(CACHE_DIR, `${name}.jsonl`)
-  const map = new Map()
-  if (existsSync(file)) {
-    for (const line of readFileSync(file, 'utf8').split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const row = JSON.parse(line)
-        map.set(row.key, row.value)
-      } catch {
-        // A line cut by a crashed run is skipped; its request runs again
-      }
-    }
-  }
+  // A line cut by a crashed run is skipped; its request runs again
+  const map = new Map(existsSync(file) ? readJsonl(file).map((row) => [row.key, row.value]) : [])
   const c = { file, map }
   caches.set(name, c)
   return c
 }
 
+// A request's cache key
+export const keyOf = (req) => createHash('sha256').update(JSON.stringify(req)).digest('hex')
+
 // Returns run(req) once per distinct request, kept in CACHE_DIR/<name>.jsonl so a crashed run resumes.
 // read: false still records the reply but always runs the request (fresh live samples).
 export async function cached(name, req, run, { read = true } = {}) {
   const c = cacheOf(name)
-  const key = createHash('sha256').update(JSON.stringify(req)).digest('hex')
+  const key = keyOf(req)
   if (read && c.map.has(key)) return c.map.get(key)
   const value = await run(req)
   mkdirSync(CACHE_DIR, { recursive: true })
@@ -118,5 +107,5 @@ export async function cached(name, req, run, { read = true } = {}) {
 
 // Whether a request already has a cached reply, without running it (cost estimates before a run)
 export function isCached(name, req) {
-  return cacheOf(name).map.has(createHash('sha256').update(JSON.stringify(req)).digest('hex'))
+  return cacheOf(name).map.has(keyOf(req))
 }

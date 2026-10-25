@@ -15,15 +15,16 @@
 //   MODEL_ROUTER_EVAL_ACCOUNT=2 ...                  on the second account
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { POLICIES, invalidTable, routerRequest, jevRequest } from '../hooks/route.mjs'
+import { POLICIES, invalidTable, routerRequest, jevRequest, jevHttp } from '../hooks/route.mjs'
 import { cached, complete, isCached, pool } from './claude.mjs'
-import { policyInputs, policyHash } from './hash.mjs'
-import { filterCalls, heldoutRecord, loadAgentDefs, policyDecision, withDescriptions } from './lib.mjs'
-import { criteria, score, weightsFor } from './metrics.mjs'
-import { CALLS, DATA, DECISIONS, GOLD, RESULTS, SAMPLE, TABLE } from './paths.mjs'
+import { hashInputs, policyInputs, policyHash } from './hash.mjs'
+import { loadTable, readJson, readJsonl, writeJson } from './io.mjs'
+import { eventOf, filterCalls, heldoutRecord, heldoutRefusal, loadAgentDefs, policyDecision, withDescriptions } from './lib.mjs'
+import { criteria, invalidMetrics, pairOf, printConfusion, score, weightsFor } from './metrics.mjs'
+import { CALLS, DATA, DECISIONS, GOLD, GOLD_PROVISIONAL, RESULTS, SAMPLE, TABLE } from './paths.mjs'
 
 const P = 'model-router'
 // Estimated USD per uncached router call by model (measured: haiku low ~$0.0002 on a short prompt,
@@ -43,17 +44,16 @@ function die(msg) {
   console.error(msg)
   process.exit(2)
 }
-const jsonl = (f) =>
-  readFileSync(f, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l))
-const readJson = (f, fallback) => (existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : fallback)
-const writeJson = (f, v) => writeFileSync(f, JSON.stringify(v, null, 1) + '\n')
 const today = () => new Date().toISOString().slice(0, 10)
+// Metrics as results.json keeps them: without the per-category counts
+const brief = (m) => ({ ...m, byCategory: undefined })
 
-const shipped = JSON.parse(readFileSync(TABLE, 'utf8'))
-const defs = loadAgentDefs(homedir())
+// Why the eval cannot use a table: what the hook refuses, or what the metrics need
+const invalid = (t) => invalidTable(t) || invalidMetrics(t)
+
+const shipped = loadTable()
+const refused = invalid(shipped)
+if (refused) die(`routing.json refused: ${refused}`)
 const concurrency = Number(opt('-j', 8)) || 8
 
 // The table a run uses: the shipped one, or a variant for tuning
@@ -72,29 +72,27 @@ function variantTable() {
   if (!POLICIES.includes(router.policy)) die(`--policy must be one of ${POLICIES.join(', ')}`)
   if (!t.models[router.model]) die(`unknown router model ${router.model}`)
   const variant = { ...t, router }
-  const why = invalidTable(variant)
+  const why = invalid(variant)
   if (why) die(`variant table refused: ${why}`)
   return variant
 }
 
 // The request a policy sends for one call, and the cache it lives in; null for today (no model)
 function requestOf(table, call) {
-  const e = { subagent_type: call.type, description: call.description, prompt: call.prompt }
+  const e = eventOf(call)
   if (table.router.policy === 'today') return null
   if (table.router.policy === 'jev') return { cache: 'jev', req: jevRequest(table, P, e) }
   return { cache: 'router', req: { ...routerRequest(table, P, e), modelId: table.models[table.router.model].id } }
 }
 
+// Every call with its request, built once for the estimate and the run
+const jobsOf = (table, calls) => calls.map((call) => ({ call, r: requestOf(table, call) }))
+
 async function callJev(req) {
   const key = process.env.TYPESAFE_API_KEY
   if (!key) throw new Error('jev needs TYPESAFE_API_KEY')
-  const base = process.env.TYPESAFE_BASE_URL || 'https://api.typesafe.ai'
-  const res = await fetch(base + req.path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify(req.body),
-    signal: AbortSignal.timeout(60000),
-  })
+  const { url, init } = jevHttp(process.env.TYPESAFE_BASE_URL, key, req)
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(60000) })
   const text = await res.text()
   if (!res.ok) throw new Error(`jev HTTP ${res.status}: ${text.slice(0, 300)}`)
   return { reply: JSON.parse(text), costUsd: 0 }
@@ -104,22 +102,31 @@ async function callJev(req) {
 // stays the request as the hook sends it
 const callRouter = (table) => (req) => complete(table, { ...req, timeoutMs: 180000 }).then((o) => ({ text: o.text, costUsd: o.costUsd }))
 
-// Decides every call; returns {decisions, categories, fallbacks, errors, spent, policyCost, misses}
-async function decideAll(table, calls, { live = false } = {}) {
+// Estimated USD of one uncached call: EST at low effort, times the cost model's factor for the router's
+// effort over low's; a Jev call is not billed here
+function perCallUsd(table) {
+  const { policy, model, effort } = table.router
+  return policy === 'jev' ? 0 : (EST[model] * table.costModel.effort[effort]) / table.costModel.effort.low
+}
+
+// Decides every job (jobsOf); returns {decisions, categories, fallbacks, errors, spent, policyCost, misses}
+async function decideAll(table, jobs, { live = false } = {}) {
+  const defs = loadAgentDefs(homedir())
+  const per = perCallUsd(table)
   const cacheName = (c) => (live ? `live-${today()}-${c}` : c)
   const out = { decisions: {}, categories: {}, fallbacks: [], errors: [], spent: 0, policyCost: 0, misses: 0 }
-  await pool(calls, concurrency, async (call) => {
-    const r = requestOf(table, call)
+  await pool(jobs, concurrency, async ({ call, r }) => {
     let reply = null
     if (r) {
-      const name = cacheName(r.cache)
-      if (live || !isCached(name, r.req)) {
+      const send = r.cache === 'jev' ? callJev : callRouter(table)
+      // cached runs this only for a request it does not answer, so each run is a new model call
+      const run = (req) => {
         out.misses++
-        out.spent += r.cache === 'jev' ? 0 : EST[table.router.model]
+        out.spent += per
+        return send(req)
       }
       try {
-        const run = r.cache === 'jev' ? callJev : callRouter(table)
-        const v = await cached(name, r.req, run, { read: !live })
+        const v = await cached(cacheName(r.cache), r.req, run, { read: !live })
         reply = r.cache === 'jev' ? v.reply : v.text
         out.policyCost += v.costUsd || 0
       } catch (e) {
@@ -127,7 +134,7 @@ async function decideAll(table, calls, { live = false } = {}) {
         return
       }
     }
-    const d = policyDecision(table, P, call, table.router.policy, reply, defs, table.router.jev.theta)
+    const d = policyDecision(table, P, call, reply, defs)
     out.decisions[call.id] = d.decision
     if (d.category) out.categories[call.id] = d.category
     if (d.fallback) out.fallbacks.push(call.id)
@@ -136,20 +143,15 @@ async function decideAll(table, calls, { live = false } = {}) {
 }
 
 // Uncached calls and their estimated cost, before anything runs
-function estimate(table, calls) {
-  let misses = 0
-  for (const c of calls) {
-    const r = requestOf(table, c)
-    if (r && !isCached(r.cache, r.req)) misses++
-  }
-  const per = table.router.policy === 'jev' ? 0 : EST[table.router.model] * (table.router.effort === 'low' ? 1 : 1.5)
-  return { misses, usd: misses * per }
+function estimate(table, jobs) {
+  const misses = jobs.filter(({ r }) => r && !isCached(r.cache, r.req)).length
+  return { misses, usd: misses * perCallUsd(table) }
 }
 
-function guard(table, calls) {
-  const { misses, usd } = estimate(table, calls)
+function guard(table, jobs) {
+  const { misses, usd } = estimate(table, jobs)
   const where = process.env.MODEL_ROUTER_EVAL_ACCOUNT === '2' ? 'account 2' : 'account 1'
-  console.log(`plan: ${calls.length} calls, ${misses} uncached, est. $${usd.toFixed(3)} on ${where} (policy ${table.router.policy}, router ${table.router.model} ${table.router.effort})`)
+  console.log(`plan: ${jobs.length} calls, ${misses} uncached, est. $${usd.toFixed(3)} on ${where} (policy ${table.router.policy}, router ${table.router.model} ${table.router.effort})`)
   if (flag('--dry')) process.exit(0)
   const budget = Number(opt('--budget', 0.5))
   if (usd > budget && !flag('--yes')) die(`estimate $${usd.toFixed(3)} is over --budget ${budget}; pass --yes or a higher --budget`)
@@ -163,13 +165,13 @@ const label = (table, d) => {
 
 function loadGold() {
   const src = opt('--gold')
-  const file = src === 'provisional' ? join(DATA, 'gold-provisional.json') : src || GOLD
+  const file = src === 'provisional' ? GOLD_PROVISIONAL : src || GOLD
   if (!existsSync(file)) die(`no gold at ${file}: run eval/gold.mjs (or eval/gold.mjs --provisional and --gold provisional)`)
   return { gold: readJson(file), provisional: file !== GOLD }
 }
 
 function report(table, gold, res, sample) {
-  const corpus = filterCalls(jsonl(CALLS))
+  const corpus = filterCalls(readJsonl(CALLS))
   const m = score(table, gold, res.decisions)
   const w = score(table, gold, res.decisions, weightsFor(corpus, sample))
   const c = criteria(table, m)
@@ -178,14 +180,14 @@ function report(table, gold, res, sample) {
   console.log(`weighted to the corpus: agreement ${pct(w.agreement)}  under ${pct(w.under)}  cost vs gold ${w.costRatio.toFixed(3)}`)
   console.log(`criteria: ${c.pass ? 'PASS' : `miss ${c.missed.join(', ')}`}`)
   console.log(`by stratum: ${Object.entries(m.byStratum).map(([k, x]) => `${k} ${x.agree}/${x.n} (under ${x.under})`).join(', ')}`)
-  const cols = [...new Set(gold.map((g) => label(table, res.decisions[g.id])))].sort()
+  const labels = new Map(gold.map((g) => [g.id, label(table, res.decisions[g.id])]))
+  const cols = [...new Set(labels.values())].sort()
   const rows = [...new Set(gold.map((g) => g.tier))].sort((a, b) => table.order.indexOf(a) - table.order.indexOf(b))
-  console.log(`confusion (rows gold, columns decision; * = today's plan landing on a tier):\n${''.padEnd(9)}${cols.map((x) => x.padStart(13)).join('')}`)
-  for (const r of rows) console.log(r.padEnd(9) + cols.map((x) => String(gold.filter((g) => g.tier === r && label(table, res.decisions[g.id]) === x).length).padStart(13)).join(''))
+  printConfusion("confusion (rows gold, columns decision; * = today's plan landing on a tier)", rows, cols, gold.map((g) => [g.tier, labels.get(g.id)]), 13)
   const byId = new Map(sample.map((s) => [s.id, s]))
-  const wrong = gold.filter((g) => label(table, res.decisions[g.id]).replace(/\*$/, '') !== g.tier)
+  const wrong = gold.filter((g) => labels.get(g.id).replace(/\*$/, '') !== g.tier)
   console.log(`\nerrors (${wrong.length}):`)
-  for (const g of wrong) console.log(`  ${g.id}  gold ${g.tier}/${g.category}  got ${label(table, res.decisions[g.id])}  ${String(byId.get(g.id).description || '').slice(0, 80)}`)
+  for (const g of wrong) console.log(`  ${g.id}  gold ${g.tier}/${g.category}  got ${labels.get(g.id)}  ${String(byId.get(g.id).description || '').slice(0, 80)}`)
   console.log(`\nfallbacks ${res.fallbacks.length}, new model calls ${res.misses}, spent now ~$${res.spent.toFixed(4)}, policy cost over these calls $${res.policyCost.toFixed(4)}`)
   return { m, w, c }
 }
@@ -196,16 +198,13 @@ function failOnErrors(res) {
   process.exit(1)
 }
 
-const sample = jsonl(SAMPLE)
-
 if (flag('--one')) {
   const e = readJson(opt('--one'))
   const call = { id: 'one', type: e.subagent_type || '', description: e.description || '', prompt: e.prompt || '', model: '', effort: '', parentModel: '', parentEffort: '' }
-  const res = await decideAll(shipped, [call])
+  const res = await decideAll(shipped, jobsOf(shipped, [call]))
   failOnErrors(res)
   const d = res.decisions.one
-  const pair = typeof d === 'string' ? { tier: d, model: shipped.tiers[d].model, effort: shipped.tiers[d].effort } : d
-  console.log(JSON.stringify({ policy: shipped.router.policy, ...pair, fallback: res.fallbacks.length > 0 }))
+  console.log(JSON.stringify({ policy: shipped.router.policy, tier: typeof d === 'string' ? d : undefined, ...pairOf(shipped, d), fallback: res.fallbacks.length > 0 }))
 } else if (flag('--rescore')) {
   const results = readJson(RESULTS)
   const dec = readJson(DECISIONS)
@@ -213,25 +212,28 @@ if (flag('--one')) {
   const gold = readJson(GOLD).filter((g) => g.split === 'heldout')
   results.winner.metrics = score(shipped, gold, dec.decisions)
   writeJson(RESULTS, results)
-  console.log(`winner ${results.winner.row}: ${JSON.stringify({ ...results.winner.metrics, byCategory: undefined, byStratum: undefined })}`)
+  console.log(`winner ${results.winner.row}: ${JSON.stringify({ ...brief(results.winner.metrics), byStratum: undefined })}`)
 } else if (flag('--record')) {
   for (const f of ['--model', '--effort', '--theta', '--descriptions-from', '--policy', '--gold']) if (flag(f)) die(`--record takes the policy from routing.json only; drop ${f}`)
-  guard(shipped, sample)
+  const jobs = jobsOf(shipped, readJsonl(SAMPLE))
+  guard(shipped, jobs)
   const t0 = Date.now()
-  const res = await decideAll(shipped, sample)
+  const res = await decideAll(shipped, jobs)
   failOnErrors(res)
-  writeJson(DECISIONS, { policy: shipped.router.policy, policyHash: policyHash(shipped), router: policyInputs(shipped).router, recorded: today(), decisions: Object.fromEntries(Object.entries(res.decisions).sort()) })
+  const inputs = policyInputs(shipped)
+  writeJson(DECISIONS, { policy: shipped.router.policy, policyHash: hashInputs(inputs), router: inputs.router, recorded: today(), decisions: Object.fromEntries(Object.entries(res.decisions).sort()) })
   console.log(`${Object.keys(res.decisions).length} decisions, ${res.misses} cache misses, fallbacks ${res.fallbacks.length}, ${Math.round((Date.now() - t0) / 1000)} s -> ${DECISIONS}`)
 } else if (flag('--live')) {
   const dec = readJson(DECISIONS)
   if (!dec) die('--live needs decisions.json')
-  const res = await decideAll(shipped, sample, { live: true })
+  const sample = readJsonl(SAMPLE)
+  const res = await decideAll(shipped, jobsOf(shipped, sample), { live: true })
   failOnErrors(res)
   const changed = sample.filter((c) => JSON.stringify(res.decisions[c.id]) !== JSON.stringify(dec.decisions[c.id])).map((c) => c.id)
   const gold = readJson(GOLD).filter((g) => g.split === 'heldout')
   const m = score(shipped, gold, res.decisions)
   const c = criteria(shipped, m)
-  const out = { at: new Date().toISOString(), policy: shipped.router.policy, policyHash: policyHash(shipped), n: sample.length, changed: changed.length, changedShare: changed.length / sample.length, changedIds: changed, heldout: { ...m, byCategory: undefined }, criteria: c, policyCost: res.policyCost }
+  const out = { at: new Date().toISOString(), policy: shipped.router.policy, policyHash: policyHash(shipped), n: sample.length, changed: changed.length, changedShare: changed.length / sample.length, changedIds: changed, heldout: brief(m), criteria: c, policyCost: res.policyCost }
   const file = join(DATA, `live-${today()}.json`)
   writeJson(file, out)
   console.log(`changed ${changed.length}/${sample.length}, held-out agreement ${(m.agreement * 100).toFixed(1)} %, under ${(m.under * 100).toFixed(1)} %, criteria ${c.pass ? 'PASS' : `miss ${c.missed.join(', ')}`} -> ${file}`)
@@ -252,35 +254,36 @@ if (flag('--one')) {
   if (fin && provisional) die('--final records a train run on the final gold')
   const gold = allGold.filter((g) => split === 'all' || g.split === split)
   const ids = new Set(gold.map((g) => g.id))
+  const sample = readJsonl(SAMPLE)
   const calls = sample.filter((c) => ids.has(c.id))
   const results = readJson(RESULTS, { heldoutRuns: 0, heldout: {}, tuning: { rounds: [], final: {} } })
-  const hash = policyHash(table)
+  const inputs = policyInputs(table)
+  const hash = hashInputs(inputs)
   if (row) {
     if (split !== 'heldout') die('--heldout-row needs --split heldout')
     if (provisional) die('--heldout-row needs the final gold.json, not provisional gold')
     const prev = results.heldout[row]
     if (prev && prev.policyHash === hash && !flag('--again')) die(`held-out row ${row} already ran with this policy (${prev.at}); the held-out split runs once. --again to rerun`)
     // Before any call: a refused row must not be run, since its metrics would be seen and not recorded
-    const refused = heldoutRecord(results, row, hash, null).error
-    if (refused) die(refused)
+    const refusal = heldoutRefusal(results, row, hash)
+    if (refusal) die(refusal)
   }
-  guard(table, calls)
-  const res = await decideAll(table, calls)
+  const jobs = jobsOf(table, calls)
+  guard(table, jobs)
+  const res = await decideAll(table, jobs)
   failOnErrors(res)
   const { m, w, c } = report(table, gold, res, sample)
-  const router = policyInputs(table).router
+  const { router } = inputs
   let nextResults = results
   if (row) {
     const entry = { metrics: m, weighted: w, criteria: c, router, policy: table.router.policy, policyHash: hash, routerCostUsd: res.policyCost, at: new Date().toISOString() }
-    const folded = heldoutRecord(results, row, hash, entry)
-    if (folded.error) die(folded.error)
-    nextResults = folded.results
+    nextResults = heldoutRecord(results, row, hash, entry).results
   }
   if (note) {
-    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, rounds: [...nextResults.tuning.rounds, { round: nextResults.tuning.rounds.length + 1, change: note, policy: table.router.policy, router, policyHash: hash, metrics: { ...m, byCategory: undefined }, gold: provisional ? 'provisional' : 'final', at: today() }] } }
+    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, rounds: [...nextResults.tuning.rounds, { round: nextResults.tuning.rounds.length + 1, change: note, policy: table.router.policy, router, policyHash: hash, metrics: brief(m), gold: provisional ? 'provisional' : 'final', at: today() }] } }
   }
   if (fin) {
-    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, final: { ...nextResults.tuning.final, [fin]: { router, descriptionsFrom: opt('--descriptions-from') || null, policyHash: hash, metrics: { ...m, byCategory: undefined }, at: today() } } } }
+    nextResults = { ...nextResults, tuning: { ...nextResults.tuning, final: { ...nextResults.tuning.final, [fin]: { router, descriptionsFrom: opt('--descriptions-from') || null, policyHash: hash, metrics: brief(m), at: today() } } } }
   }
   if (row || note || fin) {
     writeJson(RESULTS, nextResults)

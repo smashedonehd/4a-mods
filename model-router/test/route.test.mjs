@@ -222,8 +222,9 @@ check('the shipped table is schema 3 and valid', () => {
   assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: '(' }] }), /match/)
   assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: '' }] }), /match/)
   assert.match(invalidTable({ ...table, rules: [{ ...table.rules[0], match: 123 }] }), /match/)
-  assert.match(invalidTable({ ...table, costModel: { ...table.costModel, effort: { low: 1 } } }), /costModel/)
-  assert.match(invalidTable({ ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 'x', out: 1 } } } }), /price/)
+  // Prices, the cost model and the thresholds are the eval's (eval/metrics.mjs invalidMetrics); the hook does not read them
+  const { costModel: _c, thresholds: _t, ...bare } = table
+  assert.equal(invalidTable({ ...bare, models: Object.fromEntries(Object.entries(table.models).map(([k, { price: _p, ...m }]) => [k, m])) }), '')
 })
 
 check('the blind view hides the chosen model', () => {

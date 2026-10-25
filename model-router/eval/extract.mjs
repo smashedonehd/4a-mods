@@ -1,16 +1,18 @@
 // Builds the routing eval corpus: every Agent call Claude made in local transcripts, one JSON line each.
-// The corpus holds private prompts, so it is written outside the repo (default
-// ~/.claude/mods-data/model-router/eval/calls.jsonl) and never committed.
+// The corpus holds private prompts, so it is written outside the repo (default CALLS in paths.mjs,
+// ~/.claude/mods-data/model-router/eval/calls.jsonl unless MODEL_ROUTER_EVAL_DATA moves it) and never committed.
 //
 //   node model-router/eval/extract.mjs [projectsDir] [outFile]
 
-import { createReadStream, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, relative, sep } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { createInterface } from 'node:readline'
+import { writeJsonl } from './io.mjs'
+import { CALLS } from './paths.mjs'
 
 const projects = process.argv[2] || join(homedir(), '.claude', 'projects')
-const out = process.argv[3] || join(homedir(), '.claude', 'mods-data', 'model-router', 'eval', 'calls.jsonl')
+const out = process.argv[3] || CALLS
 
 function* jsonlFiles(dir) {
   for (const name of readdirSync(dir)) {
@@ -67,8 +69,7 @@ async function main() {
     }
   }
   rows.sort((a, b) => a.at.localeCompare(b.at))
-  mkdirSync(dirname(out), { recursive: true })
-  writeFileSync(out, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
+  writeJsonl(out, rows)
   console.log(`${rows.length} Agent calls from ${files} transcripts -> ${out}`)
 }
 

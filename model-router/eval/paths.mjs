@@ -9,6 +9,7 @@ export const CALLS = join(DATA, 'calls.jsonl')
 export const SAMPLE = join(DATA, 'sample.jsonl')
 export const JUDGMENTS = join(DATA, 'judgments.jsonl')
 export const RULINGS = join(DATA, 'rulings.json')
+export const GOLD_PROVISIONAL = join(DATA, 'gold-provisional.json')
 export const CACHE_DIR = join(DATA, 'cache')
 
 // Committed eval files, next to this module

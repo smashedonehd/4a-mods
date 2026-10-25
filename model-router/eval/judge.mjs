@@ -5,18 +5,15 @@
 //   node model-router/eval/judge.mjs [concurrency=6]
 //   MODEL_ROUTER_EVAL_ACCOUNT=2 node model-router/eval/judge.mjs   (second account)
 
-import { readFileSync, writeFileSync } from 'node:fs'
 import { cached, complete, pool } from './claude.mjs'
+import { loadTable, readJsonl, writeJsonl } from './io.mjs'
 import { disagrees, judgeRequest, parseJudge } from './lib.mjs'
-import { kappa } from './metrics.mjs'
-import { JUDGMENTS, SAMPLE, TABLE } from './paths.mjs'
+import { agreement, printConfusion } from './metrics.mjs'
+import { JUDGMENTS, SAMPLE } from './paths.mjs'
 
 const P = 'model-router'
-const table = JSON.parse(readFileSync(TABLE, 'utf8'))
-const rows = readFileSync(SAMPLE, 'utf8')
-  .split('\n')
-  .filter((l) => l.trim())
-  .map((l) => JSON.parse(l))
+const table = loadTable()
+const rows = readJsonl(SAMPLE)
 const n = Number(process.argv[2]) || 6
 let done = 0
 const failed = []
@@ -44,16 +41,16 @@ const out = await pool(rows, n, async (row) => {
   if (++done % 25 === 0) console.log(`${done}/${rows.length}`)
   return rec
 })
-writeFileSync(JUDGMENTS, out.map((r) => JSON.stringify(r)).join('\n') + '\n')
+writeJsonl(JUDGMENTS, out)
 
 const both = out.filter((r) => r.A && r.B)
 const a = both.map((r) => r.A.tier)
 const b = both.map((r) => r.B.tier)
 console.log(`\n${out.length} rows, ${both.length} with both verdicts, null: ${failed.length ? failed.join(', ') : 0}`)
-console.log(`tier agreement raw ${(a.filter((x, i) => x === b[i]).length / both.length).toFixed(3)}, kappa ${kappa(a, b).toFixed(3)}`)
+const ag = agreement(a, b)
+console.log(`tier agreement raw ${ag.raw.toFixed(3)}, kappa ${ag.kappa.toFixed(3)}`)
 const tiers = Object.keys(table.tiers).filter((t) => a.includes(t) || b.includes(t))
-console.log(`confusion (rows A, columns B):\n${''.padEnd(9)}${tiers.map((t) => t.padStart(9)).join('')}`)
-for (const ta of tiers) console.log(ta.padEnd(9) + tiers.map((tb) => String(both.filter((r) => r.A.tier === ta && r.B.tier === tb).length).padStart(9)).join(''))
+printConfusion('confusion (rows A, columns B)', tiers, tiers, both.map((r) => [r.A.tier, r.B.tier]), 9)
 const dis = both.filter((r) => disagrees(table, r.A, r.B))
 console.log(`disagreements (tier or critical): ${dis.length}, with recommendation ${dis.filter((r) => r.R).length}`)
 console.log(`-> ${JUDGMENTS}`)

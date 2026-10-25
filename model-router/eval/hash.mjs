@@ -2,7 +2,7 @@
 // carry it, and the replay test fails when the shipped policy no longer hashes the same.
 // Costs, thresholds, router.default, model ids and dates are not policy: they change no decision.
 import { createHash } from 'node:crypto'
-import { routableTiers, POLICY_CODE, ROUTER_SYSTEM, JEV_INSTRUCTIONS, CATEGORY_GUIDE } from '../hooks/route.mjs'
+import { routableTiers, POLICY_CODE, ROUTER_SYSTEM, JEV_INSTRUCTIONS, CATEGORY_GUIDE, EFFORTS, FAMILIES } from '../hooks/route.mjs'
 
 // CRLF and LF source for the same function must hash the same; .gitattributes pins the repo's
 // own copies to LF, but a clone's line endings are not under our control
@@ -26,6 +26,8 @@ export function policyInputs(table) {
     rules: table.rules,
     router: { ...router, modelId: table.models[router.model].id },
     texts: { ROUTER_SYSTEM, JEV_INSTRUCTIONS, CATEGORY_GUIDE },
+    // blindView hides a type named <family>-<effort>
+    names: { FAMILIES, EFFORTS },
     code: POLICY_CODE.map((f) => noEol(f)),
   }
 }
@@ -37,6 +39,10 @@ function canonical(v) {
   return JSON.stringify(v)
 }
 
+export function hashInputs(inputs) {
+  return createHash('sha256').update(canonical(inputs)).digest('hex')
+}
+
 export function policyHash(table) {
-  return createHash('sha256').update(canonical(policyInputs(table))).digest('hex')
+  return hashInputs(policyInputs(table))
 }

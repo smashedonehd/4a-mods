@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { rng, stratumOf, STRATA, drawSample, filterCalls, heldoutRecord, judgeRequest, parseJudge, disagrees, familyOf, todayDecision, withDescriptions, policyDecision, buildGold, saferVerdict } from '../eval/lib.mjs'
-import { costOf, rankOf, score, criteria, kappa, weightsFor } from '../eval/metrics.mjs'
+import { costOf, rankOf, score, criteria, kappa, agreement, weightsFor, invalidMetrics } from '../eval/metrics.mjs'
 import { policyInputs, policyHash, noEol } from '../eval/hash.mjs'
 
 const table = JSON.parse(readFileSync(new URL('../routing.json', import.meta.url), 'utf8'))
@@ -175,6 +175,14 @@ check('criteria name what is missed', () => {
 check('kappa', () => {
   assert.equal(kappa(['a', 'b', 'a'], ['a', 'b', 'a']), 1)
   assert.ok(kappa(['a', 'b'], ['b', 'a']) < 0)
+  assert.deepEqual(agreement(['a', 'b', 'a', 'b'], ['a', 'b', 'b', 'b']), { raw: 0.75, kappa: kappa(['a', 'b', 'a', 'b'], ['a', 'b', 'b', 'b']) })
+})
+
+check('the eval refuses a table without prices, a cost model or thresholds', () => {
+  assert.equal(invalidMetrics(table), '')
+  assert.match(invalidMetrics({ ...table, costModel: { ...table.costModel, effort: { low: 1 } } }), /costModel/)
+  assert.match(invalidMetrics({ ...table, models: { ...table.models, opus: { ...table.models.opus, price: { in: 'x', out: 1 } } } }), /price/)
+  assert.match(invalidMetrics({ ...table, thresholds: { ...table.thresholds, costOver: undefined } }), /thresholds/)
 })
 
 check('the policy hash covers the policy and nothing else', () => {
@@ -274,7 +282,7 @@ check("today's router on recorded calls", () => {
 check('a policy decides from the reply, and an unusable reply falls back to today', () => {
   const defs = new Map()
   const call = { type: 'general-purpose', description: 'Review Task 3', prompt: 'x', model: '', effort: '', parentModel: 'claude-opus-5-5', parentEffort: '' }
-  const d = (policy, reply, c = call) => policyDecision(table, P, c, policy, reply, defs)
+  const d = (policy, reply, c = call) => policyDecision({ ...table, router: { ...table.router, policy } }, P, c, reply, defs)
   assert.deepEqual(d('text', '{"category":"search","tier":"quick"}'), { decision: 'quick', category: 'search', fallback: false })
   assert.deepEqual(d('rules', '{"category":"search","tier":"quick"}'), { decision: 'deep', category: 'search', fallback: false })
   assert.deepEqual(d('text', 'no json'), { decision: { model: 'opus', effort: 'medium' }, category: null, fallback: true })
@@ -306,12 +314,12 @@ check('gold takes agreed verdicts and rulings, and names what is missing', () =>
   ])
   const part = buildGold(table, sample, judgments, { b: { tier: 'deep', category: 'review' } })
   assert.deepEqual(part.missing, ['c'])
-  const prov = buildGold(table, sample, judgments, {}, { provisional: true })
+  const prov = buildGold(table, sample, judgments, {}, { fill: 'recommendation' })
   assert.deepEqual(prov.missing, [])
   assert.deepEqual(prov.gold.map((g) => [g.id, g.tier, g.source]), [['a', 'quick', 'agreed'], ['b', 'deep', 'recommendation'], ['c', 'light', 'recommendation']])
   assert.throws(() => buildGold(table, sample, judgments, { b: { tier: 'frontier', category: 'review' } }), /ruling for b/)
   assert.throws(() => buildGold(table, sample, [judgments[0]], {}), /no judgment for b/)
-  const safe = buildGold(table, sample, judgments, { c: { tier: 'light', category: 'other' } }, { safer: true })
+  const safe = buildGold(table, sample, judgments, { c: { tier: 'light', category: 'other' } }, { fill: 'safer' })
   assert.deepEqual(safe.missing, [])
   assert.deepEqual(safe.gold.map((g) => [g.id, g.tier, g.category, g.source]), [['a', 'quick', 'search', 'agreed'], ['b', 'deep', 'review', 'safer'], ['c', 'light', 'other', 'filip']])
 })

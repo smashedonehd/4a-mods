@@ -1,8 +1,19 @@
 // How a policy's decisions compare with gold: agreement, underestimates (all and on critical
 // categories) and cost against gold, by the table's labelled cost assumption.
-import { EFFORTS } from '../hooks/route.mjs'
+import { EFFORTS, FAMILIES } from '../hooks/route.mjs'
 
-const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable']
+// What the metrics read of a table beyond what the hook checks (route.mjs invalidTable): a price for
+// every model, the cost model and the thresholds; returns a reason or ''
+export function invalidMetrics(t) {
+  for (const [alias, m] of Object.entries(t.models)) {
+    if (!m || !m.price || !Number.isFinite(m.price.in) || !Number.isFinite(m.price.out)) return `model ${alias} has no price`
+  }
+  const c = t.costModel
+  if (!c || !Number.isFinite(c.inputShare) || !c.effort || EFFORTS.some((x) => !Number.isFinite(c.effort[x]))) return 'costModel needs an input share and a factor for every effort'
+  const th = t.thresholds
+  if (!th || ['under', 'underCritical', 'costOver'].some((k) => !Number.isFinite(th[k]))) return 'thresholds need under, underCritical and costOver'
+  return ''
+}
 
 // Relative cost of one call on a model at an effort (routing.json costModel)
 export function costOf(table, model, effort) {
@@ -17,7 +28,7 @@ export function rankOf(table, model, effort) {
 }
 
 // A decision is a tier name or a { model, effort } pair (today's router can land between tiers)
-function pairOf(table, d) {
+export function pairOf(table, d) {
   return typeof d === 'string' ? { model: table.tiers[d].model, effort: table.tiers[d].effort } : d
 }
 
@@ -96,4 +107,19 @@ export function kappa(a, b) {
   const po = a.filter((x, i) => x === b[i]).length / n
   const pe = labels.reduce((s, l) => s + (a.filter((x) => x === l).length / n) * (b.filter((x) => x === l).length / n), 0)
   return pe === 1 ? 1 : (po - pe) / (1 - pe)
+}
+
+// How often two label series agree: the raw share and Cohen's kappa
+export function agreement(a, b) {
+  return { raw: a.filter((x, i) => x === b[i]).length / a.length, kappa: kappa(a, b) }
+}
+
+// Prints a confusion matrix: a caption, then one line per row label with the count of [row, column]
+// pairs under each column label
+export function printConfusion(caption, rows, cols, pairs, width) {
+  const key = (r, c) => `${r}\u0000${c}`
+  const counts = new Map()
+  for (const [r, c] of pairs) counts.set(key(r, c), (counts.get(key(r, c)) || 0) + 1)
+  console.log(`${caption}:\n${''.padEnd(9)}${cols.map((c) => c.padStart(width)).join('')}`)
+  for (const r of rows) console.log(r.padEnd(9) + cols.map((c) => String(counts.get(key(r, c)) || 0).padStart(width)).join(''))
 }

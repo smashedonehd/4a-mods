@@ -3,6 +3,8 @@
 // tier becomes an agent type Claude picks by its description.
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+// The model lines, weakest first
+export const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable']
 export const POLICIES = ['today', 'text', 'rules', 'jev']
 const NAME = /^[a-z][a-z0-9-]{0,40}$/
 
@@ -32,13 +34,8 @@ export function invalidTable(t) {
   return invalidPolicy(t)
 }
 
-// The routing policy and the eval's cost model, as invalidTable checks them
+// The routing policy, as invalidTable checks it; the eval checks its own fields (eval/metrics.mjs invalidMetrics)
 function invalidPolicy(t) {
-  for (const [alias, m] of Object.entries(t.models)) {
-    if (!m || !m.price || !Number.isFinite(m.price.in) || !Number.isFinite(m.price.out)) return `model ${alias} has no price`
-  }
-  const c = t.costModel
-  if (!c || !Number.isFinite(c.inputShare) || !c.effort || EFFORTS.some((x) => !Number.isFinite(c.effort[x]))) return 'costModel needs an input share and a factor for every effort'
   if (!Array.isArray(t.categories) || !t.categories.includes('other')) return 'categories must be a list that includes other'
   if (!Array.isArray(t.critical) || t.critical.some((x) => !t.categories.includes(x))) return 'critical names a category that categories does not list'
   for (const [i, rule] of (Array.isArray(t.rules) ? t.rules : []).entries()) {
@@ -57,8 +54,6 @@ function invalidPolicy(t) {
   if (!t.models[r.model] || !EFFORTS.includes(r.effort)) return `router model ${r.model} at effort ${r.effort}`
   if (!Number.isInteger(r.timeoutMs) || r.timeoutMs <= 0) return `router timeoutMs ${r.timeoutMs}`
   if (!r.jev || !r.jev.model || !(r.jev.theta > 0 && r.jev.theta <= 1)) return 'router jev needs a model and a theta'
-  const th = t.thresholds
-  if (!th || ['under', 'underCritical', 'costOver'].some((k) => !Number.isFinite(th[k]))) return 'thresholds need under, underCritical and costOver'
   return ''
 }
 
@@ -219,7 +214,7 @@ export function routableTiers(table) {
 // head and tail. A type whose name says which model it runs on is hidden, so nobody copies that choice.
 export function blindView(table, plugin, e) {
   const type = String(e.subagent_type || '')
-  const named = /^(haiku|sonnet|opus|fable)-(low|medium|high|xhigh|max)$/.test(type) || hostName(type).startsWith(`${hostName(plugin)}:`)
+  const named = new RegExp(`^(${FAMILIES.join('|')})-(${EFFORTS.join('|')})$`).test(type) || hostName(type).startsWith(`${hostName(plugin)}:`)
   const hidden = !type || type === 'claude' || named
   const prompt = String(e.prompt || '')
   const head = 9000
@@ -259,11 +254,13 @@ export function routerRequest(table, plugin, e) {
   return { model: r.model, effort: r.effort, system, prompt: blindView(table, plugin, e), maxTokens: 1024, timeoutMs: r.timeoutMs }
 }
 
-// The router's answer: a routable tier and a known category (else other), or null. Every '{' … '}'
-// span is tried, so a brace stray or nested before the answer does not keep it from being found.
-export function parseRouterReply(table, text) {
+// The JSON objects in a model's reply: for every '{', first to last (last to first with fromEnd), the
+// shortest '{' … '}' span from it that parses. Every '{' is tried, so a brace stray or nested before
+// the answer, or quoted inside it, does not keep the answer from being found.
+export function* jsonSpans(text, { fromEnd = false } = {}) {
   const s = String(text || '')
-  for (let i = s.indexOf('{'); i >= 0; i = s.indexOf('{', i + 1)) {
+  const next = fromEnd ? (i) => (i > 0 ? s.lastIndexOf('{', i - 1) : -1) : (i) => s.indexOf('{', i + 1)
+  for (let i = fromEnd ? s.lastIndexOf('{') : s.indexOf('{'); i >= 0; i = next(i)) {
     for (let j = s.indexOf('}', i); j >= 0; j = s.indexOf('}', j + 1)) {
       let o
       try {
@@ -271,9 +268,16 @@ export function parseRouterReply(table, text) {
       } catch {
         continue
       }
-      if (!o || !routableTiers(table).includes(o.tier)) break
-      return { tier: o.tier, category: table.categories.includes(o.category) ? o.category : 'other' }
+      yield o
+      break
     }
+  }
+}
+
+// The router's answer: the first object with a routable tier, its category kept if known (else other), or null
+export function parseRouterReply(table, text) {
+  for (const o of jsonSpans(text)) {
+    if (o && routableTiers(table).includes(o.tier)) return { tier: o.tier, category: table.categories.includes(o.category) ? o.category : 'other' }
   }
   return null
 }
@@ -313,6 +317,8 @@ export function policyTier(table, plugin, e, reply, theta = table.router.jev.the
   return { tier: picked.tier, category: picked.category }
 }
 
+const JEV_BASE_URL = 'https://api.typesafe.ai'
+
 export const JEV_INSTRUCTIONS = 'Pick the cheapest tier whose model and effort will do this delegated task well on the first try. The state is the task: its agent type, description and prompt.'
 
 // The Jev Choice question for one call: POST <base><path> with this body
@@ -320,6 +326,12 @@ export function jevRequest(table, plugin, e) {
   const criteria = Object.fromEntries(routableTiers(table).map((n) => [n, `${table.tiers[n].description} (${table.tiers[n].model}, ${table.tiers[n].effort} effort)`]))
   const tier = { type: 'choice', instructions: JEV_INSTRUCTIONS, criteria }
   return { path: '/v1/systemone', body: { state: blindView(table, plugin, e), model: table.router.jev.model, questions: { tier } } }
+}
+
+// A jevRequest as fetch takes it, against TYPESAFE_BASE_URL (base) or the public API
+export function jevHttp(base, key, req) {
+  const init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(req.body) }
+  return { url: (base || JEV_BASE_URL) + req.path, init }
 }
 
 // The cheapest tier whose cumulative probability, cheapest first, reaches theta; null without probabilities
@@ -348,6 +360,6 @@ export function routedPlan(table, plugin, e, tier) {
 // which the `today` policy is and every policy falls back to
 export const POLICY_CODE = [
   hostName, ownTier, tierOfType, planAgentCall, isFrontier, offeredTiers, capTier, capPlan,
-  routableTiers, blindView, tierTable, routerRequest, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
+  routableTiers, blindView, tierTable, routerRequest, jsonSpans, parseRouterReply, applyRules, jevRequest, pickJevTier, routedPlan,
   routesCall, policyTier,
 ]
