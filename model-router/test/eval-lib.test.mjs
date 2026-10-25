@@ -463,6 +463,19 @@ rmSync(tmp, { recursive: true, force: true })
     assert.match(r.stderr, /--final records a train run on the final gold/)
   })
 
+  check('--one goes through the cost guard: --dry only estimates, an estimate over --budget stops before any call', () => {
+    const one = join(tmp2, 'one.json')
+    writeFileSync(one, JSON.stringify({ subagent_type: 'general-purpose', description: 'Find the config', prompt: 'Find the config file.' }))
+    // Were the guard skipped, the call would fail on this missing binary instead of spending
+    const safe = { ...env, CLAUDE_BIN: join(tmp2, 'no-claude.exe') }
+    const dry = cli(runMjs, ['--one', one, '--dry'], safe)
+    assert.equal(dry.status, 0, dry.stderr)
+    assert.match(dry.stdout, /plan: 1 calls, 1 uncached/)
+    const over = cli(runMjs, ['--one', one, '--budget', '0'], safe)
+    assert.equal(over.status, 2, over.stderr)
+    assert.match(over.stderr, /over --budget 0/)
+  })
+
   check('gold.mjs reports rule coverage on train critical calls, not held-out', () => {
     writeFileSync(join(tmp2, 'sample.jsonl'), [
       { id: 't1', session: 's1', split: 'train', stratum: 'review', type: 'general-purpose', description: 'Review the diff' },

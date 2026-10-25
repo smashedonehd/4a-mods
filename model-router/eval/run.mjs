@@ -1,17 +1,19 @@
 // Runs one routing policy over the sampled calls and scores it against gold. Every model reply is
-// cached, so a second run of the same configuration costs nothing; before any uncached call the
-// runner estimates the spend and stops above --budget unless --yes is given (--dry only estimates).
-// A transport error (spend limit, timeout, network) aborts the run without writing results: it is
-// never scored as the router's fallback.
+// cached, so a second run of the same configuration costs nothing. Before any model call every mode
+// that can make one (the split runs, --record, --live, --one) estimates the spend and stops above
+// --budget unless --yes is given; --dry only estimates. --live reads no cache, so its estimate counts
+// every call. A transport error (spend limit, timeout, network) aborts the run without writing
+// results: it is never scored as the router's fallback.
 //
 //   node model-router/eval/run.mjs --policy today|text|rules|jev --split train|heldout|all
 //        [--model haiku|sonnet|opus --effort low|medium] [--descriptions-from <git-ref>] [--theta 0.8]
 //        [--gold provisional] [--dry] [--budget 0.5] [--yes] [-j 8]
 //        [--heldout-row <name> [--again]] [--tuning "<one-sentence change>"] [--final <row>]
-//   node model-router/eval/run.mjs --record          decisions.json from the shipped policy, all 400
-//   node model-router/eval/run.mjs --rescore         results.winner.metrics from repo files only
-//   node model-router/eval/run.mjs --live            the shipped policy on all 400, no cache reads
-//   node model-router/eval/run.mjs --one <file.json> the shipped policy's decision for one call
+//   node model-router/eval/run.mjs --record [--dry]  decisions.json from the shipped policy, all 400
+//   node model-router/eval/run.mjs --rescore         results.winner.metrics from repo files only, no model call
+//   node model-router/eval/run.mjs --live [--dry]    the shipped policy on all 400, no cache reads (about
+//                                                    400 router calls: over the default --budget, so --yes)
+//   node model-router/eval/run.mjs --one <file.json> [--dry]  the shipped policy's decision for one call
 //   MODEL_ROUTER_EVAL_ACCOUNT=2 ...                  on the second account
 
 import { execFileSync } from 'node:child_process'
@@ -142,16 +144,18 @@ async function decideAll(table, jobs, { live = false } = {}) {
   return out
 }
 
-// Uncached calls and their estimated cost, before anything runs
-function estimate(table, jobs) {
-  const misses = jobs.filter(({ r }) => r && !isCached(r.cache, r.req)).length
+// Uncached calls and their estimated cost, before anything runs; a live run reads no cache, so every call counts
+function estimate(table, jobs, live) {
+  const misses = jobs.filter(({ r }) => r && (live || !isCached(r.cache, r.req))).length
   return { misses, usd: misses * perCallUsd(table) }
 }
 
-function guard(table, jobs) {
-  const { misses, usd } = estimate(table, jobs)
+// Every mode that can call a model passes here first: --dry stops after the estimate, and an estimate
+// over --budget stops unless --yes
+function guard(table, jobs, { live = false } = {}) {
+  const { misses, usd } = estimate(table, jobs, live)
   const where = process.env.MODEL_ROUTER_EVAL_ACCOUNT === '2' ? 'account 2' : 'account 1'
-  console.log(`plan: ${jobs.length} calls, ${misses} uncached, est. $${usd.toFixed(3)} on ${where} (policy ${table.router.policy}, router ${table.router.model} ${table.router.effort})`)
+  console.log(`plan: ${jobs.length} calls, ${misses} uncached${live ? ' (live: no cache reads)' : ''}, est. $${usd.toFixed(3)} on ${where} (policy ${table.router.policy}, router ${table.router.model} ${table.router.effort})`)
   if (flag('--dry')) process.exit(0)
   const budget = Number(opt('--budget', 0.5))
   if (usd > budget && !flag('--yes')) die(`estimate $${usd.toFixed(3)} is over --budget ${budget}; pass --yes or a higher --budget`)
@@ -201,7 +205,9 @@ function failOnErrors(res) {
 if (flag('--one')) {
   const e = readJson(opt('--one'))
   const call = { id: 'one', type: e.subagent_type || '', description: e.description || '', prompt: e.prompt || '', model: '', effort: '', parentModel: '', parentEffort: '' }
-  const res = await decideAll(shipped, jobsOf(shipped, [call]))
+  const jobs = jobsOf(shipped, [call])
+  guard(shipped, jobs)
+  const res = await decideAll(shipped, jobs)
   failOnErrors(res)
   const d = res.decisions.one
   console.log(JSON.stringify({ policy: shipped.router.policy, tier: typeof d === 'string' ? d : undefined, ...pairOf(shipped, d), fallback: res.fallbacks.length > 0 }))
@@ -227,7 +233,9 @@ if (flag('--one')) {
   const dec = readJson(DECISIONS)
   if (!dec) die('--live needs decisions.json')
   const sample = readJsonl(SAMPLE)
-  const res = await decideAll(shipped, jobsOf(shipped, sample), { live: true })
+  const jobs = jobsOf(shipped, sample)
+  guard(shipped, jobs, { live: true })
+  const res = await decideAll(shipped, jobs, { live: true })
   failOnErrors(res)
   const changed = sample.filter((c) => JSON.stringify(res.decisions[c.id]) !== JSON.stringify(dec.decisions[c.id])).map((c) => c.id)
   const gold = readJson(GOLD).filter((g) => g.split === 'heldout')
