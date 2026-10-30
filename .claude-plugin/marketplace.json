@@ -1,6 +1,6 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Model Router gives Claude one agent type per model and effort tier.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Model Router gives Claude one agent type per model and effort tier; Toggles switches plugins, skills and MCP servers and shows what each costs in context.",
   "owner": {
     "name": "4AM"
   },
@@ -14,6 +14,11 @@
       "name": "model-router",
       "source": "./model-router",
       "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering), from one tier table kept current through pull requests; /route routes Haiku up to Opus, /route fable up to Fable"
+    },
+    {
+      "name": "plugin-toggles",
+      "source": "./plugin-toggles",
+      "description": "One pane (/toggles) to switch skills On, Name, User or Off, plugins and MCP servers On or Off, see what each costs in context, and save the set as a profile"
     }
   ]
 }

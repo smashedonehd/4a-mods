@@ -6,6 +6,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
 | [Model Router](#model-router) | `/route` | Gives Claude one agent type per model and effort tier, so each delegated task runs on the model it needs: Haiku for lookups, Sonnet for standard coding, Opus for hard engineering, and Fable only after `/route fable` |
+| [Toggles](#toggles) | `/toggles` | Switches plugins, skills and MCP servers on and off from one pane, shows what each costs in context, and saves the set as a profile |
 
 ## Requirements
 
@@ -21,13 +22,14 @@ claude plugin marketplace add smashedonehd/4a-mods
 ```bash
 claude plugin install cache-keeper@4a-mods
 claude plugin install model-router@4a-mods
+claude plugin install plugin-toggles@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
 
-**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update cache-keeper@4a-mods` (and `model-router@4a-mods`), then open a new chat.
+**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update cache-keeper@4a-mods` (and `model-router@4a-mods`, `plugin-toggles@4a-mods`), then open a new chat.
 
-**Remove:** `claude plugin uninstall cache-keeper@4a-mods` (or `model-router@4a-mods`).
+**Remove:** `claude plugin uninstall cache-keeper@4a-mods` (or `model-router@4a-mods`, `plugin-toggles@4a-mods`).
 
 ## Cache Keeper
 
@@ -69,9 +71,20 @@ Claude Code runs a subagent on its parent's model unless told otherwise, so a gr
 
 If you installed the earlier Model Router from the `smashedonehd-mods` marketplace, uninstall it first, or both will hook the same Agent calls.
 
+## Toggles
+
+Every skill, plugin and MCP server that is on takes context in every turn, whether Claude uses it or not. Toggles shows what each one costs and switches it from one pane.
+
+- **`/toggles`**, or the `⚙ Toggles` button beside the mode hint, opens the pane. It has four tabs: Plugins, Skills, MCP and Profiles.
+- **The bar** at the top shows how many tokens of the tab are in every turn, one coloured segment per source, counted the way `/context` counts this chat. A `~` marks an estimate from the files where the chat has no count yet.
+- **Your own skills** get a four-way switch: On lists the skill with its description, Name lists it by name alone, User hides it from Claude but keeps `/name` for you, and Off hides it from both. A plugin's skills switch with their plugin, and their row leads to it. A warning shows when skills don't fit the listing budget.
+- **Plugins and MCP servers** switch On or Off. Point at a row to see what it adds. MCP switches apply to the current project; reconnect with `/mcp`.
+- **Profiles** save which plugins are on and where each skill's switch stands, and apply all of it in one click.
+- **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat.
+
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Model Router keeps only its settings and call counts in the plugin store. Neither makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Model Router keeps only its settings and call counts in the plugin store. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. None of them makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
