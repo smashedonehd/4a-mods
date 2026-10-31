@@ -141,8 +141,7 @@ const H = {
   notTurn: '', // a turn already running when the handoff was queued: not the handoff's
   draft: '', // the last handoff a response of the armed turn ended with
   // once the handoff is in: 'clear' (the band's button, /handoff, the skill) clears
-  // and continues, 'none' ("keep") leaves the chat as it is, 'ask' offers to clear
-  // and continue (no caller sets it now)
+  // and continues, 'none' ("keep") leaves the chat as it is
   after: 'none',
   text: '',
   path: '',
@@ -258,7 +257,7 @@ async function settleHold($) {
 // still queued: the engine runs it once this turn ends (see H.another).
 // after null: no choice made (Claude's skill call without args). Such an arm
 // keeps what the arm it joins chose, a keep included, and clears otherwise.
-function armHandoff(insideTurn, after = 'none') {
+function armHandoff(insideTurn, after) {
   const live = insideTurn && H.armed
   const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
   const again = live && (H.notTurn === '' || queued)
@@ -471,30 +470,6 @@ async function captureHandoff($, e) {
   // Nothing clears: what was held while the handoff ran goes on in this chat
   await settleHold($)
   $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
-  // Off the hook: the turn is ending, and a dialog would hold it open. The
-  // Desktop app shows no dialog asked between turns, so there the band's
-  // "clear and continue" button is the way on.
-  if (ended && after === 'ask' && !(await inApp($))) $.clock.after(300, () => offerContinue($).catch(() => {}))
-}
-
-async function inApp($) {
-  try {
-    // A terminal with a phone or Remote Control attached still shows the dialog
-    return !(await $.session.surfaces()).includes('terminal')
-  } catch {
-    return false
-  }
-}
-
-async function offerContinue($) {
-  if (!H.text) return
-  let answer = ''
-  try {
-    answer = await $.ui.ask('Handoff saved. Clear this chat and continue with it in a fresh context?', ['Clear and continue', 'Keep this chat'])
-  } catch {
-    return // dismissed: the band button and /handoff continue still work
-  }
-  if (answer === 'Clear and continue') await clearAndContinue($)
 }
 
 function continuationPrompt() {
@@ -595,8 +570,11 @@ async function clearAndSend($) {
   }
 }
 
-function isKeepArg(args) {
-  return String(args || '').trim().toLowerCase() === 'keep'
+// What follows a handoff started with these args (see H.after): "keep" leaves
+// the chat, empty args give ifEmpty, anything else clears
+function afterFromArgs(args, ifEmpty = 'clear') {
+  const a = String(args || '').trim().toLowerCase()
+  return a === 'keep' ? 'none' : a ? 'clear' : ifEmpty
 }
 
 function isContinueArg(args) {
@@ -1437,8 +1415,7 @@ export function register(on) {
       // handoff. The chat then clears and continues, as with the band's button,
       // unless the args say "keep". Without args it joins a handoff already
       // armed for this turn as that one chose (/handoff keep stays a keep).
-      const after = !String(args || '').trim() ? null : isKeepArg(args) ? 'none' : 'clear'
-      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, after)
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, afterFromArgs(args, null))
       await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
@@ -1461,8 +1438,10 @@ export function register(on) {
     if (HANDOFF_SKILL.test(String(e.command || ''))) {
       // /session-handoff continue: no new handoff, clear and continue with the last one
       if (isContinueArg(e.args)) return continueRequest($)
-      // runHandoff armed this run itself; a re-entry here must not override it
-      if (!handoffPending) armHandoff(false, isKeepArg(e.args) ? 'none' : 'clear')
+      // runHandoff armed this run itself; a re-entry here while it issues the
+      // run must not override that arm (one taken over by Claude's skill call,
+      // or changed by the band meanwhile). A later one reads the keep from args.
+      if (!handoffPending) armHandoff(false, afterFromArgs(e.args))
     }
     await noteAndSave($, e.command, e.args)
     return next(e)
@@ -1476,9 +1455,9 @@ export function register(on) {
   on('command.run', { command: ['handoff', 'ck-handoff'] }, async ($, e) => {
     now = await $.clock.now()
     if (isContinueArg(e.args)) return continueRequest($)
-    const keep = isKeepArg(e.args)
-    $.clock.after(50, () => runHandoff($, keep ? 'none' : 'clear').catch(() => {}))
-    return { text: keep ? 'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
+    const after = afterFromArgs(e.args)
+    $.clock.after(50, () => runHandoff($, after).catch(() => {}))
+    return { text: after === 'none' ?'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
   })
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {

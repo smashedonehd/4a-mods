@@ -18,7 +18,7 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
 // onRun: called with each command the module runs, before it is logged
 // select: the host has Select, as the desktop app and the terminal do
 // skill: the session has the /session-handoff skill
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfaces = ['terminal'], timers, onRun, select = false, skill = true } = {}) {
+async function boot(cwd, id, { working = false, answer = 'Keep this chat', timers, onRun, select = false, skill = true } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -39,7 +39,7 @@ async function boot(cwd, id, { working = false, answer = 'Keep this chat', surfa
       list: async () => [],
     },
     env: { get: async (k) => (k === 'USERPROFILE' ? '/home' : '') },
-    session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}), surfaces: async () => surfaces },
+    session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}) },
     state: { get: async () => ({ value: states.get(id) }), set: async (_ref, v) => void states.set(id, v) },
     store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
     command: { register: async () => {}, list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
@@ -126,7 +126,6 @@ async function desk(cwd, id, opts) {
 const body = '# Session Handoff\n' + 'x'.repeat(300)
 const SKILL = 'cache-keeper:session-handoff'
 const cleared = (res) => res.log.includes('run:clear')
-const asked = (s) => s.log.some((l) => l.startsWith('ask:Handoff saved'))
 const latestKey = () => [...files.keys()].filter((k) => k.includes('/latest-')).pop()
 // The text of the latest handoff written last, if session `id` wrote it
 const latestText = (id) => {
@@ -336,9 +335,6 @@ assert.match(res.text, /stays as it is/)
 assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!cleared(s))
-s = await boot('/w/band-then-typed-clear', 'y1b')
-res = await s.run('handoff', '')
-assert.match(res.text, /clears and continues/)
 
 // /session-handoff typed after the button (re-arms through the command hook): clears
 s = await boot('/w/band-then-skill', 'z1')
@@ -347,25 +343,18 @@ await s.run(SKILL)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(cleared(s))
 
-// /handoff (typed) clears on its own, in the terminal and in the Desktop app, and asks nothing
-for (const [dir, id, surfaces] of [['/w/typed', 'v1', ['terminal']], ['/w/typed-app', 'v3', ['desktop']]]) {
-  s = await boot(dir, id, { answer: 'Keep this chat', surfaces })
-  await s.run('handoff', '')
-  await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-  assert.ok(!asked(s))
-  assert.deepEqual(s.log.filter((l) => /^(run|submit):/.test(l)).map((l) => l.split(':')[0]), ['run', 'submit'])
-  assert.ok(cleared(s))
-}
-
-// the band's button and the skill run on its own ask nothing
-s = await boot('/w/band-noask', 'v4', { answer: 'Clear and continue' })
-await s.press('handoff')
+// /handoff (typed) clears on its own
+s = await boot('/w/typed', 'v1')
+res = await s.run('handoff', '')
+assert.match(res.text, /clears and continues/)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!asked(s))
-s = await boot('/w/skill-noask', 'v5', { answer: 'Clear and continue' })
+assert.deepEqual(s.log.filter((l) => /^(run|submit):/.test(l)).map((l) => l.split(':')[0]), ['run', 'submit'])
+assert.ok(cleared(s))
+
+// so does the skill run on its own
+s = await boot('/w/skill-plain-run', 'v5')
 await s.run(SKILL)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!asked(s))
 assert.ok(cleared(s))
 
 // the skill with the argument "keep" leaves the chat as it is
@@ -374,11 +363,10 @@ await s.run(SKILL, ' Keep ')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!cleared(s))
 
-// the button's turn ended with an answer without the handoff heading: no dialog, no clear
-s = await boot('/w/band-noask-plain', 'v6', { answer: 'Clear and continue' })
+// the button's turn ended with an answer without the handoff heading: no clear
+s = await boot('/w/band-plain', 'v6')
 await s.press('handoff')
 await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
-assert.ok(!asked(s))
 assert.ok(!cleared(s))
 
 // A Stop hook blocks the handoff turn: Claude answers again in the same turn,
@@ -421,13 +409,13 @@ await s.step('t1', body)
 await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
 assert.equal(latestText('sh4'), body)
 assert.ok(!cleared(s))
-// and /handoff typed asks nothing after an interrupt
-s = await boot('/w/stop-abort-typed', 'sh4b', { answer: 'Clear and continue' })
+// nor does /handoff typed
+s = await boot('/w/stop-abort-typed', 'sh4b')
 await s.run('handoff', '')
 await s.step('t1', body)
 await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
 assert.equal(latestText('sh4b'), body)
-assert.ok(!asked(s))
+assert.ok(!cleared(s))
 
 // the reply after the hook quotes the heading inside a sentence: the handoff stays
 const quoting = 'Nothing to fix: the `# Session Handoff` above stands as written. ' + 'q'.repeat(200)
@@ -640,7 +628,7 @@ assert.equal(s.buttons.get('handoff').label, 'handoff')
 // a /handoff keep typed while the clear waited only keeps the chat: once its handoff is in,
 // nothing is held any more
 timers = []
-s = await boot('/w/race-ask-later', 'ra7', { timers })
+s = await boot('/w/race-keep-later', 'ra7', { timers })
 await s.press('handoff')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', { turnId: 't2' })
@@ -1397,7 +1385,6 @@ assert.equal(s.selects.get('handoff-after').value, 'none')
 await s.press('handoff', 'desktop')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!cleared(s))
-assert.ok(!asked(s))
 await s.render('desktop')
 assert.ok(s.buttons.has('continue'))
 assert.ok(!s.buttons.has('handoff'))
