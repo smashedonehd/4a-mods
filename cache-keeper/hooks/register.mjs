@@ -153,6 +153,7 @@ const H = {
   // the band's handoff, queued behind the running turn, which Claude's own
   // skill call in that turn took over: the queued one still runs, as the next turn
   another: false,
+  phase: '', // what clear and continue is doing now, shown on the band
 }
 
 // Soft landing: a handoff asked for while Claude works waits for the turn to
@@ -516,6 +517,11 @@ async function handoffReady($) {
   return true
 }
 
+function setPhase($, phase) {
+  H.phase = phase
+  $.ui.invalidate('ui.render')
+}
+
 async function clearAndContinue($) {
   if (H.continuing) return
   // A turn began before the clear (one the hold could not stop): the clear
@@ -532,6 +538,7 @@ async function clearAndContinue($) {
   } finally {
     H.continuing = false
     H.clearDue = false
+    H.phase = ''
     $.ui.invalidate('ui.render')
     // After the handoff, so the fresh chat reads it first
     await settleHold($)
@@ -546,6 +553,7 @@ async function clearAndSend($) {
   const path = H.path
   const fid = H.fid
   const again = REVIVE_ORDER.filter((k) => revive.has(k)).map((k) => revive.get(k))
+  setPhase($, 'clearing chat')
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
@@ -557,11 +565,13 @@ async function clearAndSend($) {
   H.fid = ''
   H.fromDisk = false
   try {
+    if (again.length) setPhase($, `turning on ${again.length} plugin${again.length > 1 ? 's' : ''}`)
     const revived = again.length ? await reviveSkills($, again).catch(() => null) : null
     // Runs the plugin starts itself skip the command.run hook: note them here,
     // or the next "clear and continue" would turn nothing on again
     for (const s of again) noteSkill(s.command, s.args)
     await saveRevive($)
+    setPhase($, 'sending handoff')
     await $.prompt.submit({ text, asUser: true })
     // Only a delivered handoff is used up: a failed send stays available
     await dropLatestHandoff($, fid)
@@ -639,6 +649,7 @@ function handoffInFlight() {
 // The bands' handoff button. Waiting for the turn to wind down: how long, and
 // how much the context grew
 function handoffLabel() {
+  if (H.continuing && H.phase) return `handoff · ${H.phase}`
   return landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(landingGrowth())}` : handoffPending ? 'handoff queued' : handoffRunning() ? 'handoff running' : 'handoff'
 }
 
