@@ -286,9 +286,9 @@ test('a plan that cites a file by path:line names this folder; explanation.md is
   const s = await boot(makeFs({ [PLANS + '/l.md']: ['Fix D:/work/app/src/x.js:42\n- [ ] One\n', T], [CWD + '/src/x.js']: '' }))
   assert.match(await s.start(), /plans\/l\.md/)
   const ex = CWD + '/docs/explanation.md'
-  const disk = makeFs({ [ex]: '- [ ] Tests added\n' })
+  const disk = makeFs({ [ex]: '- [ ] Tests added\n', [CWD + '/docs/planning/README.md']: '- [ ] Tests added\n' })
   const s2 = await boot(disk)
-  await s2.prompt('see docs/explanation.md')
+  await s2.prompt('see docs/explanation.md and docs/planning/README.md')
   await s2.call('TodoWrite', { todos: [{ content: 'Tests added', status: 'completed', activeForm: 'x' }] })
   await s2.turnEnd()
   assert.deepEqual(disk.writes, [])
