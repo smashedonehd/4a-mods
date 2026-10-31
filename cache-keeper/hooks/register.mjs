@@ -535,7 +535,7 @@ async function clearAndContinue($) {
   }
   // Claimed before the first await: two presses must not both get past the check
   H.continuing = true
-  $.ui.invalidate('ui.render')
+  setPhase($, 'checking handoff')
   try {
     await clearAndSend($)
   } finally {
