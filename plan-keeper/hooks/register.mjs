@@ -86,22 +86,23 @@ export function norm(s) {
 // more than one item or heading, or none, ticks nothing.
 export function tickPlan(text, steps) {
   const { lines, items, heads } = parsePlan(text)
-  const tasksHeads = heads.filter((h) => h.level > 1 && LABEL.test(h.text))
+  const itemNorms = items.map((it) => norm(it.text))
+  const tasksHeads = heads
+    .filter((h) => h.level > 1 && LABEL.test(h.text))
+    .map((h) => ({ h, whole: norm(h.text), bare: norm(h.text.replace(LABEL, '')) }))
   const ticked = new Set()
   for (const step of steps) {
     const s = norm(step)
     if (!s) continue
-    const hitItems = items.filter((it) => norm(it.text) === s)
-    const hitHeads = tasksHeads.filter((h) => norm(h.text) === s || norm(h.text.replace(LABEL, '')) === s)
+    const hitItems = items.filter((_, k) => itemNorms[k] === s)
+    const hitHeads = tasksHeads.filter((t) => t.whole === s || t.bare === s)
     if (hitItems.length + hitHeads.length !== 1) continue
-    const h = hitHeads[0]
+    const h = hitHeads[0] && hitHeads[0].h
     const targets = h ? items.filter((it) => it.i > h.i && it.i < h.end) : hitItems
     for (const it of targets) if (!it.done) ticked.add(it.i)
   }
-  for (const i of ticked) {
-    const cr = lines[i].endsWith('\r')
-    lines[i] = lines[i].replace(/\r$/, '').replace(CHECKBOX, '$1x$3$4') + (cr ? '\r' : '')
-  }
+  // An open item's first "[ ]" is its box: only a list marker comes before it
+  for (const i of ticked) lines[i] = lines[i].replace('[ ]', '[x]')
   return { text: lines.join('\n'), count: ticked.size }
 }
 
@@ -140,6 +141,9 @@ const NAME_CHAR = /[\p{L}\p{N}_-]/u
 // A .md inside a folder named plans: ~/.claude/plans, docs/plans, docs/superpowers/plans
 const isPlanPath = (p) => /\/plans\/[^/]+\.md$/i.test(slash(p))
 
+// A file's text, or null when it cannot be read (missing, moved, refused)
+const readOr = ($, p) => $.fs.read(p).catch(() => null)
+
 // Where the text names the folder: `exact` when it names the folder itself,
 // `inside` the paths it names in it, relative and as written (up to the first
 // space). D:/app names neither D:/app-old nor D:/app.old.
@@ -171,14 +175,17 @@ async function namesThisFolder($, text) {
   const m = folderMentions(text, S.cwd)
   if (m.exact) return true
   for (const rel of m.inside) {
-    if (!(await $.fs.exists(join(S.cwd, rel)))) continue
-    const parts = rel.split('/').filter(Boolean)
-    let nested = false
-    for (let n = 1; n <= parts.length && !nested; n++) {
-      const dir = join(S.cwd, parts.slice(0, n).join('/'))
-      nested = (await $.fs.exists(join(dir, '.git'))) || (await $.fs.exists(join(dir, 'CLAUDE.md')))
-    }
-    if (!nested) return true
+    if ((await $.fs.exists(join(S.cwd, rel))) && !(await inNested($, rel))) return true
+  }
+  return false
+}
+
+// Whether a folder on the way to rel, rel itself included, has its own .git or CLAUDE.md
+async function inNested($, rel) {
+  const parts = rel.split('/').filter(Boolean)
+  for (let n = 1; n <= parts.length; n++) {
+    const dir = join(S.cwd, parts.slice(0, n).join('/'))
+    if ((await $.fs.exists(join(dir, '.git'))) || (await $.fs.exists(join(dir, 'CLAUDE.md')))) return true
   }
   return false
 }
@@ -190,30 +197,18 @@ async function folderPlan($) {
   const c = key(S.cwd)
   if (!c || c === key(S.home) || /^([a-z]:)?$/.test(c)) return null
   const now = await $.clock.now()
-  const found = []
-  const look = async (dir, ours) => {
-    let list
-    try {
-      list = await $.fs.list(dir)
-    } catch {
-      return // no such folder
-    }
-    for (const f of list) {
-      if (f.kind !== 'file' || !/\.md$/i.test(f.name) || now - f.mtimeMs > RECENT) continue
-      const path = join(dir, f.name)
-      let text
-      try {
-        text = await $.fs.read(path)
-      } catch {
-        continue
-      }
-      if (parsePlan(text).items.some((it) => !it.done) && (await ours(text))) found.push({ path, at: f.mtimeMs })
-    }
+  // Every recent .md of the plan folders, newest first; ~/.claude/plans' must name the folder
+  const dirs = [...(S.home ? [[join(S.home, '.claude/plans'), true]] : []), ...['docs/superpowers/plans', 'docs/plans', 'plans'].map((d) => [join(S.cwd, d), false])]
+  const lists = await Promise.all(dirs.map(([dir]) => $.fs.list(dir).catch(() => []))) // [] for no such folder
+  const recent = lists
+    .flatMap((list, k) => list.filter((f) => f.kind === 'file' && /\.md$/i.test(f.name) && now - f.mtimeMs <= RECENT).map((f) => ({ path: join(dirs[k][0], f.name), at: f.mtimeMs, mustName: dirs[k][1] })))
+    .sort((a, b) => b.at - a.at)
+  for (const f of recent) {
+    const text = await readOr($, f.path)
+    if (text === null || !parsePlan(text).items.some((it) => !it.done)) continue
+    if (!f.mustName || (await namesThisFolder($, text))) return { path: f.path, why: 'folder' }
   }
-  if (S.home) await look(join(S.home, '.claude/plans'), (text) => namesThisFolder($, text))
-  for (const d of ['docs/superpowers/plans', 'docs/plans', 'plans']) await look(join(S.cwd, d), () => true)
-  found.sort((a, b) => b.at - a.at)
-  return found.length ? { path: found[0].path, why: 'folder' } : null
+  return null
 }
 
 // The .md paths a prompt names, in the order written: quoted ones may hold spaces
@@ -234,14 +229,8 @@ function namedPaths(text) {
 async function noteNamed($, text) {
   for (const path of namedPaths(text).reverse()) {
     if (!isPlanPath(path) && !/(?:^|[^a-z])plan/i.test(basename(path))) continue
-    let body
-    try {
-      if (!(await $.fs.exists(path))) continue
-      body = await $.fs.read(path)
-    } catch {
-      continue
-    }
-    if (parsePlan(body).items.length) return setPlan($, path, 'named')
+    const body = await readOr($, path)
+    if (body !== null && parsePlan(body).items.length) return setPlan($, path, 'named')
   }
 }
 
@@ -249,26 +238,21 @@ async function noteNamed($, text) {
 // before it, so they tick nothing in it
 async function setPlan($, path, why) {
   const same = plan && key(plan.path) === key(path)
-  // The old plan gets what was done for it first
-  if (plan && !same) await tick($)
+  if (!same) {
+    // The old plan gets what was done for it first
+    if (plan) await tick($)
+    used = new Set(completed().map(norm))
+    await saveUsed($)
+  }
   plan = { path: slash(path), why }
-  if (!same) used = new Set(completed().map(norm))
   await savePlan($)
-  await saveUsed($)
 }
 
 // Not kept when $.state refuses: a reload forgets it
-async function savePlan($) {
-  await $.state.set(PLAN_REF, plan).catch(() => {})
-}
-
-async function saveTasks($) {
-  await $.state.set(TASKS_REF, tasks).catch(() => {})
-}
-
-async function saveUsed($) {
-  await $.state.set(USED_REF, [...used]).catch(() => {})
-}
+const save = ($, ref, value) => $.state.set(ref, value).catch(() => {})
+const savePlan = ($) => save($, PLAN_REF, plan)
+const saveTasks = ($) => save($, TASKS_REF, tasks)
+const saveUsed = ($) => save($, USED_REF, [...used])
 
 // A chat the session did not start here (/clear, /resume, /branch): the old
 // chat's task list is gone, and with it what that list held
@@ -290,33 +274,24 @@ async function init($) {
   } catch {
     // no folder: no plan is picked by folder
   }
-  try {
-    const { value } = await $.state.get(PLAN_REF)
-    if (value && value.path) plan = value
-  } catch {
-    // nothing kept
-  }
-  try {
-    const { value } = await $.state.get(TASKS_REF)
-    if (Array.isArray(value)) tasks = value
-  } catch {
-    // nothing kept
-  }
-  try {
-    const { value } = await $.state.get(USED_REF)
-    if (Array.isArray(value)) used = new Set(value)
-  } catch {
-    // nothing kept
-  }
+  // undefined: nothing kept
+  const kept = (ref) => $.state.get(ref).then((r) => r.value, () => undefined)
+  const [p, t, u] = await Promise.all([kept(PLAN_REF), kept(TASKS_REF), kept(USED_REF)])
+  if (p && p.path) plan = p
+  if (Array.isArray(t)) tasks = t
+  if (Array.isArray(u)) used = new Set(u)
 }
 
 // ---- the task list and the ticks
 
 const completed = () => tasks.filter((x) => x.status === 'completed').map((x) => x.text)
 
+// A whole list as update_plan and TodoWrite send it, { content, status } each
+const toTasks = (list, status0) => list.map((x) => ({ text: String((x && x.content) || ''), status: String((x && x.status) || status0) }))
+
 // The desktop app's update_plan: a whole list, or a step finished or started
 function applyPlanUpdate(e) {
-  if (Array.isArray(e.items)) tasks = e.items.map((x) => ({ text: String((x && x.content) || ''), status: String((x && x.status) || 'pending') }))
+  if (Array.isArray(e.items)) tasks = toTasks(e.items, 'pending')
   for (const n of [].concat(e.done || [])) if (tasks[n - 1]) tasks[n - 1].status = 'completed'
   if (e.advance) {
     const at = tasks.findIndex((x) => x.status === 'in_progress')
@@ -345,7 +320,7 @@ async function observe($, e, result) {
   if (e.agentId) return // a subagent's plan and task list are its own
   if ((t === 'Write' || t === 'Edit' || t === 'MultiEdit') && isPlanPath(e.file_path)) return setPlan($, e.file_path, 'written')
   if (t === 'ExitPlanMode' && result && result.filePath) return setPlan($, result.filePath, 'written')
-  if (t === 'TodoWrite') tasks = (e.todos || []).map((x) => ({ text: String(x.content || ''), status: String(x.status || '') }))
+  if (t === 'TodoWrite') tasks = toTasks(e.todos || [], '')
   else if (t === 'TaskCreate') tasks.push({ id: String((result && result.task && result.task.id) || ''), text: String(e.subject || ''), status: 'pending' })
   else if (t === 'TaskUpdate') {
     const x = tasks.find((k) => k.id && k.id === String(e.taskId))
@@ -357,10 +332,9 @@ async function observe($, e, result) {
   else if (t === WRAP_TOOL) {
     // The wrap-up checks the running step off, unless the turn stops on a question
     if (!e.blocked && !e.ask) for (const x of tasks) if (x.status === 'in_progress') x.status = 'completed'
-    await saveTasks($)
-    return tick($)
   } else return
   await saveTasks($)
+  if (t === WRAP_TOOL) await tick($)
 }
 
 // Ticks the items the newly completed steps name; writes only when one changes
@@ -369,12 +343,8 @@ async function tick($) {
   if (!plan) return
   const steps = completed().filter((s) => !used.has(norm(s)))
   if (!steps.length) return
-  let text
-  try {
-    text = await $.fs.read(plan.path)
-  } catch {
-    return // moved or deleted: nothing to tick
-  }
+  const text = await readOr($, plan.path)
+  if (text === null) return // moved or deleted: nothing to tick
   for (const s of steps) used.add(norm(s))
   await saveUsed($)
   const out = tickPlan(text, steps)
@@ -401,12 +371,11 @@ async function startNote($, source) {
     await tick($)
     await forgetTasks($)
   }
-  let text = null
-  if (plan) text = await $.fs.read(plan.path).catch(() => null)
+  let text = plan ? await readOr($, plan.path) : null
   if (text === null) {
     plan = await folderPlan($)
     await savePlan($)
-    if (plan) text = await $.fs.read(plan.path).catch(() => null)
+    if (plan) text = await readOr($, plan.path)
   }
   const o = text !== null && openItems(text)
   if (!o) return null
