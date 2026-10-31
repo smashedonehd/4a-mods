@@ -1487,4 +1487,25 @@ await batch(s)
 await s.render('desktop')
 assert.ok(s.buttons.has('stop'))
 
+// the band names the step clear and continue is on, and drops it when done
+{
+  const labels = []
+  let sess
+  sess = await boot('/w/phase', 'ph1', { onRun: async (c) => { if (c.command === 'clear') { await sess.render(); labels.push(sess.buttons.get('handoff').label) } } })
+  await sess.press('handoff')
+  await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
+  assert.ok(labels.includes('handoff · clearing chat'), String(labels))
+  await sess.render()
+  assert.equal(sess.buttons.get('handoff').label, 'handoff')
+}
+
+// plugins turned on again are reported, so a missing one is noticed
+{
+  const sess = await boot('/w/revive-report', 'rr1')
+  await sess.fire('tool.call', { tool: 'Skill', skill: 'jev:on', args: '' })
+  await sess.press('handoff')
+  await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
+  assert.ok(sess.log.some((l) => l.startsWith('toast:Turned on again: /jev:on')), sess.log.join('|'))
+}
+
 console.log('handoff-continue: ok')
