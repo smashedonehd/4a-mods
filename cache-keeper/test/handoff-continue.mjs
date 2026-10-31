@@ -1518,17 +1518,21 @@ assert.ok(s.buttons.has('stop'))
 }
 
 // An engine that runs a plugin-issued command through the command.run hooks
-// again must not turn /handoff keep into a clear: the run is the hook's own
-timers = []
-let reentrant
-reentrant = await boot('/w/keep-reentry', 'ke1', {
-  timers,
-  onRun: async (c) => { if (c.command.includes('session-handoff')) await reentrant.fire('command.run', { command: c.command, args: c.args }) },
-})
-await reentrant.run('handoff', 'keep')
-await runTimers(timers)
-await reentrant.end({ reason: 'answer', answer: body, turnId: 't1' })
-await runTimers(timers)
-assert.ok(!cleared(reentrant), reentrant.log.join('|'))
+// again must not turn /handoff keep into a clear: the run is the hook's own.
+// Only the unfiltered hooks see the skill, as with a typed /session-handoff.
+for (const [args, clears] of [['keep', false], ['', true]]) {
+  timers = []
+  let reentrant
+  reentrant = await boot('/w/keep-reentry', 'ke1', {
+    timers,
+    onRun: async (c) => { if (c.command.includes('session-handoff')) await reentrant.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter) },
+  })
+  await reentrant.run('handoff', args)
+  await runTimers(timers)
+  await reentrant.end({ reason: 'answer', answer: body, turnId: 't1' })
+  await runTimers(timers)
+  assert.ok(!reentrant.log.some((l) => l.startsWith('toast:Could not start')), reentrant.log.join('|'))
+  assert.equal(cleared(reentrant), clears, reentrant.log.join('|'))
+}
 
 console.log('handoff-continue: ok')
