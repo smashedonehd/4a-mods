@@ -46,6 +46,23 @@ const toasts = (on: any) => {
   return shown
 }
 
+// The engine's settings: the user source as settings.json holds it, once it
+// has read it in, every other source empty.
+const engine = (on: any, files: Record<string, string>) =>
+  on('settings.read', (_: unknown, e: any): any => ({
+    value: e?.source === 'user' ? JSON.parse(files[SETTINGS] ?? '{}') : {},
+  }))
+
+// The commands run, in order.
+const runs = (on: any) => {
+  const ran: string[] = []
+  on('command.run', (_: unknown, e: any): any => {
+    ran.push(e.command)
+    return { value: { text: '' } }
+  })
+  return ran
+}
+
 const SETTINGS = 'C:/Users/x/.claude/settings.json'
 const GLOBAL = 'C:/Users/x/.claude.json'
 const PROFILES = 'C:/Users/x/.claude/mods-data/plugin-toggles-profiles.json'
@@ -184,23 +201,43 @@ test('an off plugin has its switch at Off and a cost estimated from its files', 
 })
 
 test('pressing On on an off plugin writes it on to settings.json', async ($, on) => {
-  let written = ''
-  on('state.get', (): any => ({ value: {} }))
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: {} }))
-  on('fs.exists', () => ({ value: true }))
-  on('fs.read', () => ({ value: JSON.stringify({ enabledPlugins: { 'foo@bar': false } }) }))
-  on('fs.write', (_, e): any => {
-    written = e.text
-    return { value: undefined }
-  })
+  const files = disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': false } }) })
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'plugins:foo@bar:on' })
-  expect(JSON.parse(written).enabledPlugins['foo@bar']).toBe(true)
+  expect(JSON.parse(files[SETTINGS] ?? '{}').enabledPlugins['foo@bar']).toBe(true)
   await ui.press({ key: 'plugins:foo@bar:off' })
-  expect(JSON.parse(written).enabledPlugins['foo@bar']).toBe(false)
+  expect(JSON.parse(files[SETTINGS] ?? '{}').enabledPlugins['foo@bar']).toBe(false)
+  await ui.unmount()
+})
+
+test('pressing the position a switch is at writes and counts nothing', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  const before = JSON.stringify({ enabledPlugins: { 'foo@bar': true } })
+  const files = disk(on, { [SETTINGS]: before })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:on' })
+  expect(files[SETTINGS]).toBe(before)
+  expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('an empty settings.json is switched as an empty object', async ($, on) => {
+  on('command.list', () => ({ value: [GREG] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  const files = disk(on, { [SETTINGS]: '' })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  await ui.press({ key: 'skills:greg:off' })
+  expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({ skillOverrides: { greg: 'off' } })
   await ui.unmount()
 })
 
@@ -538,6 +575,25 @@ test('without USERPROFILE the files are found under HOME', async ($, on) => {
   await ui.unmount()
 })
 
+for (const [what, vars, home] of [
+  ['a Windows USERPROFILE wins over HOME', { USERPROFILE: 'C:\\Users\\x', HOME: '/c/Users/x' }, /^C:\/Users\/x\//],
+  ['a USERPROFILE WSL hands over gives way to HOME', { USERPROFILE: '/mnt/c/Users/x', HOME: '/home/x' }, /^([A-Za-z]:)?\/home\/x\//],
+] as const)
+  test(`${what}`, async ($, on) => {
+    on('command.list', () => ({ value: [GREG] }) as any)
+    on('env.get', env(vars))
+    on('settings.read', (): any => ({ value: {} }))
+    const files = disk(on, {})
+
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'tab-skills' })
+    await ui.press({ key: 'skills:greg:off' })
+    const written = Object.keys(files)
+    expect(written).toHaveLength(1)
+    expect(written[0]).toMatch(home)
+    await ui.unmount()
+  })
+
 test('CLAUDE_CONFIG_DIR moves settings.json and ~/.claude.json with it', async ($, on) => {
   on('command.list', () => ({ value: [GREG] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x', CLAUDE_CONFIG_DIR: 'C:\\cfg' }))
@@ -651,6 +707,29 @@ test('a switch a higher source sets is not written, and the press says where it 
   await ui.unmount()
 })
 
+for (const [what, sources, says] of [
+  ['local over project', { project: 'on', local: 'off' }, /settings\.local\.json/],
+  ['managed settings over all', { project: 'on', local: 'off', policy: 'off' }, /managed settings/],
+] as const)
+  test(`a skill switch set higher up is not written, and the press names ${what}`, async ($, on) => {
+    on('command.list', () => ({ value: [GREG] }) as any)
+    on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+    on('settings.read', (_, e: any): any => {
+      const mode = (sources as Record<string, string>)[e?.source]
+      return { value: mode ? { skillOverrides: { greg: mode } } : {} }
+    })
+    const files = disk(on, { [SETTINGS]: '{}' })
+    const shown = toasts(on)
+
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'tab-skills' })
+    await ui.press({ key: 'skills:greg:name-only' })
+    expect(files[SETTINGS]).toBe('{}')
+    expect(shown).toHaveLength(1)
+    expect(shown[0]).toMatch(says)
+    await ui.unmount()
+  })
+
 test('local settings outrank project settings', async ($, on) => {
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
@@ -672,11 +751,11 @@ test('local settings outrank project settings', async ($, on) => {
 test('saving a profile keeps the switches, and applying it sets every one exactly so', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
-  on('settings.read', (): any => ({ value: {} }))
-  on('command.run', (): any => ({ value: { text: '' } }))
+  const ran = runs(on)
   const files = disk(on, {
     [SETTINGS]: JSON.stringify({ model: 'opus', enabledPlugins: { 'a@b': true }, skillOverrides: { s: 'off' } }),
   })
+  engine(on, files)
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-profiles' })
@@ -693,19 +772,58 @@ test('saving a profile keeps the switches, and applying it sets every one exactl
     enabledPlugins: { 'a@b': true, 'c@d': true },
     skillOverrides: { s: 'off' },
   })
+  expect(ran).toEqual(['reload-plugins'])
+  await ui.unmount()
+})
+
+test('a profile is not saved from a settings.json that does not parse', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  const files = disk(on, { [SETTINGS]: '{ "enabledPlugins": { "a@b": true }, }' })
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-profiles' })
+  await ui.input({ key: 'name', text: 'Work', kind: 'change' })
+  await ui.press({ key: 'save' })
+  expect(files[PROFILES]).toBeUndefined()
+  expect(shown.join(' ')).toMatch(/settings\.json/)
+  expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('Work')
+  await ui.unmount()
+})
+
+test('a profile entry edited into no object is passed over', async ($, on) => {
+  on('state.get', stored('tab', 'tab-1', 'profiles'))
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  disk(on, { [PROFILES]: JSON.stringify({ Broken: null, Odd: 'x', Work: { plugins: {}, skills: {} } }) })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^Work$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Broken$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Odd$/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a profiles file that holds no object reads as no profiles', async ($, on) => {
+  on('state.get', stored('tab', 'tab-1', 'profiles'))
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  disk(on, { [PROFILES]: 'null' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^None yet/ })).toBeTruthy()
   await ui.unmount()
 })
 
 test('Apply now reloads plugins and clears the pending count', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
-  on('settings.read', (): any => ({ value: {} }))
-  const ran: string[] = []
-  on('command.run', (_: unknown, e: any): any => {
-    ran.push(e.command)
-    return { value: { text: '' } }
-  })
-  disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) })
+  const ran = runs(on)
+  engine(on, disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) }))
   toasts(on)
 
   const ui = await $.ui.mount(PANE)
@@ -714,6 +832,72 @@ test('Apply now reloads plugins and clears the pending count', async ($, on) => 
   await ui.press({ key: 'apply' })
   expect(ran).toEqual(['reload-plugins'])
   expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('Apply now waits for the engine to read the switches in before it reloads', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  const log: string[] = []
+  const files = disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) })
+  // The engine reads settings.json in on the second wait.
+  let seen = files[SETTINGS] ?? '{}'
+  let waits = 0
+  on('clock.sleep', (): any => {
+    log.push('wait')
+    if (++waits === 2) seen = files[SETTINGS] ?? '{}'
+    return { value: undefined }
+  })
+  on('settings.read', (_: unknown, e: any): any => ({ value: e?.source === 'user' ? JSON.parse(seen) : {} }))
+  on('command.run', (_: unknown, e: any): any => {
+    log.push(e.command)
+    return { value: { text: '' } }
+  })
+  toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:off' })
+  await ui.press({ key: 'apply' })
+  expect(log).toEqual(['wait', 'wait', 'reload-plugins'])
+  await ui.unmount()
+})
+
+test('Apply now does not reload while the engine still holds the old switches', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  const ran = runs(on)
+  disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) })
+  on('settings.read', (_: unknown, e: any): any => ({
+    value: e?.source === 'user' ? { enabledPlugins: { 'foo@bar': true } } : {},
+  }))
+  on('clock.sleep', (): any => ({ value: undefined }))
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:off' })
+  await ui.press({ key: 'apply' })
+  expect(ran).toEqual([])
+  expect(shown.join(' ')).toMatch(/again in a moment/)
+  expect(await ui.find({ type: 'Text', text: /1 change saved/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a skill switched back On is not reloaded while the engine still holds it off', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }, GREG] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  const ran = runs(on)
+  disk(on, { [SETTINGS]: JSON.stringify({ skillOverrides: { greg: 'off' } }) })
+  on('settings.read', (_: unknown, e: any): any => ({
+    value: e?.source === 'user' ? { skillOverrides: { greg: 'off' } } : {},
+  }))
+  on('clock.sleep', (): any => ({ value: undefined }))
+  toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  await ui.press({ key: 'skills:greg:on' })
+  await ui.press({ key: 'apply' })
+  expect(ran).toEqual([])
   await ui.unmount()
 })
 

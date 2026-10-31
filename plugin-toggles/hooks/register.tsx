@@ -83,19 +83,38 @@ const draft = atom({ plugin: 'plugin-toggles', key: 'name' } as const, '', {
 
 // JSON as a Windows editor may save it, a byte order mark first.
 const parse = (text: string) => JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, any>
+const isObject = (v: unknown): v is Record<string, any> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
 
 async function readJson($: any, path: string) {
   try {
-    return parse(String(await $.fs.read(path)))
+    const json = parse(String(await $.fs.read(path)))
+    return isObject(json) ? json : {}
   } catch {
     return {} as Record<string, any>
   }
 }
 
+// A file a press writes from: {} when it is missing or empty. One that is
+// there but does not read or parse, or holds no object, gives undefined and
+// the press says so: written over, it would keep only the key changed.
+async function readStrict($: any, path: string) {
+  try {
+    const text = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : ''
+    const json = text.trim() === '' ? {} : parse(text)
+    if (isObject(json)) return json
+  } catch {}
+  $.ui.toast(`Could not read ${path}, so nothing was changed. Fix the file and try again.`)
+  return undefined
+}
+
 // Claude Code's own folder, its settings.json and the global config, where
-// the engine finds them: under CLAUDE_CONFIG_DIR when set, else at home.
+// the engine finds them: under CLAUDE_CONFIG_DIR when set, else at home. A
+// USERPROFILE that is no Windows path, as WSL hands one over, is not the
+// home the engine reads there.
 async function paths($: any) {
-  const home = norm(String((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''))
+  const profile = String((await $.env.get('USERPROFILE')) || '')
+  const home = norm(/^[A-Za-z]:[\\/]/.test(profile) ? profile : String((await $.env.get('HOME')) || profile))
   const config = await $.env.get('CLAUDE_CONFIG_DIR')
   const dir = config ? norm(String(config)).replace(/\/+$/, '') : `${home}/.claude`
   return {
@@ -105,18 +124,10 @@ async function paths($: any) {
   }
 }
 
-// Rewrites a JSON file through `change`. One that is there but does not read
-// or parse is left whole and the press says so: written over, it would keep
-// only the key changed.
+// Rewrites a JSON file through `change`, unless readStrict refuses it.
 async function rewrite($: any, path: string, change: (json: Record<string, any>) => void) {
-  let json: Record<string, any>
-  try {
-    json = (await $.fs.exists(path)) ? parse(String(await $.fs.read(path))) : {}
-    if (json === null || typeof json !== 'object' || Array.isArray(json)) throw new Error('not an object')
-  } catch {
-    $.ui.toast(`Could not read ${path}, so nothing was changed. Fix the file and try again.`)
-    return false
-  }
+  const json = await readStrict($, path)
+  if (json === undefined) return false
   change(json)
   await $.fs.write(path, JSON.stringify(json, null, 2) + NL)
   return true
@@ -490,7 +501,10 @@ function toggle($: any, e: any, kind: string, r: Row) {
         label={MODE_LABEL[m]}
         {...(terminal ? { variant: on ? 'primary' : 'secondary' } : { plain: true })}
         dimColor={!on}
-        onPress={() => setMode($, kind, r.name, m)}
+        onPress={() => {
+          // The position it is at already: nothing to write or count.
+          if (!on) return setMode($, kind, r.name, m)
+        }}
       />
     )
     if (terminal) return button
@@ -580,7 +594,27 @@ async function markDirty($: any) {
   await update($, dirty, n => n + 1)
 }
 
+const same = (a: Record<string, any> = {}, b: Record<string, any> = {}) =>
+  [...Object.keys(a), ...Object.keys(b)].every(k => a[k] === b[k])
+
+// Whether the engine has the switches settings.json holds. It picks a write
+// up about a second late, and a reload before then loads the old ones.
+async function engineHasSwitches($: any) {
+  const want = await readJson($, (await paths($)).settings)
+  for (let waited = 0; ; waited += 100) {
+    const has = ((await $.settings.read({ source: 'user' })) ?? {}) as Record<string, any>
+    if (same(want.enabledPlugins, has.enabledPlugins) && same(want.skillOverrides, has.skillOverrides))
+      return true
+    if (waited >= 3000) return false
+    await $.clock.sleep(100)
+  }
+}
+
 async function applyNow($: any) {
+  if (!(await engineHasSwitches($))) {
+    $.ui.toast('Settings have not been read in yet. Press Apply now again in a moment.')
+    return
+  }
   try {
     await $.command.run({ command: 'reload-plugins' })
     await update($, dirty, () => 0)
@@ -642,7 +676,8 @@ async function profilesPath($: any) {
 async function saveProfile($: any, name: string) {
   const clean = name.trim()
   if (clean === '') return
-  const cur = await readJson($, (await paths($)).settings)
+  const cur = await readStrict($, (await paths($)).settings)
+  if (cur === undefined) return
   const wrote = await rewrite($, await profilesPath($), all => {
     all[clean] = {
       plugins: cur.enabledPlugins ?? {},
@@ -657,7 +692,7 @@ async function saveProfile($: any, name: string) {
 async function applyProfile($: any, name: string) {
   const all = await readJson($, await profilesPath($))
   const picked = all[name]
-  if (!picked) return
+  if (!isObject(picked)) return
   const wrote = await rewrite($, (await paths($)).settings, json => {
     json.enabledPlugins = { ...(json.enabledPlugins ?? {}), ...picked.plugins }
     json.skillOverrides = picked.skills ?? {}
@@ -756,7 +791,10 @@ export const register: Register = on => {
     if (current === 'profiles') {
       const all = (await readJson($, await profilesPath($))) as Record<string, any>
       const named = await read($, draft)
-      const names = Object.keys(all).sort()
+      // An entry edited by hand into something else is no profile.
+      const names = Object.keys(all)
+        .filter(n => isObject(all[n]))
+        .sort()
       const weights = await Promise.all(
         names.map(async n => {
           const plugins = (all[n].plugins ?? {}) as Record<string, boolean>

@@ -80,7 +80,7 @@ Every skill, plugin and MCP server that is on takes context in every turn, wheth
 - **Your own skills** get a four-way switch: On lists the skill with its description, Name lists it by name alone, User hides it from Claude but keeps `/name` for you, and Off hides it from both. A plugin's skills switch with their plugin, and their row leads to it. A warning shows when skills don't fit the listing budget.
 - **Plugins and MCP servers** switch On or Off. Point at a row to see what it adds. MCP switches apply to the current project; reconnect with `/mcp`.
 - **Profiles** save which plugins are on and where each skill's switch stands, and apply all of it in one click.
-- **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat. A mod you switch, Toggles itself included, takes effect only in a new chat.
+- **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat. Apply now waits up to three seconds for Claude Code to read the new settings in, and reloads only once it has. A mod you switch, Toggles itself included, takes effect only in a new chat.
 - **A switch set higher up** (the project's `.claude/settings.json` or `.claude/settings.local.json`, `--settings`, managed settings) is not written over: the press says where it is set.
 
 ## Where the data lives
