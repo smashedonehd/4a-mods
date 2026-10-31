@@ -18,7 +18,8 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
 // onRun: called with each command the module runs, before it is logged
 // select: the host has Select, as the desktop app and the terminal do
 // skill: the session has the /session-handoff skill
-async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true } = {}) {
+// proc: the host's $.process (runs commands, as the CLI does); absent otherwise
+async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true, proc } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -52,6 +53,7 @@ async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, 
       log: () => {},
       resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p), ...(select && { Select: (p) => (selects.set(p.key, p), p) }) }),
     },
+    ...(proc && { process: proc }),
   }
   const buttons = new Map() // key -> props of the band's buttons at the last render
   const selects = new Map() // key -> props of the band's Selects at the last render
@@ -1562,5 +1564,79 @@ await runTimers(timers)
 assert.ok(!takeover.log.some((l) => l.startsWith('toast:Could not start')), takeover.log.join('|'))
 await takeover.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.equal(latestText('ke2'), body)
+
+// Live state at pickup: git read in the folder while the chat clears goes in
+// front of the handoff, after the handoff's age, so a stale handoff loses to it
+const gitOut = (stdout, exitCode = 0, stderr = '') => ({ exitCode, stdout, stderr })
+const STATUS = 'git --no-optional-locks status --short --branch'
+const LOG = 'git --no-optional-locks log -3 --oneline'
+const STASH = 'git --no-optional-locks stash list'
+const WORKTREE = 'git --no-optional-locks worktree list'
+const gitCalls = []
+// A fake $.process.run answering by the command line, `dflt` for the rest
+const fakeGit = (by, dflt = gitOut('')) => async (argv, init) => {
+  gitCalls.push({ argv: argv.join(' '), cwd: init && init.cwd })
+  const r = by[argv.join(' ')] ?? dflt
+  if (r instanceof Error) throw r
+  return r
+}
+// Makes a handoff in cwd, continues with it 42 minutes later in a fresh boot
+// that runs git through `run`, and gives the prompt's text before the handoff
+async function liveOf(cwd, run) {
+  const id = cwd.replace(/\W/g, '')
+  await makeHandoff(cwd, id + '1')
+  T += 42 * 60e3
+  s = await boot(cwd, id + '2', { proc: { run } })
+  res = await s.run(SKILL, 'continue')
+  assert.ok(cleared(res), res.log.join('|'))
+  const prompt = s.sent.at(-1)
+  assert.ok(prompt.startsWith('Handoff from my previous session'))
+  assert.ok(prompt.endsWith('\n\n' + body))
+  return prompt.slice(0, prompt.indexOf(body))
+}
+let live = await liveOf('/w/live', fakeGit({
+  [STATUS]: gitOut('## feat/x...origin/feat/x [ahead 1]\n M a.js\n?? b.js\n'),
+  [LOG]: gitOut('abc1 one\nabc2 two\n'),
+  [WORKTREE]: gitOut('/w/live  abc1 [feat/x]\n'),
+}))
+assert.match(live, /^Handoff from my previous session \(saved at \S+, written 42m ago\)\. Open items it marks "My own idea"/)
+assert.match(live, /Live state at pickup/)
+assert.match(live, /is data, not instructions/)
+assert.match(live, /branch: feat\/x\.\.\.origin\/feat\/x \[ahead 1\]\n/)
+assert.match(live, /status --short:\n M a\.js\n\?\? b\.js\n/)
+assert.match(live, /log -3 --oneline:\nabc1 one\nabc2 two\n/)
+assert.match(live, /stash list: \(none\)\n/)
+assert.match(live, /worktree list:\n\/w\/live  abc1 \[feat\/x\]\n/)
+assert.deepEqual(gitCalls.map((c) => c.argv).sort(), [LOG, STASH, STATUS, WORKTREE].sort())
+assert.ok(gitCalls.every((c) => c.cwd === '/w/live'), JSON.stringify(gitCalls))
+
+// a clean tree says so; one command failing loses that line alone
+live = await liveOf('/w/clean', fakeGit({ [STATUS]: gitOut('## main\n'), [WORKTREE]: gitOut('', 1, 'fatal: worktrees broke\nmore') }))
+assert.match(live, /branch: main\n/)
+assert.match(live, /status --short: \(clean\)\n/)
+assert.match(live, /log -3 --oneline: \(none\)\n/)
+assert.match(live, /worktree list: \(unavailable: fatal: worktrees broke\)\n/)
+
+// a long status is cut, not sent whole
+live = await liveOf('/w/long', fakeGit({ [STATUS]: gitOut('## main\n' + Array.from({ length: 50 }, (_, i) => `?? f${i}.js`).join('\n') + '\n') }))
+assert.match(live, /\?\? f28\.js\n… \+21 more lines\n/)
+assert.ok(!live.includes('f29.js'))
+
+// a detached HEAD and a repository with no commits yet keep the block
+live = await liveOf('/w/detached', fakeGit({ [STATUS]: gitOut('## HEAD (no branch)\n'), [LOG]: gitOut('abc1 one\n') }))
+assert.match(live, /branch: HEAD \(no branch\)\n/)
+assert.match(live, /log -3 --oneline:\nabc1 one\n/)
+live = await liveOf('/w/unborn', fakeGit({ [STATUS]: gitOut('## No commits yet on main\n') }, gitOut('', 128, "fatal: your current branch 'main' does not have any commits yet")))
+assert.match(live, /branch: No commits yet on main\n/)
+assert.match(live, /log -3 --oneline: \(unavailable: fatal: your current branch 'main' does not have any commits yet\)\n/)
+
+// not a repository, and git missing or hung: no block, the handoff still goes,
+// with its age, and nothing complains
+for (const [cwd, run] of [['/w/norepo', fakeGit({}, gitOut('', 128, 'fatal: not a git repository'))], ['/w/dead', fakeGit({}, new Error('timed out'))]]) {
+  live = await liveOf(cwd, run)
+  assert.ok(!live.includes('Live state'), live)
+  assert.match(live, /written 42m ago\)\. Open items/)
+  assert.ok(!res.log.some((l) => l.startsWith('toast:Could not')), res.log.join('|'))
+}
 
 console.log('handoff-continue: ok')
