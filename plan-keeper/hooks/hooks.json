@@ -1,0 +1,4 @@
+{
+  "description": "Plan Keeper hooks module",
+  "modules": ["./register.mjs"]
+}

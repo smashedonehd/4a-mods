@@ -1,0 +1,10 @@
+{
+  "name": "plan-keeper",
+  "version": "0.1.0",
+  "description": "Keeps a session's plan file honest: ticks a plan item once the task-list step of the same text is done, and lists the open items when a chat starts or clears",
+  "author": {
+    "name": "4AM"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
