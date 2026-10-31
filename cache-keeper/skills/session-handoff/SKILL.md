@@ -58,7 +58,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 - User asked: <item the user requested that is not done>: <where it stands, what blocks it>
 - My own idea (confirm with the user before acting): <item you proposed or noticed, never requested>: <why it may matter>
 - Deferred by rule (the user does this): <item a rule, hook or permission kept you from doing>: <the rule>
-- Open: <question needing the user's input>: <context>
+- Open (needs the user's answer): <question>: <context>
 
 ## Pick up here
 <1-2 sentences: the single most likely next action for a fresh agent, taken from "User asked" or "Open", never from "My own idea">
@@ -72,7 +72,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 4. **If a plan file drove the session, name it first** in "Key files" so the next agent reads it before anything else.
 5. **No emojis, no hype, no "great job" summaries.** Terse and concrete: paths, commands, shell IDs, decisions. Match the tone of a seasoned engineer handing off at end-of-shift.
 6. **Background process IDs are critical.** If you started any `run_in_background` shells, their IDs must appear in "Running state" with the kill command. The next agent cannot find them otherwise.
-7. **Every open item says who wants it.** "User asked" is work the user requested in their own words. "My own idea" is anything you proposed, noticed or recommended and the user never asked for; the label carries the instruction to confirm it first, because the next agent reads the handoff alone, without this skill. "Deferred by rule" is a step a rule, hook or permission setting kept you from doing (a merge gate, a deny rule, a `main`-only-by-the-user convention): name the rule, so the next agent does not try it again. A handoff that lists your own ideas as plain tasks makes the next agent do work nobody asked for.
+7. **Every open item says who wants it.** "User asked" is work the user requested in their own words. "My own idea" is anything you proposed, noticed or recommended and the user never asked for; the label carries the instruction to confirm it first, because the next agent reads the handoff alone, without this skill. "Deferred by rule" is a step a rule, hook or permission setting kept you from doing (a merge gate, a deny rule, a `main`-only-by-the-user convention): name the rule, so the next agent does not try it again. "Open" is a question only the user can answer. A handoff that lists your own ideas as plain tasks makes the next agent do work nobody asked for.
 
 ## Anti-patterns: do not do these
 

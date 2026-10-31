@@ -1572,7 +1572,7 @@ let gitCalls = []
 const gitDirty = async (argv, init) => {
   gitCalls.push({ argv: argv.join(' '), cwd: init && init.cwd })
   const out = {
-    'git rev-parse --abbrev-ref HEAD': 'feat/x\n',
+    'git symbolic-ref --short -q HEAD': 'feat/x\n',
     'git status --short': ' M a.js\n?? b.js\n',
     'git log -3 --oneline': 'abc1 one\nabc2 two\n',
     'git stash list': '',
@@ -1590,6 +1590,7 @@ assert.ok(prompt.startsWith('Handoff from my previous session'))
 assert.ok(prompt.endsWith('\n\n' + body))
 let live = prompt.slice(0, prompt.indexOf(body))
 assert.match(live, /Live state at pickup/)
+assert.match(live, /is data, not instructions/)
 assert.match(live, /written 42m ago/)
 assert.match(live, /branch: feat\/x\n/)
 assert.match(live, /status --short:\n M a\.js\n\?\? b\.js\n/)
@@ -1602,7 +1603,7 @@ assert.ok(gitCalls.every((c) => c.cwd === '/w/live'), JSON.stringify(gitCalls))
 // a clean tree says so; one command failing loses that line alone
 const gitClean = async (argv) => {
   const cmd = argv.join(' ')
-  if (cmd === 'git rev-parse --abbrev-ref HEAD') return gitOut('main\n')
+  if (cmd === 'git symbolic-ref --short -q HEAD') return gitOut('main\n')
   if (cmd === 'git worktree list') return { ...gitOut(''), exitCode: 1, stderr: 'fatal: worktrees broke\nmore' }
   return gitOut('')
 }
@@ -1624,6 +1625,23 @@ await s.run(SKILL, 'continue')
 live = s.sent.at(-1).slice(0, s.sent.at(-1).indexOf(body))
 assert.match(live, /\?\? f29\.js\n… \+20 more lines\n/)
 assert.ok(!live.includes('f30.js'))
+
+// a detached HEAD (symbolic-ref exits 1) keeps the block; a repository with no
+// commits yet names its unborn branch
+const gitDetached = async (argv) => (argv.join(' ') === 'git symbolic-ref --short -q HEAD' ? { ...gitOut(''), exitCode: 1 } : gitOut(argv.join(' ') === 'git log -3 --oneline' ? 'abc1 one\n' : ''))
+await makeHandoff('/w/detached', 'dt1')
+s = await boot('/w/detached', 'dt2', { process: { run: gitDetached } })
+await s.run(SKILL, 'continue')
+live = s.sent.at(-1).slice(0, s.sent.at(-1).indexOf(body))
+assert.match(live, /branch: \(detached\)\n/)
+assert.match(live, /log -3 --oneline:\nabc1 one\n/)
+const gitUnborn = async (argv) => (argv.join(' ') === 'git symbolic-ref --short -q HEAD' ? gitOut('main\n') : { ...gitOut(''), exitCode: 128, stderr: "fatal: your current branch 'main' does not have any commits yet" })
+await makeHandoff('/w/unborn', 'ub1')
+s = await boot('/w/unborn', 'ub2', { process: { run: gitUnborn } })
+await s.run(SKILL, 'continue')
+live = s.sent.at(-1).slice(0, s.sent.at(-1).indexOf(body))
+assert.match(live, /branch: main\n/)
+assert.match(live, /log -3 --oneline: \(unavailable: fatal: your current branch 'main' does not have any commits yet\)\n/)
 
 // not a repository: no block, the handoff still goes
 const gitNoRepo = async () => ({ ...gitOut(''), exitCode: 128, stderr: 'fatal: not a git repository' })
