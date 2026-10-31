@@ -526,7 +526,7 @@ async function liveState($) {
 // a handoff written by an older skill too, whose items carry no labels.
 function continuationHead() {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
-  return `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked".`
+  return `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
 }
 
 // Whether there is a handoff to send now; toasts why not. A handoff loaded from
