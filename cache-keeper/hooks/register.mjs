@@ -256,10 +256,13 @@ async function settleHold($) {
 // had and the handoff this turn already wrote. Until its capture, an arm with
 // no notTurn is for the running turn. The band's handoff taken over this way is
 // still queued: the engine runs it once this turn ends (see H.another).
+// after null: no choice made (Claude's skill call without args). Such an arm
+// keeps what the arm it joins chose, a keep included, and clears otherwise.
 function armHandoff(insideTurn, after = 'none') {
   const live = insideTurn && H.armed
   const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
   const again = live && (H.notTurn === '' || queued)
+  if (after === null) after = again ? H.after : 'clear'
   if (!(again && H.after === 'clear')) H.after = after
   if (!again) H.draft = ''
   H.another = queued || (again && H.another)
@@ -680,7 +683,8 @@ async function runHandoff($, after = 'none') {
     startLanding()
     $.ui.invalidate('ui.render')
     $.ui.toast(S.working ? 'Session handoff queued: it runs when Claude finishes this turn.' : 'Running /session-handoff.')
-    await $.command.run({ command: cmd.name, args: '' })
+    // keep in the args too: a command.run hook that sees the run later reads it
+    await $.command.run({ command: cmd.name, args: after === 'none' ? 'keep' : '' })
   } catch (err) {
     // Taken over by Claude's own skill call in the running turn, the arm is
     // that turn's now, and no queued turn follows it
@@ -1431,8 +1435,10 @@ export function register(on) {
       const args = e.args || (e.input && e.input.args)
       // Claude calling the handoff skill itself: this turn's answer is the
       // handoff. The chat then clears and continues, as with the band's button,
-      // unless the args say "keep".
-      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, isKeepArg(args) ? 'none' : 'clear')
+      // unless the args say "keep". Without args it joins a handoff already
+      // armed for this turn as that one chose (/handoff keep stays a keep).
+      const after = !String(args || '').trim() ? null : isKeepArg(args) ? 'none' : 'clear'
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, after)
       await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {

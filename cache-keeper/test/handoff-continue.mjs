@@ -327,14 +327,18 @@ assert.ok(s.log.some((l) => l.includes('already running')))
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
 
-// /handoff typed after the button: the last one wins, and it clears too
+// /handoff typed after the button: the last one wins, so a keep keeps the chat
 s = await boot('/w/band-then-typed', 'y1')
 await s.press('handoff')
 await s.fire('turn.start', { turnId: 't1' })
-await s.run('handoff', '')
+res = await s.run('handoff', 'keep')
+assert.match(res.text, /stays as it is/)
 assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
+assert.ok(!cleared(s))
+s = await boot('/w/band-then-typed-clear', 'y1b')
+res = await s.run('handoff', '')
+assert.match(res.text, /clears and continues/)
 
 // /session-handoff typed after the button (re-arms through the command hook): clears
 s = await boot('/w/band-then-skill', 'z1')
@@ -887,12 +891,12 @@ assert.ok(cleared(s))
 res = await s.fire('prompt.submit', { text: 'after the clear', origin: { kind: 'composer' }, wait: false })
 assert.ok(!(res && res.drop))
 
-// the skill called again in the same turn (another Stop hook blocked) keeps the
-// clear and the handoff the turn already wrote
+// the skill called again in the same turn (another Stop hook blocked), even
+// with "keep", keeps the clear and the handoff the turn already wrote
 s = await boot('/w/skill-twice', 'rc6', { working: true })
 await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
 await s.step('busy', body)
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 'busy' })
 await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
 assert.ok(cleared(s))
 assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
@@ -921,6 +925,17 @@ await s.fire('turn.start', { turnId: 't2' })
 await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
 assert.ok(cleared(s))
 assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
+
+// the same with /handoff keep queued behind busy: Claude's skill call without
+// args joins it as a keep, and neither handoff clears
+s = await boot('/w/keep-then-skill', 'rc7k', { working: true })
+await s.run('handoff', 'keep')
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(!cleared(s))
+await s.fire('turn.start', { turnId: 't2' })
+await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
+assert.ok(!cleared(s), s.log.join('|'))
 
 // Claude calls the skill with args "clear" (the 250k Stop hook asks for it):
 // the chat clears and continues with the handoff, as the band's button does
@@ -1523,9 +1538,14 @@ assert.ok(s.buttons.has('stop'))
 for (const [args, clears] of [['keep', false], ['', true]]) {
   timers = []
   let reentrant
+  const skillArgs = []
   reentrant = await boot('/w/keep-reentry', 'ke1', {
     timers,
-    onRun: async (c) => { if (c.command.includes('session-handoff')) await reentrant.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter) },
+    onRun: async (c) => {
+      if (!c.command.includes('session-handoff')) return
+      skillArgs.push(c.args)
+      await reentrant.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter)
+    },
   })
   await reentrant.run('handoff', args)
   await runTimers(timers)
@@ -1533,6 +1553,8 @@ for (const [args, clears] of [['keep', false], ['', true]]) {
   await runTimers(timers)
   assert.ok(!reentrant.log.some((l) => l.startsWith('toast:Could not start')), reentrant.log.join('|'))
   assert.equal(cleared(reentrant), clears, reentrant.log.join('|'))
+  // the skill gets the keep too: a hook that sees the run later reads it
+  assert.deepEqual(skillArgs, [args])
 }
 
 console.log('handoff-continue: ok')
