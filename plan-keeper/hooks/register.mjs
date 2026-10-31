@@ -156,7 +156,8 @@ export function folderMentions(text, cwd) {
     const rest = (same ? t : low).slice(at + c.length)
     if (NAME_CHAR.test(rest[0] || '') || (rest[0] === '.' && NAME_CHAR.test(rest[1] || ''))) continue
     const path = rest[0] === '/' && rest.slice(1).match(/^[^\s"'`<>|*?()[\]]+/)
-    const rel = path && path[0].replace(/[.,;:!?/]+$/, '')
+    // src/x.js:42 is src/x.js
+    const rel = path && path[0].replace(/[.,;:!?/]+$/, '').replace(/:\d+(?::\d+)?$/, '')
     if (rel) out.inside.add(rel)
     else if (!path) out.exact = true
   }
@@ -232,7 +233,7 @@ function namedPaths(text) {
 // item, in a plans folder or with "plan" in its name (no template or README)
 async function noteNamed($, text) {
   for (const path of namedPaths(text).reverse()) {
-    if (!isPlanPath(path) && !/plan/i.test(basename(path))) continue
+    if (!isPlanPath(path) && !/(?:^|[^a-z])plan/i.test(basename(path))) continue
     let body
     try {
       if (!(await $.fs.exists(path))) continue
@@ -248,6 +249,8 @@ async function noteNamed($, text) {
 // before it, so they tick nothing in it
 async function setPlan($, path, why) {
   const same = plan && key(plan.path) === key(path)
+  // The old plan gets what was done for it first
+  if (plan && !same) await tick($)
   plan = { path: slash(path), why }
   if (!same) used = new Set(completed().map(norm))
   await savePlan($)
@@ -324,17 +327,21 @@ function applyPlanUpdate(e) {
   if (tasks[e.start - 1]) tasks[e.start - 1].status = 'in_progress'
 }
 
-// A gh pr merge that merges now: not --auto, which only queues it, nor --help
-const MERGE = /(?:^|[;&|(]\s*|\n\s*)gh\s+pr\s+merge\b/
+// A gh pr merge that merges now: one command of the line (after any VAR=value),
+// not --auto, which only queues it, nor --help; quoted text is not a flag
+const MERGE = /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*gh\s+pr\s+merge\b([^;&|\n]*)/
 const NOT_MERGED = /\s--(?:auto|disable-auto|help)\b/
+const merges = (cmd) => {
+  const m = cmd.match(MERGE)
+  return !!m && !NOT_MERGED.test(m[1].replace(/"[^"]*"|'[^']*'/g, ''))
+}
 
 // What a call that answered tells: a plan written, a task list changed, a turn
 // wrapped up or a PR merged
 async function observe($, e, result) {
   await ready($)
   const t = e.tool
-  const cmd = String(e.command || '')
-  if (t === 'Bash' && MERGE.test(cmd) && !NOT_MERGED.test(cmd)) return tick($)
+  if (t === 'Bash' && merges(String(e.command || ''))) return tick($)
   if (e.agentId) return // a subagent's plan and task list are its own
   if ((t === 'Write' || t === 'Edit' || t === 'MultiEdit') && isPlanPath(e.file_path)) return setPlan($, e.file_path, 'written')
   if (t === 'ExitPlanMode' && result && result.filePath) return setPlan($, result.filePath, 'written')

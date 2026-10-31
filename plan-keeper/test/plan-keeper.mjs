@@ -263,6 +263,47 @@ test('a reload keeps the plan and the task list', async () => {
   const again = await boot(disk, { state })
   await again.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
   assert.equal(disk.text(path), '- [x] Build it\n')
+  // What was held is kept too: unticked by hand, the item stays so after another reload
+  await disk.fs.write(path, '- [ ] Build it\n')
+  const third = await boot(disk, { state })
+  await third.turnEnd()
+  assert.equal(disk.text(path), '- [ ] Build it\n')
+})
+
+test('a new plan gets none of the old steps, but the old plan gets them first', async () => {
+  const a = PLANS + '/a.md'
+  const b = PLANS + '/b.md'
+  const disk = makeFs({ [a]: '- [ ] Ship it\n', [b]: '- [ ] Ship it\n' })
+  const s = await boot(disk)
+  await s.call('Write', { file_path: a, content: 'x' })
+  await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed', activeForm: 'x' }] })
+  await s.call('Write', { file_path: b, content: 'x' })
+  await s.turnEnd()
+  assert.deepEqual([disk.text(a), disk.text(b)], ['- [x] Ship it\n', '- [ ] Ship it\n'])
+})
+
+test('a plan that cites a file by path:line names this folder; explanation.md is no plan', async () => {
+  const s = await boot(makeFs({ [PLANS + '/l.md']: ['Fix D:/work/app/src/x.js:42\n- [ ] One\n', T], [CWD + '/src/x.js']: '' }))
+  assert.match(await s.start(), /plans\/l\.md/)
+  const ex = CWD + '/docs/explanation.md'
+  const disk = makeFs({ [ex]: '- [ ] Tests added\n' })
+  const s2 = await boot(disk)
+  await s2.prompt('see docs/explanation.md')
+  await s2.call('TodoWrite', { todos: [{ content: 'Tests added', status: 'completed', activeForm: 'x' }] })
+  await s2.turnEnd()
+  assert.deepEqual(disk.writes, [])
+})
+
+test('a merge after VAR=value or with --auto only in its quoted subject still ticks', async () => {
+  for (const command of ['  GH_REPO=o/r gh pr merge 5 --merge', 'gh pr merge 5 --merge --subject "drop --auto flag"']) {
+    const path = PLANS + '/new.md'
+    const disk = makeFs({ [path]: '- [ ] Ship it\n' })
+    const s = await boot(disk)
+    await s.call('Write', { file_path: path, content: 'x' })
+    await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed', activeForm: 'x' }] })
+    await s.call('Bash', { command })
+    assert.equal(disk.text(path), '- [x] Ship it\n', command)
+  }
 })
 
 // ---- the matcher
