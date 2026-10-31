@@ -25,7 +25,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
    - Files created or modified this session. You know what you touched; don't grep to re-discover.
    - Memory files written or updated (`~/.claude/projects/<project>/memory/`).
    - Unresolved questions: things you asked the user that never got a clear answer, or things the user asked that got deflected.
-3. **Do NOT audit the filesystem.** This is synthesis of what happened in THIS session. No `git log`, no broad `Glob` sweeps. If you didn't touch it this session, it doesn't belong here. Cache Keeper reads the folder's git state (branch, status, last commits, stashes, worktrees) at the moment the handoff is sent and puts it in front of the handoff, so the fresh agent gets the live state from there, not from your recall.
+3. **Do NOT audit the filesystem.** This is synthesis of what happened in THIS session. No `git log`, no broad `Glob` sweeps. If you didn't touch it this session, it doesn't belong here. Git state (branch, dirty files, last commits) recalled at writing time is stale by the time it is read; where it can, Cache Keeper reads it live when the handoff is sent and puts it in front of the handoff.
 4. **Produce the output in chat.** Do not write a file. Do not update memory. Chat-only.
 
 ## Output template: use exactly this structure, every time
@@ -83,4 +83,4 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 - Adding a "what went well / what went poorly" retrospective. This isn't a retro.
 - Recommending next steps beyond the single "Pick up here" line. The next agent decides; you just hand off.
 - Putting your own idea in "Pick up here", or listing it under "User asked".
-- Writing git state (branch, dirty files, last commits) into the handoff from memory. Cache Keeper reads it live at pickup.
+- Writing git state (branch, dirty files, last commits) into the handoff from memory. Say what you changed, not what git would say.
