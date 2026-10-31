@@ -248,11 +248,11 @@ async function setPlan($, path, why) {
   await savePlan($)
 }
 
-// Not kept when $.state refuses: a reload forgets it
-const save = ($, ref, value) => $.state.set(ref, value).catch(() => {})
-const savePlan = ($) => save($, PLAN_REF, plan)
-const saveTasks = ($) => save($, TASKS_REF, tasks)
-const saveUsed = ($) => save($, USED_REF, [...used])
+// Not kept when $.state refuses: a reload forgets it. Each ref is passed as
+// written, since the validator lists the state a module reads and writes.
+const savePlan = ($) => $.state.set(PLAN_REF, plan).catch(() => {})
+const saveTasks = ($) => $.state.set(TASKS_REF, tasks).catch(() => {})
+const saveUsed = ($) => $.state.set(USED_REF, [...used]).catch(() => {})
 
 // A chat the session did not start here (/clear, /resume, /branch): the old
 // chat's task list is gone, and with it what that list held
@@ -275,8 +275,12 @@ async function init($) {
     // no folder: no plan is picked by folder
   }
   // undefined: nothing kept
-  const kept = (ref) => $.state.get(ref).then((r) => r.value, () => undefined)
-  const [p, t, u] = await Promise.all([kept(PLAN_REF), kept(TASKS_REF), kept(USED_REF)])
+  const kept = async (get) => {
+    try {
+      return (await get()).value
+    } catch {}
+  }
+  const [p, t, u] = await Promise.all([kept(() => $.state.get(PLAN_REF)), kept(() => $.state.get(TASKS_REF)), kept(() => $.state.get(USED_REF))])
   if (p && p.path) plan = p
   if (Array.isArray(t)) tasks = t
   if (Array.isArray(u)) used = new Set(u)
