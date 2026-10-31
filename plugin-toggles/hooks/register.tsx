@@ -76,32 +76,86 @@ const dirty = atom({ plugin: 'plugin-toggles', key: 'dirty' } as const, 0, {
 const tab = atom({ plugin: 'plugin-toggles', key: 'tab' } as const, 'plugins', {
   shape: 'tab-1',
 })
+// The name typed for a new profile, apart from the filter.
+const draft = atom({ plugin: 'plugin-toggles', key: 'name' } as const, '', {
+  shape: 'name-1',
+})
+
+// JSON as a Windows editor may save it, a byte order mark first.
+const parse = (text: string) => JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, any>
 
 async function readJson($: any, path: string) {
   try {
-    return JSON.parse(await $.fs.read(path)) as Record<string, any>
+    return parse(String(await $.fs.read(path)))
   } catch {
     return {} as Record<string, any>
   }
 }
 
-async function home($: any) {
-  return norm(String(await $.env.get('USERPROFILE')))
+// Claude Code's own folder, its settings.json and the global config, where
+// the engine finds them: under CLAUDE_CONFIG_DIR when set, else at home.
+async function paths($: any) {
+  const home = norm(String((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''))
+  const config = await $.env.get('CLAUDE_CONFIG_DIR')
+  const dir = config ? norm(String(config)).replace(/\/+$/, '') : `${home}/.claude`
+  return {
+    dir,
+    settings: `${dir}/settings.json`,
+    global: config ? `${dir}/.claude.json` : `${home}/.claude.json`,
+  }
+}
+
+// Rewrites a JSON file through `change`. One that is there but does not read
+// or parse is left whole and the press says so: written over, it would keep
+// only the key changed.
+async function rewrite($: any, path: string, change: (json: Record<string, any>) => void) {
+  let json: Record<string, any>
+  try {
+    json = (await $.fs.exists(path)) ? parse(String(await $.fs.read(path))) : {}
+    if (json === null || typeof json !== 'object' || Array.isArray(json)) throw new Error('not an object')
+  } catch {
+    $.ui.toast(`Could not read ${path}, so nothing was changed. Fix the file and try again.`)
+    return false
+  }
+  change(json)
+  await $.fs.write(path, JSON.stringify(json, null, 2) + NL)
+  return true
+}
+
+// The sources the engine ranks above settings.json, lowest first, and where
+// each is set.
+const ABOVE = ['project', 'local', 'flag', 'policy'] as const
+const ABOVE_SAYS: Record<string, string> = {
+  project: "the project's .claude/settings.json",
+  local: "the project's .claude/settings.local.json",
+  flag: '--settings',
+  policy: 'managed settings',
+}
+
+async function aboveNow($: any) {
+  return Promise.all(
+    ABOVE.map(async source => ((await $.settings.read({ source })) ?? {}) as Record<string, any>),
+  )
 }
 
 // Where the switches stand now. The engine's settings pick up a write to
 // settings.json about a second late, so the file the switches write is read
 // as it is, then the sources ranked above it as the engine has them.
 async function switchesNow($: any) {
-  const own = await readJson($, `${await home($)}/.claude/settings.json`)
-  const above = await Promise.all(
-    (['project', 'local', 'flag', 'policy'] as const).map(
-      async source => ((await $.settings.read({ source })) ?? {}) as Record<string, any>,
-    ),
-  )
+  const own = await readJson($, (await paths($)).settings)
+  const above = await aboveNow($)
   const merged = (key: string) =>
     Object.assign({}, own[key], ...above.map(s => s[key])) as Record<string, any>
   return { enabledPlugins: merged('enabledPlugins'), skillOverrides: merged('skillOverrides') }
+}
+
+// The highest source above settings.json that sets `name` under `key`: a
+// switch written to settings.json would not move it.
+async function outranking($: any, key: string, name: string) {
+  const above = await aboveNow($)
+  for (let i = ABOVE.length - 1; i >= 0; i--)
+    if (above[i]?.[key]?.[name] !== undefined) return ABOVE[i]
+  return undefined
 }
 
 
@@ -162,7 +216,7 @@ const infoCache = new Map<string, Info | null>()
 
 async function pluginInfo($: any, id: string): Promise<Info | null> {
   if (infoCache.has(id)) return infoCache.get(id) ?? null
-  const reg = await readJson($, `${await home($)}/.claude/plugins/installed_plugins.json`)
+  const reg = await readJson($, `${(await paths($)).dir}/plugins/installed_plugins.json`)
   const entry = (reg.plugins?.[id] ?? [])[0]
   if (!entry?.installPath) {
     infoCache.set(id, null)
@@ -532,62 +586,71 @@ async function applyNow($: any) {
     await update($, dirty, () => 0)
     $.ui.toast('Plugins and skills reloaded.')
   } catch {
-    $.ui.toast('Could not reload automatically. Run /reload-plugins.')
+    $.ui.toast('Could not reload here. The changes take effect in a new chat.')
   }
 }
 
+async function reloadable($: any) {
+  return (await $.command.list()).some((c: { name: string }) => c.name === 'reload-plugins')
+}
+
 async function togglePlugin($: any, id: string, isOn: boolean) {
-  const path = `${await home($)}/.claude/settings.json`
-  const json = await readJson($, path)
-  json.enabledPlugins = { ...(json.enabledPlugins ?? {}), [id]: isOn }
-  await $.fs.write(path, JSON.stringify(json, null, 2) + '\n')
+  const wrote = await rewrite($, (await paths($)).settings, json => {
+    json.enabledPlugins = { ...(json.enabledPlugins ?? {}), [id]: isOn }
+  })
+  if (!wrote) return
   await markDirty($)
   await update($, rev, n => n + 1)
 }
 
 async function setSkillMode($: any, name: string, mode: Mode) {
-  const path = `${await home($)}/.claude/settings.json`
-  const json = await readJson($, path)
-  const next = { ...(json.skillOverrides ?? {}) }
-  if (mode === 'on') delete next[name]
-  else next[name] = mode
-  json.skillOverrides = next
-  await $.fs.write(path, JSON.stringify(json, null, 2) + '\n')
+  const wrote = await rewrite($, (await paths($)).settings, json => {
+    const next = { ...(json.skillOverrides ?? {}) }
+    if (mode === 'on') delete next[name]
+    else next[name] = mode
+    json.skillOverrides = next
+  })
+  if (!wrote) return
   await markDirty($)
   await update($, rev, n => n + 1)
 }
 
+// The engine keys a project in ~/.claude.json by where its session started,
+// which a shell cd does not move.
+async function projectKey($: any) {
+  return norm(String(await $.session.root()))
+}
+
 async function toggleMcp($: any, name: string, isOn: boolean) {
-  const path = `${await home($)}/.claude.json`
-  const json = await readJson($, path)
-  const cwd = norm(String(await $.session.cwd()))
-  const projects = json.projects ?? {}
-  const project = projects[cwd] ?? {}
-  const off = new Set<string>(project.disabledMcpServers ?? [])
-  if (isOn) off.delete(name)
-  else off.add(name)
-  projects[cwd] = { ...project, disabledMcpServers: [...off] }
-  json.projects = projects
-  await $.fs.write(path, JSON.stringify(json, null, 2) + '\n')
+  const key = await projectKey($)
+  await rewrite($, (await paths($)).global, json => {
+    const projects = json.projects ?? {}
+    const project = projects[key] ?? {}
+    const off = new Set<string>(project.disabledMcpServers ?? [])
+    if (isOn) off.delete(name)
+    else off.add(name)
+    projects[key] = { ...project, disabledMcpServers: [...off] }
+    json.projects = projects
+  })
   await update($, rev, n => n + 1)
 }
 
 async function profilesPath($: any) {
-  return `${await home($)}/.claude/mods-data/plugin-toggles-profiles.json`
+  return `${(await paths($)).dir}/mods-data/plugin-toggles-profiles.json`
 }
 
 async function saveProfile($: any, name: string) {
   const clean = name.trim()
   if (clean === '') return
-  const cur = await readJson($, `${await home($)}/.claude/settings.json`)
-  const path = await profilesPath($)
-  const all = await readJson($, path)
-  all[clean] = {
-    plugins: cur.enabledPlugins ?? {},
-    skills: cur.skillOverrides ?? {},
-  }
-  await $.fs.write(path, JSON.stringify(all, null, 2) + NL)
-  await update($, query, () => '')
+  const cur = await readJson($, (await paths($)).settings)
+  const wrote = await rewrite($, await profilesPath($), all => {
+    all[clean] = {
+      plugins: cur.enabledPlugins ?? {},
+      skills: cur.skillOverrides ?? {},
+    }
+  })
+  if (!wrote) return
+  await update($, draft, () => '')
   await update($, rev, n => n + 1)
 }
 
@@ -595,28 +658,32 @@ async function applyProfile($: any, name: string) {
   const all = await readJson($, await profilesPath($))
   const picked = all[name]
   if (!picked) return
-  const path = `${await home($)}/.claude/settings.json`
-  const json = await readJson($, path)
-  json.enabledPlugins = { ...(json.enabledPlugins ?? {}), ...picked.plugins }
-  json.skillOverrides = picked.skills ?? {}
-  await $.fs.write(path, JSON.stringify(json, null, 2) + NL)
+  const wrote = await rewrite($, (await paths($)).settings, json => {
+    json.enabledPlugins = { ...(json.enabledPlugins ?? {}), ...picked.plugins }
+    json.skillOverrides = picked.skills ?? {}
+  })
+  if (!wrote) return
   await markDirty($)
-  await applyNow($)
+  if (await reloadable($)) await applyNow($)
   await update($, rev, n => n + 1)
 }
 
 async function deleteProfile($: any, name: string) {
-  const path = await profilesPath($)
-  const all = await readJson($, path)
-  delete all[name]
-  await $.fs.write(path, JSON.stringify(all, null, 2) + NL)
+  await rewrite($, await profilesPath($), all => {
+    delete all[name]
+  })
   await update($, rev, n => n + 1)
 }
 
 async function setMode($: any, kind: string, name: string, mode: Mode) {
+  if (kind === 'mcp') return toggleMcp($, name, mode === 'on')
+  const source = await outranking($, kind === 'plugins' ? 'enabledPlugins' : 'skillOverrides', name)
+  if (source !== undefined) {
+    $.ui.toast(`${name} is set in ${ABOVE_SAYS[source]}, which outranks settings.json. Change it there.`)
+    return
+  }
   if (kind === 'plugins') await togglePlugin($, name, mode === 'on')
-  else if (kind === 'skills') await setSkillMode($, name, mode)
-  else await toggleMcp($, name, mode === 'on')
+  else await setSkillMode($, name, mode)
 }
 
 // From a plugin's skill to the plugin that switches it.
@@ -688,7 +755,7 @@ export const register: Register = on => {
     const now = await loadedNow($)
     if (current === 'profiles') {
       const all = (await readJson($, await profilesPath($))) as Record<string, any>
-      const draft = await read($, query)
+      const named = await read($, draft)
       const names = Object.keys(all).sort()
       const weights = await Promise.all(
         names.map(async n => {
@@ -715,8 +782,8 @@ export const register: Register = on => {
             <Input
               key="name"
               placeholder="Profile name, e.g. Work or Minimal"
-              value={draft}
-              onInput={(v: string) => update($, query, () => v)}
+              value={named}
+              onInput={(v: string) => update($, draft, () => v)}
               onSubmit={(v: string) => saveProfile($, v)}
             />
           )}
@@ -724,7 +791,7 @@ export const register: Register = on => {
             key="save"
             label="Save current as profile"
             variant="primary"
-            onPress={() => saveProfile($, draft)}
+            onPress={() => saveProfile($, named)}
           />
           <Text bold>Saved profiles</Text>
           {names.length === 0 && (
@@ -795,8 +862,14 @@ export const register: Register = on => {
       const overrides = (settings.skillOverrides ?? {}) as Record<string, string>
       const modeOf = (name: string): Mode =>
         MODES.find(m => m === overrides[name]) ?? 'on'
+      // A plugin's commands come in the list with its skills. The engine's
+      // count names the skills alone, so where there is one, a plugin entry it
+      // does not name is a command and gets no row.
       const listed = commands.filter(
-        c => (c.source === 'user' || c.source === 'plugin') && c.name !== 'toggles',
+        c =>
+          c.name !== 'toggles' &&
+          (c.source === 'user' ||
+            (c.source === 'plugin' && (now === null || now.skills.has(c.name)))),
       )
       const seen = new Set(listed.map(c => c.name))
       const tag = (n: number, exact: boolean) => `${exact ? '' : '~'}${fmt(n)}`
@@ -870,9 +943,8 @@ export const register: Register = on => {
         warn = true
       }
     } else {
-      const cwd = norm(String(await $.session.cwd()))
-      const user = await readJson($, `${await home($)}/.claude.json`)
-      const project = user.projects?.[cwd] ?? {}
+      const user = await readJson($, (await paths($)).global)
+      const project = user.projects?.[await projectKey($)] ?? {}
       const off = new Set<string>(project.disabledMcpServers ?? [])
       const names = new Set<string>([
         ...Object.keys(user.mcpServers ?? {}),
@@ -925,7 +997,8 @@ export const register: Register = on => {
 
     // Rows keep their place when switched, heaviest first: the user's own
     // skills, which have the full switch, above those plugins bring.
-    const needle = (await read($, query)).toLowerCase()
+    const typed = await read($, query)
+    const needle = typed.toLowerCase()
     const shown = rows.filter(r => r.name.toLowerCase().includes(needle))
     const own = shown.filter(r => r.plugin === undefined).sort(heavy).slice(0, SHOWN)
     const borrowed = shown
@@ -947,7 +1020,7 @@ export const register: Register = on => {
           <Input
             key="q"
             placeholder="Filter by name"
-            value={needle}
+            value={typed}
             onInput={(v: string) => update($, query, () => v)}
             onSubmit={(v: string) => update($, query, () => v)}
           />

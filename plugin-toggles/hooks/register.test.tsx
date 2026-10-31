@@ -15,6 +15,42 @@ const PANE = {
   },
 } as const
 
+// Answers env.get from `vars`, every other variable unset.
+const env =
+  (vars: Record<string, string>) =>
+  (_: unknown, e: any): any => ({ value: vars[e.name] })
+
+// A file system holding `files` by path, spelled with forward slashes as the
+// kit's own are not; writes land in it.
+const disk = (on: any, files: Record<string, string>) => {
+  const at = (e: any) => String(e.path).split('\\').join('/')
+  on('fs.exists', (_: unknown, e: any): any => ({ value: at(e) in files }))
+  on('fs.read', (_: unknown, e: any): any => {
+    if (!(at(e) in files)) throw new Error(`ENOENT ${at(e)}`)
+    return { value: files[at(e)] }
+  })
+  on('fs.write', (_: unknown, e: any): any => {
+    files[at(e)] = e.text
+    return { value: undefined }
+  })
+  return files
+}
+
+// The toasts shown, in order.
+const toasts = (on: any) => {
+  const shown: string[] = []
+  on('ui.toast', (_: unknown, e: any): any => {
+    shown.push(e.text)
+    return { value: undefined }
+  })
+  return shown
+}
+
+const SETTINGS = 'C:/Users/x/.claude/settings.json'
+const GLOBAL = 'C:/Users/x/.claude.json'
+const PROFILES = 'C:/Users/x/.claude/mods-data/plugin-toggles-profiles.json'
+const GREG = { name: 'greg', source: 'user', description: 'Makes photos' }
+
 // Answers state.get with one stored value and every other key unset.
 const stored =
   (key: string, shape: string, value: unknown) =>
@@ -79,7 +115,7 @@ const fooDirs = (_: unknown, e: unknown): any => ({
 test('profiles tab offers saving and lists a saved profile with its cost', async ($, on) => {
   on('state.get', stored('tab', 'tab-1', 'profiles'))
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('fs.read', () => ({
     value: JSON.stringify({
       Lisa: { plugins: { 'a@b': true, 'c@d': false }, skills: { s: 'off', t: 'name-only' } },
@@ -100,7 +136,7 @@ test('profiles tab offers saving and lists a saved profile with its cost', async
 test('an enabled plugin is lit and sized by the engine count, as a bar on desktop and blocks on the terminal', async ($, on) => {
   on('state.get', (): any => ({ value: {} }))
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': true } } }))
   on(
     'session.usage',
@@ -134,7 +170,7 @@ test('an enabled plugin is lit and sized by the engine count, as a bar on deskto
 test('an off plugin has its switch at Off and a cost estimated from its files', async ($, on) => {
   on('state.get', (): any => ({ value: {} }))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': false } } }))
   on('fs.read', fooFiles)
   on('fs.list', fooDirs)
@@ -151,8 +187,9 @@ test('pressing On on an off plugin writes it on to settings.json', async ($, on)
   let written = ''
   on('state.get', (): any => ({ value: {} }))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
-  on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': false } } }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  on('fs.exists', () => ({ value: true }))
   on('fs.read', () => ({ value: JSON.stringify({ enabledPlugins: { 'foo@bar': false } }) }))
   on('fs.write', (_, e): any => {
     written = e.text
@@ -170,7 +207,7 @@ test('pressing On on an off plugin writes it on to settings.json', async ($, on)
 test('plugins tab shows pending banner with Apply now after a change', async ($, on) => {
   on('state.get', stored('dirty', 'dirty-1', 2))
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': false } } }))
 
   const ui = await $.ui.mount(PANE)
@@ -182,7 +219,7 @@ test('plugins tab shows pending banner with Apply now after a change', async ($,
 test('pending banner hides Apply now when reload-plugins is unavailable', async ($, on) => {
   on('state.get', stored('dirty', 'dirty-1', 1))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': false } } }))
 
   const ui = await $.ui.mount(PANE)
@@ -194,7 +231,7 @@ test('pending banner hides Apply now when reload-plugins is unavailable', async 
 test('a pending plugin change shows what is loaded now against after a reload', async ($, on) => {
   on('state.get', stored('dirty', 'dirty-1', 1))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': false } } }))
   on('session.usage', usage(fooSkills('foo', 1200)))
 
@@ -206,7 +243,7 @@ test('a pending plugin change shows what is loaded now against after a reload', 
 test('pointing at a row reveals what the plugin adds in the inspector', async ($, on) => {
   on('state.get', (): any => ({ value: {} }))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { enabledPlugins: { 'foo@bar': true } } }))
   on('fs.read', fooFiles)
   on('fs.list', fooDirs)
@@ -230,7 +267,7 @@ test('a plugin skill leads to its plugin instead of a switch, and sizes the list
       { name: 'brainstorm', source: 'plugin', plugin: 'superpowers', description: 'Explore ideas before building' },
     ],
   }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: {} }))
   on(
     'session.usage',
@@ -267,7 +304,7 @@ test('a plugin skill leads to its plugin instead of a switch, and sizes the list
 test('a skill of your own gets a four-way switch and costs what its position does', async ($, on) => {
   on('state.get', stored('tab', 'tab-1', 'skills'))
   on('command.list', () => ({ value: [{ name: 'greg', source: 'user', description: 'Makes photos' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { skillOverrides: { greg: 'name-only' } } }))
 
   const ui = await $.ui.mount(PANE)
@@ -287,7 +324,7 @@ test('a skill of your own gets a four-way switch and costs what its position doe
 test('a count taken while a skill was name-only does not pass for its full cost', async ($, on) => {
   on('state.get', stored('tab', 'tab-1', 'skills'))
   on('command.list', () => ({ value: [{ name: 'greg', source: 'user', description: 'Makes photos' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: {} }))
   on(
     'session.usage',
@@ -312,8 +349,9 @@ test('a switch position is written to skillOverrides, and On clears the entry', 
   let written = ''
   on('state.get', stored('tab', 'tab-1', 'skills'))
   on('command.list', () => ({ value: [{ name: 'greg', source: 'user', description: 'Makes photos' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
-  on('settings.read', () => ({ value: { skillOverrides: { greg: 'name-only' } } }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  on('fs.exists', () => ({ value: true }))
   on('fs.read', () => ({ value: JSON.stringify({ skillOverrides: { greg: 'name-only', other: 'off' } }) }))
   on('fs.write', (_, e): any => {
     written = e.text
@@ -332,6 +370,7 @@ test('a switch position is written to skillOverrides, and On clears the entry', 
 // snapshot still holds `stale`: it picks a write up about a second late.
 const lagging = (on: any, initial: Record<string, unknown>, stale: Record<string, unknown>) => {
   let file = JSON.stringify(initial)
+  on('fs.exists', (): any => ({ value: true }))
   on('fs.read', (): any => ({ value: file }))
   on('fs.write', (_: unknown, e: any): any => {
     file = e.text
@@ -342,7 +381,7 @@ const lagging = (on: any, initial: Record<string, unknown>, stale: Record<string
 
 test('a pressed skill switch moves at once, before the engine rereads settings', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'greg', source: 'user', description: 'Makes photos' }] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   lagging(on, { skillOverrides: { greg: 'name-only' } }, { skillOverrides: { greg: 'name-only' } })
 
   const ui = await $.ui.mount(PANE)
@@ -358,7 +397,7 @@ test('a pressed skill switch moves at once, before the engine rereads settings',
 
 test('a pressed plugin switch moves at once, before the engine rereads settings', async ($, on) => {
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   lagging(on, { enabledPlugins: { 'foo@bar': true } }, { enabledPlugins: { 'foo@bar': true } })
 
   const ui = await $.ui.mount(PANE)
@@ -370,7 +409,7 @@ test('a pressed plugin switch moves at once, before the engine rereads settings'
 
 test('a project setting outranks settings.json, as the engine merges them', async ($, on) => {
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('fs.read', () => ({ value: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) }))
   on('settings.read', (_, e: any): any => ({
     value: e?.source === 'project' ? { enabledPlugins: { 'foo@bar': false } } : {},
@@ -384,7 +423,7 @@ test('a project setting outranks settings.json, as the engine merges them', asyn
 test('a skill switched off and gone from the command list keeps its row', async ($, on) => {
   on('state.get', stored('tab', 'tab-1', 'skills'))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('settings.read', () => ({ value: { skillOverrides: { ghost: 'off', back: 'on' } } }))
 
   const ui = await $.ui.mount(PANE)
@@ -397,8 +436,8 @@ test('a skill switched off and gone from the command list keeps its row', async 
 test('mcp tab sizes a server by its loaded tool schemas only', async ($, on) => {
   on('state.get', stored('tab', 'tab-1', 'mcp'))
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', () => ({ value: 'C:/Users/x' }))
-  on('session.cwd', () => ({ value: 'C:/proj' }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('session.root', () => ({ value: 'C:/proj' }) as any)
   on('settings.read', () => ({ value: {} }))
   on('fs.read', () => ({ value: JSON.stringify({ mcpServers: { linear: { url: 'https://x' } } }) }))
   on(
@@ -417,5 +456,287 @@ test('mcp tab sizes a server by its loaded tool schemas only', async ($, on) => 
   expect(await ui.findAll({ type: 'Text', text: /^900$/ })).toHaveLength(2)
   expect(await ui.find({ type: 'Text', text: /^SERVERS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^https:\/\/x$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+for (const [what, broken] of [
+  ['does not parse', '{ "permissions": { "allow": ["Bash"] }, }'],
+  ['holds no object', '[]'],
+] as const)
+  test(`a settings.json that ${what} is left whole, and the press says so`, async ($, on) => {
+    on('command.list', () => ({ value: [GREG] }) as any)
+    on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+    on('settings.read', (): any => ({ value: {} }))
+    const files = disk(on, { [SETTINGS]: broken })
+    const shown = toasts(on)
+
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'tab-skills' })
+    await ui.press({ key: 'skills:greg:off' })
+    expect(files[SETTINGS]).toBe(broken)
+    expect(shown.join(' ')).toMatch(/settings\.json/)
+    expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
+    await ui.unmount()
+  })
+
+test('a ~/.claude.json that fails to read mid-press is left whole', async ($, on) => {
+  const config = JSON.stringify({ oauthAccount: { id: 1 }, mcpServers: { linear: { url: 'https://x' } } })
+  let reads = 0
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('session.root', () => ({ value: 'C:/proj' }) as any)
+  on('settings.read', (): any => ({ value: {} }))
+  on('state.get', stored('tab', 'tab-1', 'mcp'))
+  on('fs.exists', (): any => ({ value: true }))
+  on('fs.read', (_: unknown, e: any): any => {
+    if (String(e.path).split('\\').join('/') !== GLOBAL) throw new Error('ENOENT')
+    // The engine is writing it as the press reads it.
+    if (++reads > 1) return { value: config.slice(0, 20) }
+    return { value: config }
+  })
+  let written = ''
+  on('fs.write', (_: unknown, e: any): any => {
+    written = e.text
+    return { value: undefined }
+  })
+  toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'mcp:linear:off' })
+  expect(written).toBe('')
+  await ui.unmount()
+})
+
+test('a settings.json with a byte order mark keeps its other keys', async ($, on) => {
+  on('command.list', () => ({ value: [GREG] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  const files = disk(on, { [SETTINGS]: '\uFEFF{ "model": "opus", "skillOverrides": { "greg": "name-only" } }' })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  expect(await at(ui, 'skills:greg', ['on', 'name-only', 'user-invocable-only', 'off'])).toEqual(['name-only'])
+  await ui.press({ key: 'skills:greg:off' })
+  expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({ model: 'opus', skillOverrides: { greg: 'off' } })
+  await ui.unmount()
+})
+
+test('without USERPROFILE the files are found under HOME', async ($, on) => {
+  on('command.list', () => ({ value: [GREG] }) as any)
+  on('env.get', env({ HOME: '/home/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  const files = disk(on, {})
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  await ui.press({ key: 'skills:greg:off' })
+  // On Windows the kit puts a path from the root on the current drive.
+  const written = Object.keys(files)
+  expect(written).toHaveLength(1)
+  expect(written[0]).toMatch(/^([A-Za-z]:)?\/home\/x\/\.claude\/settings\.json$/)
+  expect(JSON.parse(files[written[0] ?? ''] ?? '{}').skillOverrides).toEqual({ greg: 'off' })
+  await ui.unmount()
+})
+
+test('CLAUDE_CONFIG_DIR moves settings.json and ~/.claude.json with it', async ($, on) => {
+  on('command.list', () => ({ value: [GREG] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x', CLAUDE_CONFIG_DIR: 'C:\\cfg' }))
+  on('session.root', () => ({ value: 'C:/proj' }) as any)
+  on('settings.read', (): any => ({ value: {} }))
+  const files = disk(on, {
+    'C:/cfg/settings.json': '{}',
+    'C:/cfg/.claude.json': JSON.stringify({ mcpServers: { linear: { url: 'https://x' } } }),
+  })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  await ui.press({ key: 'skills:greg:off' })
+  await ui.press({ key: 'tab-mcp' })
+  await ui.press({ key: 'mcp:linear:off' })
+  expect(Object.keys(files).sort()).toEqual(['C:/cfg/.claude.json', 'C:/cfg/settings.json'])
+  expect(JSON.parse(files['C:/cfg/settings.json'] ?? '{}').skillOverrides).toEqual({ greg: 'off' })
+  expect(JSON.parse(files['C:/cfg/.claude.json'] ?? '{}').projects['C:/proj'].disabledMcpServers).toEqual(['linear'])
+  await ui.unmount()
+})
+
+test("a plugin's command that the skill count does not name gets no skill row", async ($, on) => {
+  on('state.get', stored('tab', 'tab-1', 'skills'))
+  on('command.list', () => ({
+    value: [
+      { name: 'superpowers:brainstorming', source: 'plugin', plugin: 'superpowers', description: 'Explore ideas' },
+      { name: 'cache', source: 'plugin', plugin: 'cache-keeper', description: 'Cache status' },
+      { name: 'jev:calibrate', source: 'plugin', plugin: 'jev', description: 'Calibrate' },
+    ],
+  }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  on(
+    'session.usage',
+    usage({
+      skills: {
+        totalSkills: 1,
+        includedSkills: 1,
+        tokens: 30,
+        skillFrontmatter: [
+          { name: 'superpowers:brainstorming', source: 'plugin', pluginName: 'superpowers', tokens: 30 },
+        ],
+      },
+    }),
+  )
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:superpowers:brainstorming:plugin' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:cache:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'skills:jev:calibrate:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the MCP tab keys the project by where the session started, whatever a shell cd did', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('session.root', () => ({ value: 'C:\\proj' }) as any)
+  on('session.cwd', () => ({ value: 'C:\\proj\\sub' }) as any)
+  on('settings.read', (): any => ({ value: {} }))
+  const files = disk(on, {
+    [GLOBAL]: JSON.stringify({ projects: { 'C:/proj': { mcpServers: { local: { command: 'srv' } } } } }),
+  })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await at(ui, 'mcp:local', ['on', 'off'])).toEqual(['on'])
+  await ui.press({ key: 'mcp:local:off' })
+  expect(JSON.parse(files[GLOBAL] ?? '{}').projects['C:/proj'].disabledMcpServers).toEqual(['local'])
+  expect(await at(ui, 'mcp:local', ['on', 'off'])).toEqual(['off'])
+  await ui.press({ key: 'mcp:local:on' })
+  expect(JSON.parse(files[GLOBAL] ?? '{}').projects['C:/proj'].disabledMcpServers).toEqual([])
+  await ui.unmount()
+})
+
+test('the profile name and the filter are kept apart, and the filter keeps its capitals', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-profiles' })
+  await ui.input({ key: 'name', text: 'Work', kind: 'change' })
+  await ui.press({ key: 'tab-plugins' })
+  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:on' })).toBeTruthy()
+  await ui.input({ key: 'q', text: 'FOO', kind: 'change' })
+  expect((await ui.find({ type: 'Input', key: 'q' }))?.props.value).toBe('FOO')
+  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:on' })).toBeTruthy()
+  await ui.press({ key: 'tab-profiles' })
+  expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('Work')
+  await ui.unmount()
+})
+
+test('a switch a higher source sets is not written, and the press says where it is set', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (_, e: any): any => ({
+    value: e?.source === 'project' ? { enabledPlugins: { 'foo@bar': false } } : {},
+  }))
+  const before = JSON.stringify({ enabledPlugins: { 'foo@bar': true } })
+  const files = disk(on, { [SETTINGS]: before })
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:on' })
+  expect(files[SETTINGS]).toBe(before)
+  expect(shown.join(' ')).toMatch(/project/)
+  expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('local settings outrank project settings', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (_, e: any): any => ({
+    value:
+      e?.source === 'project'
+        ? { enabledPlugins: { 'foo@bar': true } }
+        : e?.source === 'local'
+          ? { enabledPlugins: { 'foo@bar': false } }
+          : {},
+  }))
+  disk(on, { [SETTINGS]: '{}' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await at(ui, 'plugins:foo@bar', ['on', 'off'])).toEqual(['off'])
+  await ui.unmount()
+})
+
+test('saving a profile keeps the switches, and applying it sets every one exactly so', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  on('command.run', (): any => ({ value: { text: '' } }))
+  const files = disk(on, {
+    [SETTINGS]: JSON.stringify({ model: 'opus', enabledPlugins: { 'a@b': true }, skillOverrides: { s: 'off' } }),
+  })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-profiles' })
+  await ui.input({ key: 'name', text: 'Work', kind: 'change' })
+  await ui.press({ key: 'save' })
+  expect(JSON.parse(files[PROFILES] ?? '{}')).toEqual({
+    Work: { plugins: { 'a@b': true }, skills: { s: 'off' } },
+  })
+  expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('')
+  files[SETTINGS] = JSON.stringify({ model: 'opus', enabledPlugins: { 'a@b': false, 'c@d': true }, skillOverrides: { t: 'name-only' } })
+  await ui.press({ key: 'a-Work' })
+  expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({
+    model: 'opus',
+    enabledPlugins: { 'a@b': true, 'c@d': true },
+    skillOverrides: { s: 'off' },
+  })
+  await ui.unmount()
+})
+
+test('Apply now reloads plugins and clears the pending count', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  const ran: string[] = []
+  on('command.run', (_: unknown, e: any): any => {
+    ran.push(e.command)
+    return { value: { text: '' } }
+  })
+  disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) })
+  toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:off' })
+  expect(await ui.find({ type: 'Text', text: /1 change saved/ })).toBeTruthy()
+  await ui.press({ key: 'apply' })
+  expect(ran).toEqual(['reload-plugins'])
+  expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('without reload-plugins an applied profile waits for a new chat', async ($, on) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', (): any => ({ value: {} }))
+  const ran: string[] = []
+  on('command.run', (_: unknown, e: any): any => {
+    ran.push(e.command)
+    return { value: { text: '' } }
+  })
+  disk(on, {
+    [SETTINGS]: '{}',
+    [PROFILES]: JSON.stringify({ Work: { plugins: { 'a@b': true }, skills: {} } }),
+  })
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-profiles' })
+  await ui.press({ key: 'a-Work' })
+  expect(ran).toEqual([])
+  expect(shown.join(' ')).not.toMatch(/reload-plugins/)
+  expect(await ui.find({ type: 'Text', text: /take effect in a new session/ })).toBeTruthy()
   await ui.unmount()
 })
