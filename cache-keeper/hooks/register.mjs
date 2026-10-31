@@ -472,9 +472,49 @@ async function captureHandoff($, e) {
   $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
 }
 
-function continuationPrompt() {
+// The live state block goes in front of the handoff: what git says about the
+// folder at the moment of the send, so a handoff that aged between its writing
+// and the pickup (Claude kept working, another chat committed, a stash was
+// dropped) loses to the truth instead of being taken for it.
+const LIVE_LINES = 30
+const LIVE_TIMEOUT = 5000
+const LIVE_GIT = [
+  ['status --short', 'clean'],
+  ['log -3 --oneline', 'none'],
+  ['stash list', 'none'],
+  ['worktree list', 'none'],
+]
+
+// One git command in the folder; '' past the first lines. Never throws.
+async function gitLines($, args) {
+  try {
+    const r = await $.process.run(['git', ...args.split(' ')], { cwd: S.cwd, timeoutMs: LIVE_TIMEOUT })
+    if (r.exitCode !== 0) return { fail: clip(String(r.stderr || '').split('\n')[0] || `exit ${r.exitCode}`, 80) }
+    const lines = String(r.stdout || '').split(/\r?\n/).filter((l) => l.length)
+    const cut = lines.length > LIVE_LINES ? [...lines.slice(0, LIVE_LINES), `… +${lines.length - LIVE_LINES} more lines`] : lines
+    return { lines: cut }
+  } catch (err) {
+    return { fail: clip(String((err && err.message) || err), 80) }
+  }
+}
+
+// '' on a host that runs no commands (gitLines catches the refusal), outside a
+// git repository, or when git does not answer: the handoff then goes alone
+async function liveState($) {
+  const [branch, ...rest] = await Promise.all([gitLines($, 'rev-parse --abbrev-ref HEAD'), ...LIVE_GIT.map(([args]) => gitLines($, args))])
+  if (branch.fail || !branch.lines || !branch.lines.length) return ''
+  const age = H.at ? `Handoff written ${minutes(now - H.at)} ago.\n` : ''
+  let out = `Live state at pickup, read from git just now. Where the handoff below disagrees, this wins.\n${age}\`\`\`\nbranch: ${branch.lines[0]}\n`
+  LIVE_GIT.forEach(([args, empty], i) => {
+    const r = rest[i]
+    out += r.fail ? `${args}: (unavailable: ${r.fail})\n` : r.lines.length ? `${args}:\n${r.lines.join('\n')}\n` : `${args}: (${empty})\n`
+  })
+  return out + '```\n\n'
+}
+
+async function continuationPrompt($) {
   const where = H.path ? ` (saved at ${H.path})` : ''
-  return `Handoff from my previous session${where}:\n\n${H.text}`
+  return `Handoff from my previous session${where}:\n\n${await liveState($)}${H.text}`
 }
 
 // Whether there is a handoff to send now; toasts why not. A handoff loaded from
@@ -531,7 +571,8 @@ async function clearAndContinue($) {
 // clearAndContinue's finally.
 async function clearAndSend($) {
   if (!(await handoffReady($))) return
-  const text = continuationPrompt()
+  setPhase($, 'reading git')
+  const text = await continuationPrompt($)
   const path = H.path
   const fid = H.fid
   const again = REVIVE_ORDER.filter((k) => revive.has(k)).map((k) => revive.get(k))

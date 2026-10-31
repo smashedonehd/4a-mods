@@ -18,7 +18,8 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
 // onRun: called with each command the module runs, before it is logged
 // select: the host has Select, as the desktop app and the terminal do
 // skill: the session has the /session-handoff skill
-async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true } = {}) {
+// process: the host runs commands ($.process.run), as the CLI does; absent otherwise
+async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true, process } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -52,6 +53,7 @@ async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, 
       log: () => {},
       resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p), ...(select && { Select: (p) => (selects.set(p.key, p), p) }) }),
     },
+    ...(process && { process }),
   }
   const buttons = new Map() // key -> props of the band's buttons at the last render
   const selects = new Map() // key -> props of the band's Selects at the last render
@@ -1562,5 +1564,86 @@ await runTimers(timers)
 assert.ok(!takeover.log.some((l) => l.startsWith('toast:Could not start')), takeover.log.join('|'))
 await takeover.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.equal(latestText('ke2'), body)
+
+// Live state at pickup: git read in the folder just before the send goes in
+// front of the handoff, with the handoff's age, so a stale handoff loses to it
+const gitOut = (lines) => ({ exitCode: 0, stdout: lines, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
+let gitCalls = []
+const gitDirty = async (argv, init) => {
+  gitCalls.push({ argv: argv.join(' '), cwd: init && init.cwd })
+  const out = {
+    'git rev-parse --abbrev-ref HEAD': 'feat/x\n',
+    'git status --short': ' M a.js\n?? b.js\n',
+    'git log -3 --oneline': 'abc1 one\nabc2 two\n',
+    'git stash list': '',
+    'git worktree list': '/w/live  abc1 [feat/x]\n',
+  }
+  return gitOut(out[argv.join(' ')] ?? '')
+}
+await makeHandoff('/w/live', 'lv1')
+T += 42 * 60e3
+s = await boot('/w/live', 'lv2', { process: { run: gitDirty } })
+res = await s.run(SKILL, 'continue')
+assert.ok(cleared(res), res.log.join('|'))
+let prompt = s.sent.at(-1)
+assert.ok(prompt.startsWith('Handoff from my previous session'))
+assert.ok(prompt.endsWith('\n\n' + body))
+let live = prompt.slice(0, prompt.indexOf(body))
+assert.match(live, /Live state at pickup/)
+assert.match(live, /written 42m ago/)
+assert.match(live, /branch: feat\/x\n/)
+assert.match(live, /status --short:\n M a\.js\n\?\? b\.js\n/)
+assert.match(live, /log -3 --oneline:\nabc1 one\nabc2 two\n/)
+assert.match(live, /stash list: \(none\)\n/)
+assert.match(live, /worktree list:\n\/w\/live  abc1 \[feat\/x\]\n/)
+assert.equal(gitCalls.length, 5)
+assert.ok(gitCalls.every((c) => c.cwd === '/w/live'), JSON.stringify(gitCalls))
+
+// a clean tree says so; one command failing loses that line alone
+const gitClean = async (argv) => {
+  const cmd = argv.join(' ')
+  if (cmd === 'git rev-parse --abbrev-ref HEAD') return gitOut('main\n')
+  if (cmd === 'git worktree list') return { ...gitOut(''), exitCode: 1, stderr: 'fatal: worktrees broke\nmore' }
+  return gitOut('')
+}
+await makeHandoff('/w/clean', 'cl1')
+s = await boot('/w/clean', 'cl2', { process: { run: gitClean } })
+res = await s.run(SKILL, 'continue')
+assert.ok(cleared(res))
+live = s.sent.at(-1).slice(0, s.sent.at(-1).indexOf(body))
+assert.match(live, /branch: main\n/)
+assert.match(live, /status --short: \(clean\)\n/)
+assert.match(live, /log -3 --oneline: \(none\)\n/)
+assert.match(live, /worktree list: \(unavailable: fatal: worktrees broke\)\n/)
+
+// a long status is cut, not sent whole
+const gitLong = async (argv) => gitOut(argv.join(' ') === 'git status --short' ? Array.from({ length: 50 }, (_, i) => `?? f${i}.js`).join('\n') + '\n' : 'main\n')
+await makeHandoff('/w/long', 'lg1')
+s = await boot('/w/long', 'lg2', { process: { run: gitLong } })
+await s.run(SKILL, 'continue')
+live = s.sent.at(-1).slice(0, s.sent.at(-1).indexOf(body))
+assert.match(live, /\?\? f29\.js\n… \+20 more lines\n/)
+assert.ok(!live.includes('f30.js'))
+
+// not a repository: no block, the handoff still goes
+const gitNoRepo = async () => ({ ...gitOut(''), exitCode: 128, stderr: 'fatal: not a git repository' })
+await makeHandoff('/w/norepo', 'nr1')
+s = await boot('/w/norepo', 'nr2', { process: { run: gitNoRepo } })
+res = await s.run(SKILL, 'continue')
+assert.ok(cleared(res))
+assert.ok(!s.sent.at(-1).includes('Live state'))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+
+// git missing or hung: the send does not wait on it
+const gitDead = async () => {
+  throw new Error('timed out')
+}
+await makeHandoff('/w/dead', 'dd1')
+s = await boot('/w/dead', 'dd2', { process: { run: gitDead } })
+res = await s.run(SKILL, 'continue')
+assert.ok(cleared(res), res.log.join('|'))
+assert.ok(!s.sent.at(-1).includes('Live state'))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
+assert.ok(!res.log.some((l) => l.startsWith('toast:Could not')), res.log.join('|'))
 
 console.log('handoff-continue: ok')

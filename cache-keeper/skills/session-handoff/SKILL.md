@@ -25,7 +25,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
    - Files created or modified this session. You know what you touched; don't grep to re-discover.
    - Memory files written or updated (`~/.claude/projects/<project>/memory/`).
    - Unresolved questions: things you asked the user that never got a clear answer, or things the user asked that got deflected.
-3. **Do NOT audit the filesystem.** This is synthesis of what happened in THIS session. No `git log`, no broad `Glob` sweeps. If you didn't touch it this session, it doesn't belong here.
+3. **Do NOT audit the filesystem.** This is synthesis of what happened in THIS session. No `git log`, no broad `Glob` sweeps. If you didn't touch it this session, it doesn't belong here. Cache Keeper reads the folder's git state (branch, status, last commits, stashes, worktrees) at the moment the handoff is sent and puts it in front of the handoff, so the fresh agent gets the live state from there, not from your recall.
 4. **Produce the output in chat.** Do not write a file. Do not update memory. Chat-only.
 
 ## Output template: use exactly this structure, every time
@@ -55,11 +55,13 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 - ...
 
 ## Deferred + open questions
-- Deferred: <item>: <why pushed to later>
+- User asked: <item the user requested that is not done>: <where it stands, what blocks it>
+- My own idea (confirm with the user before acting): <item you proposed or noticed, never requested>: <why it may matter>
+- Deferred by rule (the user does this): <item a rule, hook or permission kept you from doing>: <the rule>
 - Open: <question needing the user's input>: <context>
 
 ## Pick up here
-<1-2 sentences: the single most likely next action for a fresh agent>
+<1-2 sentences: the single most likely next action for a fresh agent, taken from "User asked" or "Open", never from "My own idea">
 ```
 
 ## Hard rules
@@ -70,6 +72,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 4. **If a plan file drove the session, name it first** in "Key files" so the next agent reads it before anything else.
 5. **No emojis, no hype, no "great job" summaries.** Terse and concrete: paths, commands, shell IDs, decisions. Match the tone of a seasoned engineer handing off at end-of-shift.
 6. **Background process IDs are critical.** If you started any `run_in_background` shells, their IDs must appear in "Running state" with the kill command. The next agent cannot find them otherwise.
+7. **Every open item says who wants it.** "User asked" is work the user requested in their own words. "My own idea" is anything you proposed, noticed or recommended and the user never asked for; the label carries the instruction to confirm it first, because the next agent reads the handoff alone, without this skill. "Deferred by rule" is a step a rule, hook or permission setting kept you from doing (a merge gate, a deny rule, a `main`-only-by-the-user convention): name the rule, so the next agent does not try it again. A handoff that lists your own ideas as plain tasks makes the next agent do work nobody asked for.
 
 ## Anti-patterns: do not do these
 
@@ -79,3 +82,5 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 - Writing the summary to `~/.claude/handoffs/` or any file. This is chat-only by design.
 - Adding a "what went well / what went poorly" retrospective. This isn't a retro.
 - Recommending next steps beyond the single "Pick up here" line. The next agent decides; you just hand off.
+- Putting your own idea in "Pick up here", or listing it under "User asked".
+- Writing git state (branch, dirty files, last commits) into the handoff from memory. Cache Keeper reads it live at pickup.
