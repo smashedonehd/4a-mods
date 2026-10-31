@@ -604,8 +604,9 @@ async function markDirty($: any) {
   await update($, dirty, n => n + 1)
 }
 
+// By value: a setting may hold a list, which two reads give as two arrays.
 const same = (a: Record<string, any> = {}, b: Record<string, any> = {}) =>
-  [...Object.keys(a), ...Object.keys(b)].every(k => a[k] === b[k])
+  [...Object.keys(a), ...Object.keys(b)].every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]))
 
 // Whether the engine has the switches settings.json holds. It picks a write
 // up about a second late, and a reload before then loads the old ones.

@@ -830,6 +830,20 @@ test('Apply now reloads plugins and clears the pending count', async ($, on) => 
   await ui.unmount()
 })
 
+test('Apply now reloads when a setting holds a list the engine has read in', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  const ran = runs(on)
+  engine(on, disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true, 'x@y': ['a'] } }) }))
+  toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:off' })
+  await ui.press({ key: 'apply' })
+  expect(ran).toEqual(['reload-plugins'])
+  await ui.unmount()
+})
+
 test('Apply now waits for the engine to read the switches in before it reloads', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
