@@ -43,7 +43,8 @@ function makeFs(seed) {
   return { fs, writes, text: (p) => files.get(k(p))?.text }
 }
 
-async function boot(disk, { cwd = CWD, state = new Map() } = {}) {
+// refuse: state keys whose $.state.get throws, as a host that refuses them
+async function boot(disk, { cwd = CWD, state = new Map(), refuse = [] } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -53,7 +54,13 @@ async function boot(disk, { cwd = CWD, state = new Map() } = {}) {
     fs: disk.fs,
     env: { get: async (n) => (n === 'USERPROFILE' ? HOME : '') },
     session: { cwd: async () => cwd },
-    state: { get: async (ref) => ({ value: state.get(ref.key) }), set: async (ref, v) => void state.set(ref.key, JSON.parse(JSON.stringify(v))) },
+    state: {
+      get: (ref) => {
+        if (refuse.includes(ref.key)) throw new Error('refused ' + ref.key)
+        return Promise.resolve({ value: state.get(ref.key) })
+      },
+      set: async (ref, v) => void state.set(ref.key, JSON.parse(JSON.stringify(v))),
+    },
     ui: { toast: (t) => void toasts.push(t) },
   }
   const fits = (filter, e) => !filter || Object.entries(filter).every(([f, v]) => [].concat(v).includes(e[f]))
@@ -268,6 +275,27 @@ test('a reload keeps the plan and the task list', async () => {
   const third = await boot(disk, { state })
   await third.turnEnd()
   assert.equal(disk.text(path), '- [ ] Build it\n')
+})
+
+test('a reload after a wrap-up keeps what it completed; a refused key loads alone', async () => {
+  const path = PLANS + '/new.md'
+  const disk = makeFs({ [path]: '### Task 2: Matcher\n- [ ] a\n- [ ] b\n' })
+  const state = new Map()
+  const s = await boot(disk, { state })
+  await s.call('Write', { file_path: path, content: 'x' })
+  // A null entry costs only itself; the whole heading names its task too
+  await s.call('TodoWrite', { todos: [null, { content: 'Task 2: Matcher', status: 'in_progress', activeForm: 'x' }] })
+  const text = disk.text(path)
+  disk.fs.read = async () => {
+    throw new Error('EBUSY')
+  }
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' }) // completes the step, but the plan does not read
+  assert.deepEqual(disk.writes, [])
+  // The reload's $.state refuses the held steps: plan and task list still load
+  const fresh = makeFs({ [path]: text })
+  const again = await boot(fresh, { state, refuse: ['used'] })
+  await again.turnEnd()
+  assert.equal(fresh.text(path), '### Task 2: Matcher\n- [x] a\n- [x] b\n')
 })
 
 test('a new plan gets none of the old steps, but the old plan gets them first', async () => {
