@@ -1499,4 +1499,13 @@ assert.ok(s.buttons.has('stop'))
   assert.equal(sess.buttons.get('handoff').label, 'handoff')
 }
 
+// plugins turned on again are reported, so a missing one is noticed
+{
+  const sess = await boot('/w/revive-report', 'rr1')
+  await sess.fire('tool.call', { tool: 'Skill', skill: 'jev:on', args: '' })
+  await sess.press('handoff')
+  await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
+  assert.ok(sess.log.some((l) => l.startsWith('toast:Turned on again: /jev:on')), sess.log.join('|'))
+}
+
 console.log('handoff-continue: ok')

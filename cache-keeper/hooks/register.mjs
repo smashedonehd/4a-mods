@@ -117,7 +117,10 @@ async function reviveSkills($, list) {
     return cmd ? $.command.run({ command: cmd, args: s.args }).then(() => '', () => s.command) : Promise.resolve(s.command)
   })
   return async () => {
-    const failed = (await Promise.all(runs)).filter(Boolean)
+    const results = await Promise.all(runs)
+    const failed = results.filter(Boolean)
+    const ok = list.filter((_, i) => !results[i]).map((s) => s.command)
+    if (ok.length) $.ui.toast('Turned on again: /' + ok.join(', /'), { timeoutMs: 6000 })
     if (failed.length) $.ui.toast('Could not turn on again: /' + failed.join(', /'), { timeoutMs: 8000 })
   }
 }
