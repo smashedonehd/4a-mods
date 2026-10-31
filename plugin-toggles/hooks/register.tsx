@@ -86,24 +86,29 @@ const parse = (text: string) => JSON.parse(text.replace(/^\uFEFF/, '')) as Recor
 const isObject = (v: unknown): v is Record<string, any> =>
   v !== null && typeof v === 'object' && !Array.isArray(v)
 
-async function readJson($: any, path: string) {
+// A JSON file's object, {} for an empty file; undefined when it does not read
+// or parse, or holds no object.
+async function readObject($: any, path: string) {
   try {
-    const json = parse(String(await $.fs.read(path)))
-    return isObject(json) ? json : {}
+    const text = String(await $.fs.read(path))
+    const json = text.trim() === '' ? {} : parse(text)
+    return isObject(json) ? json : undefined
   } catch {
-    return {} as Record<string, any>
+    return undefined
   }
 }
 
-// A file a press writes from: {} when it is missing or empty. One that is
-// there but does not read or parse, or holds no object, gives undefined and
-// the press says so: written over, it would keep only the key changed.
+async function readJson($: any, path: string) {
+  return (await readObject($, path)) ?? {}
+}
+
+// A file a press writes from: {} when it is missing. One that is there but
+// does not read or parse, or holds no object, gives undefined and the press
+// says so: written over, it would keep only the key changed.
 async function readStrict($: any, path: string) {
-  try {
-    const text = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : ''
-    const json = text.trim() === '' ? {} : parse(text)
-    if (isObject(json)) return json
-  } catch {}
+  const json = await readObject($, path)
+  if (json !== undefined) return json
+  if (!(await $.fs.exists(path))) return {}
   $.ui.toast(`Could not read ${path}, so nothing was changed. Fix the file and try again.`)
   return undefined
 }
@@ -113,9 +118,13 @@ async function readStrict($: any, path: string) {
 // USERPROFILE that is no Windows path, as WSL hands one over, is not the
 // home the engine reads there.
 async function paths($: any) {
-  const profile = String((await $.env.get('USERPROFILE')) || '')
-  const home = norm(/^[A-Za-z]:[\\/]/.test(profile) ? profile : String((await $.env.get('HOME')) || profile))
-  const config = await $.env.get('CLAUDE_CONFIG_DIR')
+  const [profileVar, homeVar, config] = await Promise.all([
+    $.env.get('USERPROFILE'),
+    $.env.get('HOME'),
+    $.env.get('CLAUDE_CONFIG_DIR'),
+  ])
+  const profile = String(profileVar || '')
+  const home = norm(/^[A-Za-z]:[\\/]/.test(profile) ? profile : String(homeVar || profile))
   const dir = config ? norm(String(config)).replace(/\/+$/, '') : `${home}/.claude`
   return {
     dir,
@@ -153,8 +162,7 @@ async function aboveNow($: any) {
 // settings.json about a second late, so the file the switches write is read
 // as it is, then the sources ranked above it as the engine has them.
 async function switchesNow($: any) {
-  const own = await readJson($, (await paths($)).settings)
-  const above = await aboveNow($)
+  const [own, above] = await Promise.all([readJson($, (await paths($)).settings), aboveNow($)])
   const merged = (key: string) =>
     Object.assign({}, own[key], ...above.map(s => s[key])) as Record<string, any>
   return { enabledPlugins: merged('enabledPlugins'), skillOverrides: merged('skillOverrides') }
@@ -169,9 +177,10 @@ async function outranking($: any, key: string, name: string) {
   return undefined
 }
 
-
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
 const fmt = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`)
+// A cost, `~` before one estimated from the files.
+const tag = (n: number, exact: boolean) => `${exact ? '' : '~'}${fmt(n)}`
 // What one line of a skill or agent listing costs, by the usual four characters a token.
 const lineCost = (name: string, desc: string) => Math.ceil((name.length + desc.length + 4) / 4)
 
@@ -234,19 +243,27 @@ async function pluginInfo($: any, id: string): Promise<Info | null> {
     return null
   }
   const root = norm(String(entry.installPath))
-  const manifest = await readJson($, `${root}/.claude-plugin/plugin.json`)
   const items = async (dir: string, file: (n: string) => string | null) => {
-    const out: Item[] = []
-    for (const f of await listSafe($, `${root}/${dir}`)) {
+    const found = (await listSafe($, `${root}/${dir}`)).flatMap(f => {
       const rel = file(f.name)
-      if (!rel) continue
-      const fm = frontmatter(await readSafe($, `${root}/${dir}/${rel}`))
-      out.push({ name: fm.name || f.name.replace(/\.md$/, ''), desc: fm.description ?? '' })
-    }
+      return rel ? [{ f, rel }] : []
+    })
+    const out: Item[] = await Promise.all(
+      found.map(async ({ f, rel }) => {
+        const fm = frontmatter(await readSafe($, `${root}/${dir}/${rel}`))
+        return { name: fm.name || f.name.replace(/\.md$/, ''), desc: fm.description ?? '' }
+      }),
+    )
     return out.sort((a, b) => a.name.localeCompare(b.name))
   }
-  const mcpJson = await readJson($, `${root}/.mcp.json`)
-  const hooksJson = await readJson($, `${root}/hooks/hooks.json`)
+  const [manifest, mcpJson, hooksJson, skills, commands, agents] = await Promise.all([
+    readJson($, `${root}/.claude-plugin/plugin.json`),
+    readJson($, `${root}/.mcp.json`),
+    readJson($, `${root}/hooks/hooks.json`),
+    items('skills', n => `${n}/SKILL.md`),
+    items('commands', n => (n.endsWith('.md') ? n : null)),
+    items('agents', n => (n.endsWith('.md') ? n : null)),
+  ])
   let desc = String(manifest.description ?? '')
   if (desc === '') {
     const readme = await readSafe($, `${root}/README.md`)
@@ -260,9 +277,9 @@ async function pluginInfo($: any, id: string): Promise<Info | null> {
     desc,
     version: String(manifest.version ?? entry.version ?? ''),
     author: String(manifest.author?.name ?? manifest.author ?? ''),
-    skills: await items('skills', n => `${n}/SKILL.md`),
-    commands: await items('commands', n => (n.endsWith('.md') ? n : null)),
-    agents: await items('agents', n => (n.endsWith('.md') ? n : null)),
+    skills,
+    commands,
+    agents,
     mcp: Object.keys(mcpJson.mcpServers ?? mcpJson),
     hooks: Object.keys(hooksJson.hooks ?? {}),
   }
@@ -433,16 +450,9 @@ function gauge(
           ))}
         </Text>
       )}
-      {note !== '' &&
-        (warn ? (
-          <Text color="warning">
-            {note}
-          </Text>
-        ) : (
-          <Text dimColor>
-            {note}
-          </Text>
-        ))}
+      {note !== '' && (
+        <Text {...(warn ? { color: 'warning' } : { dimColor: true })}>{note}</Text>
+      )}
     </Box>
   )
 }
@@ -458,7 +468,7 @@ function inspector($: any, e: any, rows: Row[], scopeOf: Map<string, string>, he
         const meta = [
           MODE_SAYS[r.mode],
           r.meta,
-          r.tokens > 0 && `${r.exact ? '' : '~'}${fmt(r.tokens)} tokens`,
+          r.tokens > 0 && `${tag(r.tokens, r.exact)} tokens`,
         ]
           .filter(Boolean)
           .join(' · ')
@@ -528,7 +538,7 @@ function toggle($: any, e: any, kind: string, r: Row) {
 function row($: any, e: any, kind: string, r: Row, scope: string, colour: string | undefined) {
   const { Box, Button, Text } = $.ui.resolve(e)
   const lit = inContext(r.mode)
-  const cost = r.tokens > 0 ? `${r.exact ? '' : '~'}${fmt(r.tokens)}` : ''
+  const cost = r.tokens > 0 ? tag(r.tokens, r.exact) : ''
   return (
     <Box key={`${kind}-row:${r.name}`} hover={{ scope }} alignItems="center" gap={1}>
       <Box alignItems="center" gap={1} flexGrow={1} flexShrink={1} minWidth={0}>
@@ -624,29 +634,19 @@ async function applyNow($: any) {
   }
 }
 
-async function reloadable($: any) {
-  return (await $.command.list()).some((c: { name: string }) => c.name === 'reload-plugins')
-}
+const hasReload = (commands: { name: string }[]) => commands.some(c => c.name === 'reload-plugins')
 
-async function togglePlugin($: any, id: string, isOn: boolean) {
+// Writes one switch to settings.json: a plugin's true or false, a skill's
+// position, where On is no entry at all. The pending count it bumps redraws
+// the pane.
+async function writeSwitch($: any, key: 'enabledPlugins' | 'skillOverrides', name: string, value: boolean | Mode) {
   const wrote = await rewrite($, (await paths($)).settings, json => {
-    json.enabledPlugins = { ...(json.enabledPlugins ?? {}), [id]: isOn }
+    const next = { ...(json[key] ?? {}) }
+    if (value === 'on') delete next[name]
+    else next[name] = value
+    json[key] = next
   })
-  if (!wrote) return
-  await markDirty($)
-  await update($, rev, n => n + 1)
-}
-
-async function setSkillMode($: any, name: string, mode: Mode) {
-  const wrote = await rewrite($, (await paths($)).settings, json => {
-    const next = { ...(json.skillOverrides ?? {}) }
-    if (mode === 'on') delete next[name]
-    else next[name] = mode
-    json.skillOverrides = next
-  })
-  if (!wrote) return
-  await markDirty($)
-  await update($, rev, n => n + 1)
+  if (wrote) await markDirty($)
 }
 
 // The engine keys a project in ~/.claude.json by where its session started,
@@ -699,7 +699,7 @@ async function applyProfile($: any, name: string) {
   })
   if (!wrote) return
   await markDirty($)
-  if (await reloadable($)) await applyNow($)
+  if (hasReload(await $.command.list())) await applyNow($)
   await update($, rev, n => n + 1)
 }
 
@@ -717,8 +717,8 @@ async function setMode($: any, kind: string, name: string, mode: Mode) {
     $.ui.toast(`${name} is set in ${ABOVE_SAYS[source]}, which outranks settings.json. Change it there.`)
     return
   }
-  if (kind === 'plugins') await togglePlugin($, name, mode === 'on')
-  else await setSkillMode($, name, mode)
+  if (kind === 'plugins') await writeSwitch($, 'enabledPlugins', name, mode === 'on')
+  else await writeSwitch($, 'skillOverrides', name, mode)
 }
 
 // From a plugin's skill to the plugin that switches it.
@@ -780,16 +780,19 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    await read($, rev)
-    const pending = await read($, dirty)
-    const commands = await $.command.list()
-    const canReload = commands.some(c => c.name === 'reload-plugins')
-    const current = await read($, tab)
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const Input = ($.ui.resolve(e) as any).Input
-    const now = await loadedNow($)
+    // Independent reads, at once: each is a trip through the host.
+    const [, pending, commands, current, now, typed] = await Promise.all([
+      read($, rev),
+      read($, dirty),
+      $.command.list(),
+      read($, tab),
+      loadedNow($),
+      read($, query),
+    ])
+    const canReload = hasReload(commands)
+    const { Box, Text, Button, Input } = $.ui.resolve(e) as any
     if (current === 'profiles') {
-      const all = (await readJson($, await profilesPath($))) as Record<string, any>
+      const all = await readJson($, await profilesPath($))
       const named = await read($, draft)
       // An entry edited by hand into something else is no profile.
       const names = Object.keys(all)
@@ -882,14 +885,13 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const settings = await switchesNow($)
     let rows: Row[] = []
     let noun = ''
     let note = ''
     let warn = false
 
     if (current === 'plugins') {
-      const map = (settings.enabledPlugins ?? {}) as Record<string, boolean>
+      const map = (await switchesNow($)).enabledPlugins as Record<string, boolean>
       rows = await Promise.all(
         Object.keys(map)
           .sort()
@@ -897,7 +899,7 @@ export const register: Register = on => {
       )
       noun = 'plugins'
     } else if (current === 'skills') {
-      const overrides = (settings.skillOverrides ?? {}) as Record<string, string>
+      const overrides = (await switchesNow($)).skillOverrides as Record<string, string>
       const modeOf = (name: string): Mode =>
         MODES.find(m => m === overrides[name]) ?? 'on'
       // A plugin's commands come in the list with its skills. The engine's
@@ -910,7 +912,6 @@ export const register: Register = on => {
             (c.source === 'plugin' && (now === null || now.skills.has(c.name)))),
       )
       const seen = new Set(listed.map(c => c.name))
-      const tag = (n: number, exact: boolean) => `${exact ? '' : '~'}${fmt(n)}`
       rows = listed.map((c): Row => {
         const measured = now?.skills.get(c.name)
         const desc = String(c.description ?? '')
@@ -1035,7 +1036,6 @@ export const register: Register = on => {
 
     // Rows keep their place when switched, heaviest first: the user's own
     // skills, which have the full switch, above those plugins bring.
-    const typed = await read($, query)
     const needle = typed.toLowerCase()
     const shown = rows.filter(r => r.name.toLowerCase().includes(needle))
     const own = shown.filter(r => r.plugin === undefined).sort(heavy).slice(0, SHOWN)

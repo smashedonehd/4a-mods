@@ -66,6 +66,7 @@ const runs = (on: any) => {
 const SETTINGS = 'C:/Users/x/.claude/settings.json'
 const GLOBAL = 'C:/Users/x/.claude.json'
 const PROFILES = 'C:/Users/x/.claude/mods-data/plugin-toggles-profiles.json'
+const FOUR = ['on', 'name-only', 'user-invocable-only', 'off']
 const GREG = { name: 'greg', source: 'user', description: 'Makes photos' }
 
 // Answers state.get with one stored value and every other key unset.
@@ -345,7 +346,7 @@ test('a skill of your own gets a four-way switch and costs what its position doe
   on('settings.read', () => ({ value: { skillOverrides: { greg: 'name-only' } } }))
 
   const ui = await $.ui.mount(PANE)
-  const modes = ['on', 'name-only', 'user-invocable-only', 'off']
+  const modes = FOUR
   const labels: string[] = []
   for (const m of modes) labels.push(String((await ui.find({ type: 'Button', key: `skills:greg:${m}` }))?.text))
   expect(labels).toEqual(['On', 'Name', 'User', 'Off'])
@@ -376,7 +377,7 @@ test('a count taken while a skill was name-only does not pass for its full cost'
   )
 
   const ui = await $.ui.mount(PANE)
-  expect(await at(ui, 'skills:greg', ['on', 'name-only', 'user-invocable-only', 'off'])).toEqual(['on'])
+  expect(await at(ui, 'skills:greg', FOUR)).toEqual(['on'])
   expect(await ui.find({ type: 'Text', text: /^~5$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^On ~5 · Name 2 · User and Off 0 tokens$/ })).toBeTruthy()
   await ui.unmount()
@@ -405,25 +406,19 @@ test('a switch position is written to skillOverrides, and On clears the entry', 
 
 // settings.json as a file the presses write, while the engine's settings
 // snapshot still holds `stale`: it picks a write up about a second late.
-const lagging = (on: any, initial: Record<string, unknown>, stale: Record<string, unknown>) => {
-  let file = JSON.stringify(initial)
-  on('fs.exists', (): any => ({ value: true }))
-  on('fs.read', (): any => ({ value: file }))
-  on('fs.write', (_: unknown, e: any): any => {
-    file = e.text
-    return { value: undefined }
-  })
-  on('settings.read', (_: unknown, e: any): any => ({ value: e?.source ? {} : stale }))
+const lagging = (on: any, initial: Record<string, unknown>) => {
+  disk(on, { [SETTINGS]: JSON.stringify(initial) })
+  on('settings.read', (_: unknown, e: any): any => ({ value: e?.source === 'user' || !e?.source ? initial : {} }))
 }
 
 test('a pressed skill switch moves at once, before the engine rereads settings', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'greg', source: 'user', description: 'Makes photos' }] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
-  lagging(on, { skillOverrides: { greg: 'name-only' } }, { skillOverrides: { greg: 'name-only' } })
+  lagging(on, { skillOverrides: { greg: 'name-only' } })
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-skills' })
-  const modes = ['on', 'name-only', 'user-invocable-only', 'off']
+  const modes = FOUR
   expect(await at(ui, 'skills:greg', modes)).toEqual(['name-only'])
   await ui.press({ key: 'skills:greg:off' })
   expect(await at(ui, 'skills:greg', modes)).toEqual(['off'])
@@ -435,7 +430,7 @@ test('a pressed skill switch moves at once, before the engine rereads settings',
 test('a pressed plugin switch moves at once, before the engine rereads settings', async ($, on) => {
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
-  lagging(on, { enabledPlugins: { 'foo@bar': true } }, { enabledPlugins: { 'foo@bar': true } })
+  lagging(on, { enabledPlugins: { 'foo@bar': true } })
 
   const ui = await $.ui.mount(PANE)
   expect(await at(ui, 'plugins:foo@bar', ['on', 'off'])).toEqual(['on'])
@@ -464,7 +459,7 @@ test('a skill switched off and gone from the command list keeps its row', async 
   on('settings.read', () => ({ value: { skillOverrides: { ghost: 'off', back: 'on' } } }))
 
   const ui = await $.ui.mount(PANE)
-  expect(await at(ui, 'skills:ghost', ['on', 'name-only', 'user-invocable-only', 'off'])).toEqual(['off'])
+  expect(await at(ui, 'skills:ghost', FOUR)).toEqual(['off'])
   expect(await ui.find({ type: 'Button', key: 'skills:back:on' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 1$/ })).toBeTruthy()
   await ui.unmount()
@@ -552,7 +547,7 @@ test('a settings.json with a byte order mark keeps its other keys', async ($, on
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-skills' })
-  expect(await at(ui, 'skills:greg', ['on', 'name-only', 'user-invocable-only', 'off'])).toEqual(['name-only'])
+  expect(await at(ui, 'skills:greg', FOUR)).toEqual(['name-only'])
   await ui.press({ key: 'skills:greg:off' })
   expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({ model: 'opus', skillOverrides: { greg: 'off' } })
   await ui.unmount()
