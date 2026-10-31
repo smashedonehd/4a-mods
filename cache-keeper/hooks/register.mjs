@@ -442,7 +442,7 @@ async function captureHandoff($, e) {
   // re-armed above, is a handoff's own, as turn.start counts it.
   const overrun = clearing && S.working && !isHandoffTurn(S.turnId)
   // Set before the first await: the hold must not lapse while the files are
-  // written. A later /handoff decides too: one that only asks ends the hold.
+  // written. A later /handoff decides too: one with keep ends the hold.
   H.clearDue = overrun ? 'stale' : clearing
   H.text = body
   H.fromDisk = false
@@ -1210,7 +1210,7 @@ export function register(on) {
     names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
     names.board = (await registerCommand($, 'board', 'Every local Claude Code session: state, context, cache, cost', '', true)) || names.board
-    names.handoff = (await registerCommand($, 'handoff', 'Session handoff, then clear this chat and continue with it (/handoff continue)', '[continue]')) || names.handoff
+    names.handoff = (await registerCommand($, 'handoff', 'Session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
     $.clock.every(HEARTBEAT_EVERY, () => tick($).catch(() => {}))
     await heartbeat($, true)
     return next(e)
@@ -1455,7 +1455,8 @@ export function register(on) {
     if (HANDOFF_SKILL.test(String(e.command || ''))) {
       // /session-handoff continue: no new handoff, clear and continue with the last one
       if (isContinueArg(e.args)) return continueRequest($)
-      armHandoff(false, isKeepArg(e.args) ? 'none' : 'clear')
+      // runHandoff armed this run itself; a re-entry here must not override it
+      if (!handoffPending) armHandoff(false, isKeepArg(e.args) ? 'none' : 'clear')
     }
     await noteAndSave($, e.command, e.args)
     return next(e)
