@@ -140,8 +140,8 @@ const H = {
   armed: false,
   notTurn: '', // a turn already running when the handoff was queued: not the handoff's
   draft: '', // the last handoff a response of the armed turn ended with
-  // once the handoff is in: 'ask' (/handoff) offers to clear and continue,
-  // 'clear' (the band's button) does it, 'none' leaves the chat as it is
+  // once the handoff is in: 'clear' (the band's button, /handoff, the skill) clears
+  // and continues, 'none' ("keep") leaves the chat as it is
   after: 'none',
   text: '',
   path: '',
@@ -255,10 +255,13 @@ async function settleHold($) {
 // had and the handoff this turn already wrote. Until its capture, an arm with
 // no notTurn is for the running turn. The band's handoff taken over this way is
 // still queued: the engine runs it once this turn ends (see H.another).
-function armHandoff(insideTurn, after = 'none') {
+// after null: no choice made (Claude's skill call without args). Such an arm
+// keeps what the arm it joins chose, a keep included, and clears otherwise.
+function armHandoff(insideTurn, after) {
   const live = insideTurn && H.armed
   const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
   const again = live && (H.notTurn === '' || queued)
+  if (after === null) after = again ? H.after : 'clear'
   if (!(again && H.after === 'clear')) H.after = after
   if (!again) H.draft = ''
   H.another = queued || (again && H.another)
@@ -441,7 +444,7 @@ async function captureHandoff($, e) {
   // re-armed above, is a handoff's own, as turn.start counts it.
   const overrun = clearing && S.working && !isHandoffTurn(S.turnId)
   // Set before the first await: the hold must not lapse while the files are
-  // written. A later /handoff decides too: one that only asks ends the hold.
+  // written. A later /handoff decides too: one with keep ends the hold.
   H.clearDue = overrun ? 'stale' : clearing
   H.text = body
   H.fromDisk = false
@@ -467,30 +470,6 @@ async function captureHandoff($, e) {
   // Nothing clears: what was held while the handoff ran goes on in this chat
   await settleHold($)
   $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
-  // Off the hook: the turn is ending, and a dialog would hold it open. The
-  // Desktop app shows no dialog asked between turns, so there the band's
-  // "clear and continue" button is the way on.
-  if (ended && after === 'ask' && !(await inApp($))) $.clock.after(300, () => offerContinue($).catch(() => {}))
-}
-
-async function inApp($) {
-  try {
-    // A terminal with a phone or Remote Control attached still shows the dialog
-    return !(await $.session.surfaces()).includes('terminal')
-  } catch {
-    return false
-  }
-}
-
-async function offerContinue($) {
-  if (!H.text) return
-  let answer = ''
-  try {
-    answer = await $.ui.ask('Handoff saved. Clear this chat and continue with it in a fresh context?', ['Clear and continue', 'Keep this chat'])
-  } catch {
-    return // dismissed: the band button and /handoff continue still work
-  }
-  if (answer === 'Clear and continue') await clearAndContinue($)
 }
 
 function continuationPrompt() {
@@ -591,8 +570,11 @@ async function clearAndSend($) {
   }
 }
 
-function isClearArg(args) {
-  return String(args || '').trim().toLowerCase() === 'clear'
+// What follows a handoff started with these args (see H.after): "keep" leaves
+// the chat, empty args give ifEmpty, anything else clears
+function afterFromArgs(args, ifEmpty = 'clear') {
+  const a = String(args || '').trim().toLowerCase()
+  return a === 'keep' ? 'none' : a ? 'clear' : ifEmpty
 }
 
 function isContinueArg(args) {
@@ -679,7 +661,8 @@ async function runHandoff($, after = 'none') {
     startLanding()
     $.ui.invalidate('ui.render')
     $.ui.toast(S.working ? 'Session handoff queued: it runs when Claude finishes this turn.' : 'Running /session-handoff.')
-    await $.command.run({ command: cmd.name, args: '' })
+    // keep in the args too: a command.run hook that sees the run later reads it
+    await $.command.run({ command: cmd.name, args: after === 'none' ? 'keep' : '' })
   } catch (err) {
     // Taken over by Claude's own skill call in the running turn, the arm is
     // that turn's now, and no queued turn follows it
@@ -1209,7 +1192,7 @@ export function register(on) {
     names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
     names.board = (await registerCommand($, 'board', 'Every local Claude Code session: state, context, cache, cost', '', true)) || names.board
-    names.handoff = (await registerCommand($, 'handoff', 'Session handoff, then clear this chat and continue with it (/handoff continue)', '[continue]')) || names.handoff
+    names.handoff = (await registerCommand($, 'handoff', 'Session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
     $.clock.every(HEARTBEAT_EVERY, () => tick($).catch(() => {}))
     await heartbeat($, true)
     return next(e)
@@ -1429,9 +1412,10 @@ export function register(on) {
     if (!e.agentId && e.tool === 'Skill') {
       const args = e.args || (e.input && e.input.args)
       // Claude calling the handoff skill itself: this turn's answer is the
-      // handoff. With args "clear" (the 250k Stop hook asks for it) the chat
-      // then clears and continues, as with the band's button.
-      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, isClearArg(args) ? 'clear' : 'none')
+      // handoff. The chat then clears and continues, as with the band's button,
+      // unless the args say "keep". Without args it joins a handoff already
+      // armed for this turn as that one chose (/handoff keep stays a keep).
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, afterFromArgs(args, null))
       await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
@@ -1454,14 +1438,17 @@ export function register(on) {
     if (HANDOFF_SKILL.test(String(e.command || ''))) {
       // /session-handoff continue: no new handoff, clear and continue with the last one
       if (isContinueArg(e.args)) return continueRequest($)
-      armHandoff(false)
+      // runHandoff armed this run itself; a re-entry here while it issues the
+      // run must not override that arm (one taken over by Claude's skill call,
+      // or changed by the band meanwhile). A later one reads the keep from args,
+      // as issued: a band choice made after the issue does not survive it.
+      if (!handoffPending) armHandoff(false, afterFromArgs(e.args))
     }
     await noteAndSave($, e.command, e.args)
     return next(e)
   })
 
-  // /handoff runs the handoff and then asks to clear and continue (in the
-  // terminal; the Desktop app uses the band's button); /handoff continue does
+  // /handoff runs the handoff and then clears and continues; /handoff continue does
   // the second half, with this chat's handoff or the folder's last one (also
   // after a restart).
   // Both run off the hook: a command started inside a hook the session is
@@ -1469,8 +1456,9 @@ export function register(on) {
   on('command.run', { command: ['handoff', 'ck-handoff'] }, async ($, e) => {
     now = await $.clock.now()
     if (isContinueArg(e.args)) return continueRequest($)
-    $.clock.after(50, () => runHandoff($, 'ask').catch(() => {}))
-    return { text: 'Running the session handoff. When it finishes, you can clear this chat and continue with it.' }
+    const after = afterFromArgs(e.args)
+    $.clock.after(50, () => runHandoff($, after).catch(() => {}))
+    return { text: after === 'none' ? 'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
   })
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {
