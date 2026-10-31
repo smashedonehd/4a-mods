@@ -18,7 +18,7 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
 // onRun: called with each command the module runs, before it is logged
 // select: the host has Select, as the desktop app and the terminal do
 // skill: the session has the /session-handoff skill
-async function boot(cwd, id, { working = false, answer = 'Keep this chat', timers, onRun, select = false, skill = true } = {}) {
+async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
@@ -1543,5 +1543,23 @@ for (const [args, clears] of [['keep', false], ['', true]]) {
   // the skill gets the keep too: a hook that sees the run later reads it
   assert.deepEqual(skillArgs, [args])
 }
+
+// The same re-entry after Claude's skill call took the queued handoff over in
+// the running turn: the takeover stands, and that turn's handoff is saved
+timers = []
+let takeover
+takeover = await boot('/w/takeover-reentry', 'ke2', {
+  working: true,
+  timers,
+  onRun: async (c) => {
+    if (!c.command.includes('session-handoff')) return
+    await takeover.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+    await takeover.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter)
+  },
+})
+await takeover.run('handoff', '')
+await runTimers(timers)
+await takeover.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.equal(latestText('ke2'), body)
 
 console.log('handoff-continue: ok')

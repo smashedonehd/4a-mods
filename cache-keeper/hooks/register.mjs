@@ -1440,7 +1440,8 @@ export function register(on) {
       if (isContinueArg(e.args)) return continueRequest($)
       // runHandoff armed this run itself; a re-entry here while it issues the
       // run must not override that arm (one taken over by Claude's skill call,
-      // or changed by the band meanwhile). A later one reads the keep from args.
+      // or changed by the band meanwhile). A later one reads the keep from args,
+      // as issued: a band choice made after the issue does not survive it.
       if (!handoffPending) armHandoff(false, afterFromArgs(e.args))
     }
     await noteAndSave($, e.command, e.args)
@@ -1457,7 +1458,7 @@ export function register(on) {
     if (isContinueArg(e.args)) return continueRequest($)
     const after = afterFromArgs(e.args)
     $.clock.after(50, () => runHandoff($, after).catch(() => {}))
-    return { text: after === 'none' ?'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
+    return { text: after === 'none' ? 'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
   })
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {
