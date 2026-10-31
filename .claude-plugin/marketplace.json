@@ -1,6 +1,6 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Model Router gives Claude one agent type per model and effort tier.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars.",
   "owner": {
     "name": "4AM"
   },
@@ -9,11 +9,6 @@
       "name": "cache-keeper",
       "source": "./cache-keeper",
       "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a chat off to a fresh one (/handoff)"
-    },
-    {
-      "name": "model-router",
-      "source": "./model-router",
-      "description": "One agent type per model and effort tier (Haiku for lookups, Sonnet for standard coding, Opus for hard engineering), from one tier table kept current through pull requests; /route routes Haiku up to Opus, /route fable up to Fable"
     }
   ]
 }

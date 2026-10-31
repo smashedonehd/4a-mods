@@ -136,9 +136,10 @@ const latestText = (id) => {
 // The dated handoff file of session `id`
 const dated = (id) => files.get([...files.keys()].find((k) => k.endsWith(`-${id}.md`)))
 
+// 'keep': the skill clears on its own unless told to keep the chat
 async function makeHandoff(cwd, id, opts) {
   const s = await boot(cwd, id, opts)
-  await s.run(SKILL)
+  await s.run(SKILL, 'keep')
   s.log.length = 0
   await s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 't1' })
   // a normal save does not warn
@@ -262,7 +263,7 @@ assert.ok(cleared(res))
 // the latest copy cannot be written: the toast says it will not survive
 failWrites = ['latest-']
 s = await boot('/w/nolatest', 'o1')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 s.log.length = 0
 await s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 't1' })
 failWrites = []
@@ -326,43 +327,31 @@ assert.ok(s.log.some((l) => l.includes('already running')))
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
 
-// /handoff typed after the button: the last one wins, no clear
+// /handoff typed after the button: the last one wins, and it clears too
 s = await boot('/w/band-then-typed', 'y1')
 await s.press('handoff')
 await s.fire('turn.start', { turnId: 't1' })
 await s.run('handoff', '')
 assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
+assert.ok(cleared(s))
 
-// /session-handoff typed after the button (re-arms through the command hook): no clear
+// /session-handoff typed after the button (re-arms through the command hook): clears
 s = await boot('/w/band-then-skill', 'z1')
 await s.press('handoff')
 await s.run(SKILL)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
-
-// /handoff (typed) still only offers it, it does not clear on its own
-s = await boot('/w/typed', 'v1')
-await s.run('handoff', '')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(asked(s))
-assert.ok(!cleared(s))
-
-// /handoff typed, the dialog answered "Clear and continue": clears and sends it
-s = await boot('/w/typed-yes', 'v2', { answer: 'Clear and continue' })
-await s.run('handoff', '')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(asked(s))
-assert.deepEqual(s.log.filter((l) => /^(run|submit):/.test(l)).map((l) => l.split(':')[0]), ['run', 'submit'])
 assert.ok(cleared(s))
 
-// /handoff typed in the Desktop app: no dialog between turns, nothing cleared
-s = await boot('/w/typed-app', 'v3', { answer: 'Clear and continue', surfaces: ['desktop'] })
-await s.run('handoff', '')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!asked(s))
-assert.ok(!cleared(s))
+// /handoff (typed) clears on its own, in the terminal and in the Desktop app, and asks nothing
+for (const [dir, id, surfaces] of [['/w/typed', 'v1', ['terminal']], ['/w/typed-app', 'v3', ['desktop']]]) {
+  s = await boot(dir, id, { answer: 'Keep this chat', surfaces })
+  await s.run('handoff', '')
+  await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+  assert.ok(!asked(s))
+  assert.deepEqual(s.log.filter((l) => /^(run|submit):/.test(l)).map((l) => l.split(':')[0]), ['run', 'submit'])
+  assert.ok(cleared(s))
+}
 
 // the band's button and the skill run on its own ask nothing
 s = await boot('/w/band-noask', 'v4', { answer: 'Clear and continue' })
@@ -373,6 +362,12 @@ s = await boot('/w/skill-noask', 'v5', { answer: 'Clear and continue' })
 await s.run(SKILL)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!asked(s))
+assert.ok(cleared(s))
+
+// the skill with the argument "keep" leaves the chat as it is
+s = await boot('/w/skill-keep', 'v5k')
+await s.run(SKILL, ' Keep ')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!cleared(s))
 
 // the button's turn ended with an answer without the handoff heading: no dialog, no clear
@@ -398,7 +393,7 @@ assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
 // the same with the skill typed: the latest copy is the handoff, and continue sends it
 s = await boot('/w/stop-typed', 'sh2')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t1', body)
 await s.step('t1', reply)
 await s.end({ reason: 'answer', answer: reply, turnId: 't1' })
@@ -408,7 +403,7 @@ assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
 // an answer without the heading never replaces a saved handoff
 s = await makeHandoff('/w/stop-keep', 'sh3')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.equal(latestText('sh3'), body)
 assert.ok(cleared(await s.run(SKILL, 'continue')))
@@ -433,7 +428,7 @@ assert.ok(!asked(s))
 // the reply after the hook quotes the heading inside a sentence: the handoff stays
 const quoting = 'Nothing to fix: the `# Session Handoff` above stands as written. ' + 'q'.repeat(200)
 s = await boot('/w/stop-quote', 'sh7')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t1', body)
 await s.step('t1', quoting)
 await s.end({ reason: 'answer', answer: quoting, turnId: 't1' })
@@ -461,13 +456,13 @@ assert.ok(cleared(s))
 
 // a turn that ended with the heading line alone saved nothing
 s = await boot('/w/heading-only', 'sh7f')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'answer', answer: '# Session Handoff: nothing yet', turnId: 't1' })
 assert.equal(dated('sh7f'), undefined)
 
 // a preamble before the heading is left out of the handoff
 s = await boot('/w/preamble', 'sh7e')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t1', 'Here is the handoff.\n\n' + body)
 await s.end({ reason: 'answer', answer: 'Here is the handoff.\n\n' + body, turnId: 't1' })
 assert.equal(dated('sh7e'), body + '\n')
@@ -484,30 +479,30 @@ assert.ok(cleared(s))
 // a second handoff in the same chat starts with no draft: a turn that wrote
 // none saves nothing, not the first one again
 s = await boot('/w/stop-twice', 'sh9')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t1', body)
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t2', plain)
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 assert.ok(s.log.some((l) => l.includes('nothing was saved')))
 
 // a subagent's answer with the heading is not the main loop's handoff
 s = await boot('/w/stop-agent', 'sh8')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('a-t1', body, 'end_turn', 'agent-1')
 await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
 assert.equal(dated('sh8'), undefined)
 
 // an interrupted turn's own answer may be cut off: it is no handoff
 s = await boot('/w/stop-cut-final', 'sh5b')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'aborted', answer: body, turnId: 't1' })
 assert.equal(dated('sh5b'), undefined)
 
 // a response that did not end the turn (cut off at max_tokens) is no handoff
 s = await boot('/w/stop-cut', 'sh5')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.step('t1', body, 'max_tokens')
 await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
 assert.equal(dated('sh5'), undefined)
@@ -638,7 +633,7 @@ assert.ok(!(res && res.drop))
 await s.render()
 assert.equal(s.buttons.get('handoff').label, 'handoff')
 
-// a /handoff typed while the clear waited only asks: once its handoff is in,
+// a /handoff keep typed while the clear waited only keeps the chat: once its handoff is in,
 // nothing is held any more
 timers = []
 s = await boot('/w/race-ask-later', 'ra7', { timers })
@@ -647,7 +642,7 @@ await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', { turnId: 't2' })
 res = await s.fire('prompt.submit', { text: 'held in t2', origin: { kind: 'composer' }, wait: false })
 assert.ok(res && res.drop)
-await s.run('handoff', '')
+await s.run('handoff', 'keep')
 await runTimers(timers) // the clear waits for t2, /handoff queues its skill
 await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
 await s.fire('turn.start', { turnId: 't3' })
@@ -796,7 +791,7 @@ assert.ok(!(res && res.drop))
 // c pressed while the band's handoff runs: it is not ready yet, and what is held
 // stays held for the clear that handoff brings, not sent into this chat
 s = await boot('/w/race-c', 'rb5')
-await s.run('handoff', '')
+await s.run('handoff', 'keep')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.press('handoff')
 await s.fire('turn.start', { turnId: 't2' })
@@ -903,12 +898,12 @@ assert.ok(cleared(s))
 assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
 // a band handoff that never ran leaves its arm: the skill Claude calls in a
-// later turn without args does not inherit its clear
+// later turn with "keep" does not inherit its clear
 s = await boot('/w/stale-clear', 'rc8', { working: true })
 await s.press('handoff')
 await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
 await s.fire('turn.start', { turnId: 't2' })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 't2' })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 't2' })
 await s.end({ reason: 'answer', answer: body, turnId: 't2' })
 assert.ok(!cleared(s))
 assert.equal(latestText('rc8'), body)
@@ -941,12 +936,19 @@ assert.ok(cleared(s))
 assert.ok(s.sent.at(-3).endsWith('\n\n' + body))
 assert.deepEqual(s.sent.slice(-2), ['held for the new chat', 'note into the handoff'])
 
-// called without args, the skill leaves the chat as it is
+// called with "keep", the skill leaves the chat as it is
 s = await boot('/w/skill-plain', 'rc3', { working: true })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 'busy' })
 await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.ok(!cleared(s))
 assert.equal(latestText('rc3'), body)
+
+// called without args, it clears like the band's button
+s = await boot('/w/skill-noargs', 'rc3b', { working: true })
+await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
+await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
+assert.ok(cleared(s))
+assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
 // The band's handoff queued behind busy, and Claude calling the skill in busy
 // (with "clear" by default: the 250k Stop hook asks for it)
@@ -1045,7 +1047,7 @@ await clearedWith(s, fresh)
 s = await bandThenSkill('/w/band-then-skill-hand-clear', 'rd2e')
 await s.fire('classic.SessionStart', { source: 'clear' })
 await s.end({ reason: 'answer', answer: plain, turnId: 'busy' })
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(!s.log.some((l) => l.includes('queued handoff')))
 assert.equal(latestText('rd2e'), body)
@@ -1094,7 +1096,7 @@ refuse(new Error('engine busy'))
 await settle()
 await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
 await runTimers(timers)
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
 await runTimers(timers)
 assert.ok(!s.log.some((l) => l.includes('queued handoff')))
@@ -1120,14 +1122,14 @@ assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
 
 // a turn.complete without a turn id still ends the turn
 s = await boot('/w/end-no-id', 'rd4')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', { turnId: 't2' })
 await s.fire('turn.complete', { reason: 'answer', answer: plain })
 assert.match((await s.run(SKILL, 'continue')).text, /Clearing this chat/)
 // so does one after a turn.start without one
 s = await boot('/w/start-no-id', 'rd4b')
-await s.run(SKILL)
+await s.run(SKILL, 'keep')
 await s.fire('turn.start', { turnId: 't1' })
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 await s.fire('turn.start', {})
@@ -1452,9 +1454,16 @@ s.selects.get('handoff-after').onSelect('clear')
 await s.end({ reason: 'answer', answer: body, turnId: 't1' })
 assert.ok(cleared(s))
 
-// /handoff typed shows what follows it: nothing clears on its own
-s = await desk('/w/desk-typed', 'ds13')
+// /handoff typed shows what follows it: it clears, and "keep" leaves the chat
+s = await desk('/w/desk-typed-clear', 'ds13b')
 await s.run('handoff', '')
+await s.fire('turn.start', { turnId: 't1' })
+await s.render('desktop')
+assert.equal(s.selects.get('handoff-after').value, 'clear')
+await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+assert.ok(cleared(s))
+s = await desk('/w/desk-typed', 'ds13')
+await s.run('handoff', 'keep')
 await s.fire('turn.start', { turnId: 't1' })
 await s.render('desktop')
 assert.equal(s.selects.get('handoff-after').value, 'none')

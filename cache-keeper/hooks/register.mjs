@@ -140,8 +140,9 @@ const H = {
   armed: false,
   notTurn: '', // a turn already running when the handoff was queued: not the handoff's
   draft: '', // the last handoff a response of the armed turn ended with
-  // once the handoff is in: 'ask' (/handoff) offers to clear and continue,
-  // 'clear' (the band's button) does it, 'none' leaves the chat as it is
+  // once the handoff is in: 'clear' (the band's button, /handoff, the skill) clears
+  // and continues, 'none' ("keep") leaves the chat as it is, 'ask' offers to clear
+  // and continue (no caller sets it now)
   after: 'none',
   text: '',
   path: '',
@@ -591,8 +592,8 @@ async function clearAndSend($) {
   }
 }
 
-function isClearArg(args) {
-  return String(args || '').trim().toLowerCase() === 'clear'
+function isKeepArg(args) {
+  return String(args || '').trim().toLowerCase() === 'keep'
 }
 
 function isContinueArg(args) {
@@ -1429,9 +1430,9 @@ export function register(on) {
     if (!e.agentId && e.tool === 'Skill') {
       const args = e.args || (e.input && e.input.args)
       // Claude calling the handoff skill itself: this turn's answer is the
-      // handoff. With args "clear" (the 250k Stop hook asks for it) the chat
-      // then clears and continues, as with the band's button.
-      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, isClearArg(args) ? 'clear' : 'none')
+      // handoff. The chat then clears and continues, as with the band's button,
+      // unless the args say "keep".
+      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, isKeepArg(args) ? 'none' : 'clear')
       await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
@@ -1454,14 +1455,13 @@ export function register(on) {
     if (HANDOFF_SKILL.test(String(e.command || ''))) {
       // /session-handoff continue: no new handoff, clear and continue with the last one
       if (isContinueArg(e.args)) return continueRequest($)
-      armHandoff(false)
+      armHandoff(false, isKeepArg(e.args) ? 'none' : 'clear')
     }
     await noteAndSave($, e.command, e.args)
     return next(e)
   })
 
-  // /handoff runs the handoff and then asks to clear and continue (in the
-  // terminal; the Desktop app uses the band's button); /handoff continue does
+  // /handoff runs the handoff and then clears and continues; /handoff continue does
   // the second half, with this chat's handoff or the folder's last one (also
   // after a restart).
   // Both run off the hook: a command started inside a hook the session is
@@ -1469,8 +1469,9 @@ export function register(on) {
   on('command.run', { command: ['handoff', 'ck-handoff'] }, async ($, e) => {
     now = await $.clock.now()
     if (isContinueArg(e.args)) return continueRequest($)
-    $.clock.after(50, () => runHandoff($, 'ask').catch(() => {}))
-    return { text: 'Running the session handoff. When it finishes, you can clear this chat and continue with it.' }
+    const keep = isKeepArg(e.args)
+    $.clock.after(50, () => runHandoff($, keep ? 'none' : 'clear').catch(() => {}))
+    return { text: keep ? 'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
   })
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {
