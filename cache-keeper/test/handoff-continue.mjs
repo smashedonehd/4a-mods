@@ -951,7 +951,7 @@ assert.ok(cleared(s))
 assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
 
 // The band's handoff queued behind busy, and Claude calling the skill in busy
-// (with "clear" by default: the 250k Stop hook asks for it)
+// (args "clear" by default: any args but "keep" clear)
 const bandThenSkill = async (dir, id, o = {}, args = 'clear', press = (s) => s.press('handoff')) => {
   const s = await boot(dir, id, { working: true, timers, ...o })
   await press(s)
@@ -1516,5 +1516,19 @@ assert.ok(s.buttons.has('stop'))
   await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
   assert.ok(sess.log.some((l) => l.startsWith('toast:Turned on again: /jev:on')), sess.log.join('|'))
 }
+
+// An engine that runs a plugin-issued command through the command.run hooks
+// again must not turn /handoff keep into a clear: the run is the hook's own
+timers = []
+let reentrant
+reentrant = await boot('/w/keep-reentry', 'ke1', {
+  timers,
+  onRun: async (c) => { if (c.command.includes('session-handoff')) await reentrant.fire('command.run', { command: c.command, args: c.args }) },
+})
+await reentrant.run('handoff', 'keep')
+await runTimers(timers)
+await reentrant.end({ reason: 'answer', answer: body, turnId: 't1' })
+await runTimers(timers)
+assert.ok(!cleared(reentrant), reentrant.log.join('|'))
 
 console.log('handoff-continue: ok')
