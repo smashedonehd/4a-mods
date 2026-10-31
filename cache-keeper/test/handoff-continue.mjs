@@ -1559,6 +1559,7 @@ takeover = await boot('/w/takeover-reentry', 'ke2', {
 })
 await takeover.run('handoff', '')
 await runTimers(timers)
+assert.ok(!takeover.log.some((l) => l.startsWith('toast:Could not start')), takeover.log.join('|'))
 await takeover.end({ reason: 'answer', answer: body, turnId: 'busy' })
 assert.equal(latestText('ke2'), body)
 
