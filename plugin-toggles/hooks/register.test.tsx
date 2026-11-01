@@ -743,8 +743,18 @@ test('local settings outrank project settings', async ($, on) => {
   await ui.unmount()
 })
 
-test('saving a profile keeps the switches, and applying it sets every one exactly so', async ($, on) => {
-  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+test('saving a profile keeps the switches, and applying it sets the ones it names', async ($, on) => {
+  on(
+    'command.list',
+    () =>
+      ({
+        value: [
+          { name: 'reload-plugins', source: 'builtin' },
+          { name: 'u', source: 'user' },
+          { name: 'p', source: 'plugin', plugin: 'a@b' },
+        ],
+      }) as any,
+  )
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   const ran = runs(on)
   const files = disk(on, {
@@ -757,17 +767,40 @@ test('saving a profile keeps the switches, and applying it sets every one exactl
   await ui.input({ key: 'name', text: 'Work', kind: 'change' })
   await ui.press({ key: 'save' })
   expect(JSON.parse(files[PROFILES] ?? '{}')).toEqual({
-    Work: { plugins: { 'a@b': true }, skills: { s: 'off' } },
+    Work: { plugins: { 'a@b': true }, skills: { s: 'off', u: 'on' } },
   })
   expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('')
-  files[SETTINGS] = JSON.stringify({ model: 'opus', enabledPlugins: { 'a@b': false, 'c@d': true }, skillOverrides: { t: 'name-only' } })
+  files[SETTINGS] = JSON.stringify({
+    model: 'opus',
+    enabledPlugins: { 'a@b': false, 'c@d': true },
+    skillOverrides: { t: 'name-only', u: 'off' },
+  })
   await ui.press({ key: 'a-Work' })
   expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({
     model: 'opus',
     enabledPlugins: { 'a@b': true, 'c@d': true },
-    skillOverrides: { s: 'off' },
+    skillOverrides: { t: 'name-only', s: 'off' },
   })
   expect(ran).toEqual(['reload-plugins'])
+  await ui.unmount()
+})
+
+test('a profile that names no skills leaves their switches as they are', async ($, on) => {
+  on('state.get', stored('tab', 'tab-1', 'profiles'))
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  const files = disk(on, {
+    [SETTINGS]: JSON.stringify({ enabledPlugins: { 'a@b': true }, skillOverrides: { s: 'off', t: 'name-only' } }),
+    [PROFILES]: JSON.stringify({ Old: { plugins: { 'a@b': false }, skills: {} } }),
+  })
+  engine(on, files)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'a-Old' })
+  expect(JSON.parse(files[SETTINGS] ?? '{}')).toEqual({
+    enabledPlugins: { 'a@b': false },
+    skillOverrides: { s: 'off', t: 'name-only' },
+  })
   await ui.unmount()
 })
 
