@@ -679,11 +679,14 @@ async function saveProfile($: any, name: string) {
   if (clean === '') return
   const cur = await readStrict($, (await paths($)).settings)
   if (cur === undefined) return
+  // Every skill of your files, an On one by name: applied, the profile moves
+  // the switches it names and no other.
+  const skills: Record<string, string> = {}
+  for (const c of await $.command.list())
+    if (c.source === 'user' && c.name !== 'toggles') skills[c.name] = 'on'
+  Object.assign(skills, cur.skillOverrides)
   const wrote = await rewrite($, await profilesPath($), all => {
-    all[clean] = {
-      plugins: cur.enabledPlugins ?? {},
-      skills: cur.skillOverrides ?? {},
-    }
+    all[clean] = { plugins: cur.enabledPlugins ?? {}, skills }
   })
   if (!wrote) return
   await update($, draft, () => '')
@@ -696,7 +699,9 @@ async function applyProfile($: any, name: string) {
   if (!isObject(picked)) return
   const wrote = await rewrite($, (await paths($)).settings, json => {
     json.enabledPlugins = { ...(json.enabledPlugins ?? {}), ...picked.plugins }
-    json.skillOverrides = picked.skills ?? {}
+    const skills = { ...(json.skillOverrides ?? {}), ...picked.skills }
+    for (const name of Object.keys(skills)) if (skills[name] === 'on') delete skills[name]
+    json.skillOverrides = skills
   })
   if (!wrote) return
   await markDirty($)
@@ -862,8 +867,8 @@ export const register: Register = on => {
                 <Box flexDirection="column">
                   <Text bold>{n}</Text>
                   <Text dimColor>
-                    {plugOn} plugins on, {skillOff} skills off{trimmed}{cost}. Apply sets every
-                    switch exactly so.
+                    {plugOn} plugins on, {skillOff} skills off{trimmed}{cost}. Apply sets the
+                    switches it names and leaves the rest.
                   </Text>
                 </Box>
                 <Box gap={1}>
