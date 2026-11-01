@@ -6,6 +6,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
 | [Toggles](#toggles) | `/toggles` | Switches plugins, skills and MCP servers on and off from one pane, shows what each costs in context, and saves the set as a profile |
+| [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
 
 ## Requirements
 
@@ -21,6 +22,7 @@ claude plugin marketplace add smashedonehd/4a-mods
 ```bash
 claude plugin install cache-keeper@4a-mods
 claude plugin install plugin-toggles@4a-mods
+claude plugin install plan-keeper@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
@@ -55,9 +57,17 @@ Every skill, plugin and MCP server that is on takes context in every turn, wheth
 - **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat. Apply now waits up to three seconds for Claude Code to read the new settings in, and reloads only once it has. A mod you switch, Toggles itself included, takes effect only in a new chat.
 - **A switch set higher up** (the project's `.claude/settings.json` or `.claude/settings.local.json`, `--settings`, managed settings) is not written over: the press says where it is set.
 
+## Plan Keeper
+
+A plan is written once and then left. Ticking its checkboxes is Claude's job, and Claude forgets, so minutes after it is written the plan no longer says what is done. Plan Keeper ticks the plan from what the task list recorded, not from what Claude remembers.
+
+- **The active plan** is the last plan file this chat wrote (a `.md` inside a folder named `plans`: `~/.claude/plans`, `docs/plans`, `docs/superpowers/plans`) or the last plan you named in a prompt (a `.md` with a checkbox, in a `plans` folder or with "plan" in its name). A subagent's writes don't count. A chat that starts or clears with neither picks the newest plan changed in the last 7 days that has an open item and is this folder's. That is a plan in `~/.claude/plans` that names the folder, or names a file in it that exists and lies outside any nested project (a folder on the way with its own `.git` or `CLAUDE.md`: another repository, a worktree), or a plan in the folder's own `docs/superpowers/plans`, `docs/plans` or `plans`. `D:\app` does not name `D:\app-old`. A chat in the home folder or a drive root picks none by folder, and after `/resume` or `/branch` no plan is active until the chat writes or names one. No match, no plan: Plan Keeper does nothing.
+- **Ticks** come at the Desktop app's wrap-up, at a turn's end, before a `/clear`, and after a `gh pr merge` that succeeds (not `--auto`, which only queues it). A step that is completed on the task list (the Desktop app's task list, `TodoWrite`, or `TaskCreate` and `TaskUpdate`; a subagent's own list does not count) ticks the item with the same text, ignoring case, spacing, `**bold**`, `` `code` `` and a closing period. A step named like a task's heading (`### Task 2: Matcher`, by its whole text or by `Matcher`) ticks every item under it; other headings tick nothing. A step that matches two items, or none, ticks nothing, so a plan with `Step 1: Write the failing test` in every task is never ticked by that step. The wrap-up checks the running step off, unless it stops on a question. Each completed step is held against a plan once: an item you untick by hand stays unticked, and steps finished before a plan became active tick nothing in it. Only `[ ]` turns into `[x]`: nothing else in the file moves, and a file with nothing to tick is not written.
+- **A fresh or cleared chat** gets a note with the plan's open items (one by one when there are up to 8, else one row per heading with its open count) and a toast. The note asks Claude to name task-list steps after the plan's items or task headings, so they tick.
+
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Neither makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. None makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
