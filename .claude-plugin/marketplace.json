@@ -1,6 +1,6 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list; Prompt Translate turns your draft into English with one button.",
   "owner": {
     "name": "4AM"
   },
@@ -19,6 +19,11 @@
       "name": "plan-keeper",
       "source": "./plan-keeper",
       "description": "Ticks a plan file's checkbox items once the task-list step of the same text is done, and lists the open items when a chat starts or clears"
+    },
+    {
+      "name": "prompt-translate",
+      "source": "./prompt-translate",
+      "description": "An EN button above the prompt (or /translate) that has Haiku translate your draft into English in place, without sending it"
     }
   ]
 }
