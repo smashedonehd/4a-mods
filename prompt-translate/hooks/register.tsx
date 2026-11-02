@@ -53,12 +53,14 @@ async function fill($: any, text: string) {
 // quick presses cannot both start; the atom only redraws the button.
 let running = false
 
+// False when one was already running and this one did not start.
 async function once($: any, work: () => Promise<void>) {
-  if (running) return
+  if (running) return false
   running = true
-  await update($, isBusy, () => true)
   try {
+    await update($, isBusy, () => true)
     await work()
+    return true
   } finally {
     running = false
     await update($, isBusy, () => false)
@@ -99,11 +101,11 @@ export const register: Register = on => {
   on('command.run', { command: 'translate' }, async ($, e) => {
     const text = e.args.trim()
     if (text === '') return { text: 'Type the text after /translate, or press 🌐 EN above the prompt.' }
-    await once($, async () => {
+    const started = await once($, async () => {
       const out = await translate($, text)
       if (out !== undefined) await fill($, out)
     })
-    return {}
+    return started ? {} : { text: 'A translation is already running. Try again when it is done.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
