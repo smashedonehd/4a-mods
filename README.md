@@ -6,6 +6,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
 | [Toggles](#toggles) | `/toggles` | Switches plugins, skills and MCP servers on and off from one pane, shows what each costs in context, and saves the set as a profile |
+| [Prompt Translate](#prompt-translate) | `/translate` | Translates the draft in the prompt box into English with one button, without sending it |
 | [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
 
 ## Requirements
@@ -23,6 +24,7 @@ claude plugin marketplace add smashedonehd/4a-mods
 claude plugin install cache-keeper@4a-mods
 claude plugin install plugin-toggles@4a-mods
 claude plugin install plan-keeper@4a-mods
+claude plugin install prompt-translate@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
@@ -57,6 +59,15 @@ Every skill, plugin and MCP server that is on takes context in every turn, wheth
 - **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat. Apply now waits up to three seconds for Claude Code to read the new settings in, and reloads only once it has. A mod you switch, Toggles itself included, takes effect only in a new chat.
 - **A switch set higher up** (the project's `.claude/settings.json` or `.claude/settings.local.json`, `--settings`, managed settings) is not written over: the press says where it is set.
 
+## Prompt Translate
+
+Write a prompt in any language, press one button, and send it in English.
+
+- **`🌐 EN`** above the prompt reads the draft in the prompt box, has Haiku translate it into English, and puts the translation in its place. Nothing is sent: you press Enter.
+- **`/translate <text>`** translates the text after the command and puts it in the prompt box. Sending the command takes the draft with it, so the text goes after the name.
+- **Kept verbatim:** code blocks, inline code, file paths, @-mentions, slash commands, URLs, identifiers and placeholders such as `[Image #1]`. Text already in English comes back unchanged.
+- **The draft is left as it is** when it is empty, when the call fails or the reply is cut short (a toast says why), or when you typed on while the translation ran.
+
 ## Plan Keeper
 
 A plan is written once and then left. Ticking its checkboxes is Claude's job, and Claude forgets, so minutes after it is written the plan no longer says what is done. Plan Keeper ticks the plan from what the task list recorded, not from what Claude remembers.
@@ -67,7 +78,7 @@ A plan is written once and then left. Ticking its checkboxes is Claude's job, an
 
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. None makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
