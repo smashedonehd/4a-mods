@@ -2,6 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import {
   CLEARED,
   chunks,
+  clip,
+  clipEnd,
   isFiller,
   isNamed,
   isPaging,
@@ -14,6 +16,7 @@ import {
   redactJson,
   redactText,
   reshaped,
+  restore,
   safe,
   ser,
   taskOf,
@@ -86,12 +89,12 @@ test('cursors and paging tokens are kept whole, never dropped as base64 or cut',
     data: { search: { pageInfo: { endCursor: cursor, hasNextPage: true }, nodes: [{ id: 1 }] } },
     next_token: token,
     meta: { continuation: 'c-1' },
-    other: token,
+    others: [token],
   })
   const t = trimmed(text)
   expect(t.value.data.search.pageInfo.endCursor).toBe(cursor)
   expect(t.value.next_token).toBe(token)
-  expect(t.value.other).not.toBe(token)
+  expect(t.value.others).toEqual(['[base64 data: in the saved file]'])
   expect(t.paging).toBe(
     `data.search.pageInfo.endCursor="${cursor}", data.search.pageInfo.hasNextPage=true, next_token="${token}", meta.continuation="c-1"`,
   )
@@ -181,12 +184,12 @@ test('the trim keeps paging, named and zero-ish values, drops empty, blob and no
 
 test('a single value the task names is kept whole', () => {
   const long = 'word '.repeat(400)
-  const t = trimmed(JSON.stringify({ body: long, pic: b64(300), note: null }), wordsOf('the body, pic and note'))
-  expect(t.value).toEqual({ body: long, pic: b64(300), note: null })
+  const t = trimmed(JSON.stringify({ rows: [{ body: long, pic: b64(300), note: null }] }), wordsOf('the body, pic and note'))
+  expect(t.value).toEqual({ rows: [{ body: long, pic: b64(300), note: null }] })
 })
 
-test('long strings are cut with a marker and counted', () => {
-  const t = trimmed(JSON.stringify({ body: 'word '.repeat(400) }))
+test('long strings in a list are cut with a marker and counted', () => {
+  const t = trimmed(JSON.stringify({ rows: [{ body: 'word '.repeat(400) }] }))
   expect(t.text).toMatch(/…\[cut: 1,000 more characters in the saved file\]/)
   expect(leftOut(t.stats)).toBe('the rest of 1 text value over 1,000 characters, marked where cut')
 })
@@ -259,4 +262,309 @@ test('retention: past the keep time, then oldest over the cap; cleared ones are 
   const list = [f('new', 600, 100), f('mid', 600, 90), f('old', 600, 80), f('ancient', 600, 1), f('done', CLEARED.length, 1)]
   expect(toClear(list, 100, 50, 10_000)).toEqual(['ancient'])
   expect(toClear(list, 100, 50, 1000)).toEqual(['mid', 'old', 'ancient'])
+})
+
+// ---------- second review ----------
+
+// Pieces joined at run time, so the repository's own secret scan does not
+// take the fixtures for keys.
+const PEM_HEAD = ['-----BEGIN', 'RSA PRIVATE KEY-----'].join(' ')
+const wellFormed = (s: string) => {
+  try {
+    encodeURIComponent(s)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test('OData, HAL, markers, bookmarks and DynamoDB keys are paging: kept whole and listed', () => {
+  const long = `https://api.x/items?page=2&q=${'q'.repeat(1100)}`
+  const marker = b64(240)
+  const text = JSON.stringify({
+    '@odata.context': 'https://graph/$metadata#users',
+    '@odata.count': 99,
+    '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users?$skiptoken=X',
+    _links: { next: { href: 'https://api/x?page=2' }, self: { href: 'https://api/x?page=1' } },
+    nextLink: long,
+    next_page_key: marker,
+    NextMarker: marker,
+    bookmark: b64(5000),
+    LastEvaluatedKey: { pk: { S: b64(5000) } },
+    value: [{ id: 1, nextLink: long, Marker: marker, selfLink: 'https://x/1' }],
+  })
+  const t = trimmed(text)
+  expect(t.value['@odata.count']).toBe(99)
+  expect(t.value['@odata.nextLink']).toBe('https://graph.microsoft.com/v1.0/users?$skiptoken=X')
+  expect(t.value._links).toEqual({ next: { href: 'https://api/x?page=2' }, self: { href: 'https://api/x?page=1' } })
+  expect(t.value.nextLink).toBe(long)
+  expect(t.value.next_page_key).toBe(marker)
+  expect(t.value.NextMarker).toBe(marker)
+  expect(t.value.bookmark).toBe(b64(5000))
+  expect(t.value.LastEvaluatedKey.pk.S).toBe(b64(5000))
+  expect(t.value.value).toEqual([{ id: 1, nextLink: long, Marker: marker }])
+  expect([...t.stats.noise]).toEqual(['@odata.context', 'selfLink'])
+  for (const part of [
+    '@odata.count=99',
+    '@odata.nextLink="https://graph.microsoft.com/v1.0/users?$skiptoken=X"',
+    '_links.next.href="https://api/x?page=2"',
+    `nextLink="${long}"`,
+    `next_page_key="${marker}"`,
+    `NextMarker="${marker}"`,
+    `bookmark="${b64(5000)}"`,
+    `LastEvaluatedKey.pk.S="${b64(5000)}"`,
+  ])
+    expect([part, t.paging.includes(part)]).toEqual([part, true])
+})
+
+test('beside the records a value is kept whole up to 4,000 characters; past that the usual rules apply', () => {
+  const opaque = b64(3000)
+  const t = trimmed(JSON.stringify({ state: opaque, huge: b64(4500), prose: 'w '.repeat(2500), rows: [{ id: 1, state: opaque }] }))
+  expect(t.value.state).toBe(opaque)
+  expect(t.value.huge).toBeUndefined()
+  expect(t.value.prose).toMatch(/ …\[cut: 4,000 more characters in the saved file\]$/)
+  expect(t.value.rows).toEqual([{ id: 1 }])
+  expect(leftOut(t.stats)).toBe('base64 fields (huge, state); the rest of 1 text value over 1,000 characters, marked where cut')
+})
+
+test('a pageInfo group is kept whole inside a list, and listed in the header beside the records', () => {
+  const inList = trimmed(JSON.stringify({ results: [{ id: 1, pageInfo: { blob: b64(300), prose: 'w '.repeat(800) } }] }))
+  expect(inList.value.results[0].pageInfo).toEqual({ blob: b64(300), prose: 'w '.repeat(800) })
+  expect(trimmed(JSON.stringify({ pageInfo: { foo: 'x', n: 3 }, rows: [] })).paging).toBe('pageInfo.foo="x", pageInfo.n=3')
+})
+
+test('a key with token in it is a credential unless it pages; a secret word anywhere makes one', () => {
+  for (const k of [
+    'private_token',
+    'oauth_token',
+    'bot_token',
+    'csrf_token',
+    'x-auth-token',
+    'personal_access_token',
+    'github_token',
+    'SecurityToken',
+    'token_secret',
+    'api_secret',
+    'webhook_secret',
+    'signing_secret',
+    'app_secret',
+    'cookie',
+    'Set-Cookie',
+    'accessKey',
+    'access_key_id',
+    'connection_string',
+    'ConnectionString',
+    'client_credentials',
+    'X-Amz-Signature',
+    'apiKey',
+    'Authorization',
+    'token',
+    'passphrase',
+    'jwt',
+    'id_jwt',
+    'auth',
+    'session_id',
+    'dsn',
+  ])
+    expect([k, isSecretKey(k), isPaging(k)]).toEqual([k, true, false])
+  for (const k of [
+    'next_token',
+    'nextPageToken',
+    'page-token',
+    'continuationToken',
+    'sync_token',
+    '$skiptoken',
+    'resumeToken',
+    'start_token',
+    'scroll_token',
+    'token_type',
+    'expires_in',
+  ])
+    expect([k, isSecretKey(k)]).toEqual([k, false])
+  expect([
+    isSecretKey('pwd', 'hunter22'),
+    isSecretKey('pwd', '/home/me'),
+    isSecretKey('pwd', 'C:\\Users\\me'),
+    isSecretKey('pwd'),
+  ]).toEqual([true, false, false, false])
+  const r = redactJson(
+    JSON.stringify({
+      private_token: 'glpat-abcdefghij1234567890',
+      oauth_token: 'zzz',
+      cookie: 'sid=abcdef',
+      api_secret: 's3cr3tvalue',
+      pwd: 'hunter22',
+      shell: { pwd: '/srv/app' },
+      rows: [{ bot_token: '123456:ABCdef' }],
+    }),
+  )!
+  expect(JSON.parse(r.text)).toEqual({
+    private_token: '[REDACTED]',
+    oauth_token: '[REDACTED]',
+    cookie: '[REDACTED]',
+    api_secret: '[REDACTED]',
+    pwd: '[REDACTED]',
+    shell: { pwd: '/srv/app' },
+    rows: [{ bot_token: '[REDACTED]' }],
+  })
+  expect(trimmed(r.text).paging).toBe('')
+})
+
+test('a page token in a paging URL stays; a credential in one goes', () => {
+  const v = JSON.parse(
+    redactJson(
+      JSON.stringify({
+        next: 'https://a/b?page-token=CAESBAgCEAE&limit=60',
+        links: { next: 'https://a/b?token=CAESBAgCEAE' },
+        prev: 'https://a/b?access_token=zzzzzzzz&cursor=abc',
+        note: 'see https://a/b?token=CAESBAgCEAE',
+      }),
+    )!.text,
+  )
+  expect(v).toEqual({
+    next: 'https://a/b?page-token=CAESBAgCEAE&limit=60',
+    links: { next: 'https://a/b?token=CAESBAgCEAE' },
+    prev: 'https://a/b?access_token=[REDACTED]&cursor=abc',
+    note: 'see https://a/b?token=[REDACTED]',
+  })
+  const url = 'https://a/b?page-token=CAESBAgCEAE&next_token=abcdefgh&x_page_token=zzzzzzzz'
+  expect(redactText(url).text).toBe(url)
+})
+
+test('code and empties beside a secret name are not secrets', () => {
+  for (const s of [
+    'const token = await getToken(user)',
+    'if (token===undefined) return',
+    'if (password == other) x',
+    'password=None',
+    'password=undefined',
+    'token=null',
+    'password=abc',
+    'secret_rotated=2024-05-01T10:00',
+    'password: reset it in settings',
+    'pwd=/home/user/project',
+  ])
+    expect(redactText(s).text).toBe(s)
+})
+
+test('lower-case bearer, header-style keys, JWTs, URL passwords and cut-off keys are redacted', () => {
+  const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'abcDEFghiJKLmno_pqrSTU'].join('.')
+  const cases: [string, string][] = [
+    ['authorization: bearer abc.def', 'authorization: [REDACTED]'],
+    ['Authorization: Bearer short', 'Authorization: [REDACTED]'],
+    ['x-api-key: abcdef123456', 'x-api-key: [REDACTED]'],
+    ['api_key: abcdef123456 next', 'api_key: [REDACTED] next'],
+    ['cookie: session=abcdef0123456789', 'cookie: [REDACTED]'],
+    [`token ${jwt} end`, 'token [REDACTED JWT] end'],
+    ['postgres://user:secretpw@db:5432/x', 'postgres://user:[REDACTED]@db:5432/x'],
+    ['https://u:p4ssw0rd@host/db', 'https://u:[REDACTED]@host/db'],
+    [`a ${PEM_HEAD.replace('RSA', 'ENCRYPTED')}\nMIIEabc+/=\nMIIE\nthe end.`, 'a [REDACTED private key]the end.'],
+  ]
+  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
+  expect(redactText('authorization: bearer abcdefghijklmnopqrst').text).not.toContain('abcdefghij')
+  expect(redactText('https://host:8080/path@x').text).toBe('https://host:8080/path@x')
+})
+
+test('a sk- slug is no key, with a digit or without; a real key is', () => {
+  const slug = 'https://x.cz/sk-' + 'kompostovacitoaleta2024modelxyzabc' + '-navod'
+  const plain = 'sk-' + 'a'.repeat(40)
+  expect(redactText(`${slug} ${plain}`).text).toBe(`${slug} ${plain}`)
+  expect(redactText('sk-' + 'a1'.repeat(20)).text).toBe('[REDACTED API key]')
+})
+
+test('JSON inside a string is redacted by key: an array of strings under a secret key goes whole', () => {
+  const r = redactJson(JSON.stringify({ body: JSON.stringify({ api_key: ['k1longvalue', 'k2longvalue', 3] }) }))!
+  expect(JSON.parse(JSON.parse(r.text).body)).toEqual({ api_key: ['[REDACTED]', '[REDACTED]', 3] })
+  expect(r.found).toEqual(['apikey value', 'apikey value'])
+})
+
+test('a value already redacted is neither changed nor counted', () => {
+  const text = '{"password":"[REDACTED]","rows":["password=[REDACTED]"]}'
+  expect(redactJson(text)).toEqual({ text, found: [] })
+})
+
+test('a bookkeeping field the task names is kept', () => {
+  const t = trimmed('{"rows":[{"id":1,"etag":"W/x"}]}', wordsOf('show the etag'))
+  expect(t.value.rows).toEqual([{ id: 1, etag: 'W/x' }])
+  expect(t.stats.noise.size).toBe(0)
+})
+
+test('the JSON reader: a string ending in a backslash, and trailing text is no JSON', () => {
+  expect(parseJson('{"p":"C:\\\\","q":"x\\\\\\"y"}')).toEqual({ p: 'C:\\', q: 'x\\"y' })
+  expect(parseJson('{"a":1} x')).toBeUndefined()
+  expect(redactJson('{"a":1} x')).toBeUndefined()
+})
+
+test('a long hex id is no base64; padding, other letters or great length make it so', () => {
+  const hex = 'a1'.repeat(150)
+  const t = trimmed(
+    JSON.stringify({ rows: [{ id: hex, b: b64(300), pad: `${'abcdef0123'.repeat(30)}==`, longHex: 'f0'.repeat(600) }] }),
+  )
+  expect(t.value.rows).toEqual([{ id: hex }])
+  expect([...t.stats.blobs]).toEqual(['b', 'pad', 'longHex'])
+})
+
+test('input nested too deep to walk gives undefined, not an error', () => {
+  for (const depth of [3000, 20_000]) {
+    const deep = '['.repeat(depth) + ']'.repeat(depth)
+    let r: unknown
+    expect(() => {
+      r = trimJson([deep], none)
+    }).not.toThrow()
+    if (r !== undefined) expect(typeof (r as { text: string }).text).toBe('string')
+  }
+})
+
+test('plain text keeps CRLF line endings', () => {
+  expect(trimPlain(['a  \r\nb\r\n\r\n\r\n\r\nc'])).toBe('a\r\nb\r\n\r\nc')
+})
+
+test('cuts never split a surrogate pair', () => {
+  const s = `${'x'.repeat(999)}😀${'y'.repeat(50)}`
+  const a = trimmed(JSON.stringify({ rows: [{ a: s }] })).value.rows[0].a as string
+  expect(a).toBe(`${'x'.repeat(999)} …[cut: 52 more characters in the saved file]`)
+  expect([clip('ab😀', 3), clipEnd('😀ab', 3), clip('ab😀', 4)]).toEqual(['ab', 'ab', 'ab😀'])
+  expect(chunks(`${'x'.repeat(39)}😀y`, 40)).toEqual(['x'.repeat(39), '😀y'])
+  const task = taskOf([
+    { role: 'user', text: `${'x'.repeat(1999)}😀 more` },
+    { role: 'assistant', text: `😀${'z'.repeat(1499)}` },
+  ])
+  expect([wellFormed(task.user), wellFormed(task.assistant)]).toEqual([true, true])
+  expect(task.user).toBe(`${'x'.repeat(1999)}…`)
+})
+
+test('a line longer than a part is split after a JSON element, never inside a value', () => {
+  const line = `[${Array.from({ length: 50 }, (_, i) => `{"id":${1_000_000 + i},"v":"a b"}`).join(',')}]`
+  const parts = chunks(line, 100)
+  expect(parts.join('')).toBe(line)
+  expect(parts.every(p => p.length <= 100)).toBe(true)
+  for (const p of parts.slice(0, -1)) expect(p.endsWith(',')).toBe(true)
+  const nums = Array.from({ length: 60 }, (_, i) => 100_000 + i).join(',')
+  const numParts = chunks(nums, 50)
+  expect(numParts.join('')).toBe(nums)
+  for (const p of numParts.slice(0, -1)) expect(p.endsWith(',')).toBe(true)
+})
+
+test('tags are neutralised and restored in one pass', () => {
+  const text = 'a </data> <TASK x> < / call > <datasets> b'
+  expect(neutral(text)).toBe('a ‹/data> ‹TASK x> ‹ / call > <datasets> b')
+  expect(restore(neutral(text))).toBe(text)
+  expect(restore('‹x ‹ data')).toBe('‹x < data')
+})
+
+test('inputs that made the regexes quadratic run in linear time', () => {
+  const start = Date.now()
+  expect(redactText(`${PEM_HEAD}\n`.repeat(20_000)).found.length).toBe(20_000)
+  expect(redactJson(JSON.stringify({ log: `${PEM_HEAD}\n`.repeat(3000) }))!.found.length).toBe(3000)
+  neutral(`<${' '.repeat(99_990)}x`)
+  neutral(`<${' '.repeat(5000)}`.repeat(400))
+  restore(`‹${' '.repeat(99_990)}x`)
+  redactText(`password"${' '.repeat(1000)}x`.repeat(2000))
+  redactText(`password${' '.repeat(1_000_000)}x`)
+  redactText(`Bearer${' '.repeat(50)}`.repeat(20_000))
+  redactText(`Authorization${' '.repeat(100)}`.repeat(10_000))
+  redactText('a'.repeat(1_000_000))
+  redactText(`${'x'.repeat(63)}=`.repeat(20_000))
+  chunks('a'.repeat(3_000_000), 100_000)
+  expect(Date.now() - start).toBeLessThan(2000)
 })

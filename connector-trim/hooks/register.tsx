@@ -3,8 +3,10 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { Totals } from '../types'
 import {
   CLEARED,
+  MARK,
   NL,
   chunks,
+  clip,
   fmt,
   leftOut,
   matches,
@@ -14,6 +16,7 @@ import {
   redactJson,
   redactText,
   reshaped,
+  restore,
   safe,
   stamp,
   taskOf,
@@ -145,11 +148,15 @@ function serial(work: () => Promise<void>) {
   return run
 }
 
-// A file too big to read whole is never written over: the call throws.
+// A file that is there is never written over unless it was read whole: when
+// it cannot be looked at or read, or is too big to read, the call throws.
 async function appendTo($: EngineInterface, path: string, line: string, capLines?: number) {
-  const st = await $.fs.stat(path).catch(() => undefined)
-  if (st && st.size >= READ_MAX_BYTES) throw new Error(`${path} is over 4 MiB, so it cannot be appended to`)
-  let old = st ? String(await $.fs.read(path)) : ''
+  let old = ''
+  if (await $.fs.exists(path)) {
+    const st = await $.fs.stat(path)
+    if (st.size >= READ_MAX_BYTES) throw new Error(`${path} is over 4 MiB, so it cannot be appended to`)
+    old = String(await $.fs.read(path))
+  }
   if (old !== '' && !old.endsWith(NL)) old += NL
   if (capLines === undefined && old.length > LEDGER_ROTATE) {
     await $.fs.write(path.replace(/\.jsonl$/, `-${stamp(await $.clock.now())}.jsonl`), old)
@@ -237,7 +244,7 @@ function argsOf(e: Call) {
   const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
   const json = JSON.stringify(args)
   const text = redactJson(json)?.text ?? redactText(json).text
-  return text.length > 2000 ? `${text.slice(0, 2000)}…` : text
+  return text.length > 2000 ? `${clip(text, 2000)}…` : text
 }
 
 // ---------- the helper model ----------
@@ -252,6 +259,7 @@ const SYSTEM = [
   '- Keep every record the task could use. If you leave records out, say how many and by what rule.',
   '- No introduction, no advice, no conclusions.',
   '- Your last line starts with "Left out:" and names the kinds of fields you did not keep.',
+  `- In the task, the call and the data, "${MARK}" stands for "<": where you copy such text, write "<".`,
 ].join(NL)
 
 function ask(tool: string, args: string, task: Task, part: string, i: number, n: number) {
@@ -309,7 +317,11 @@ async function condense(
       if (u.output_tokens >= maxTokens) return { error: "the helper's note was cut short", helper }
       notes.push(r.text.trim())
     }
-    const out = notes.join(`${NL}${NL}`)
+    // A `‹` in the note stands for a `<` the prompt neutralised, unless the
+    // input held `‹` of its own: then which is which cannot be told.
+    const own = [text, args, task.user, task.assistant].some(s => s.includes(MARK))
+    const joined = notes.join(`${NL}${NL}`)
+    const out = own ? joined : restore(joined)
     if (out === '' || out.length >= text.length) return { error: "the helper's note was not shorter", helper }
     return { text: out, helper }
   } finally {
@@ -380,14 +392,17 @@ async function shorten(
     await ledger($, e, tool, 'full', raw.length, raw.length, null)
     return undefined
   }
-  const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(redactText)
+  const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(t => redactText(t))
   const texts = red.map(r => r.text)
   const redacted = red.flatMap(r => r.found)
   const task = await taskFor($, e)
   const args = argsOf(e)
   const words = wordsOf(`${task.user} ${task.assistant} ${args}`)
   const trimmed = isJson ? trimJson(texts, words) : undefined
-  if (isJson && trimmed === undefined) return undefined
+  if (isJson && trimmed === undefined) {
+    await log($, `${tool}: passed whole, the JSON is not an object or a list, or nests too deep to trim`)
+    return undefined
+  }
   const body = trimmed?.text ?? trimPlain(texts)
   const file = await save($, e, tool, texts, isJson)
   if (file === undefined) return undefined

@@ -27,7 +27,7 @@ const report = (n: number, extra: Record<string, unknown> = {}) =>
       status: 'ENABLED',
       etag: `W/"${'e'.repeat(18)}"`,
       notes: null,
-      thumbnail: 'A1b2'.repeat(80),
+      thumbnail: 'R0lGODlh'.repeat(40),
     })),
   })
 const SMALL = report(60) // over 16,000 characters, under 8,000 once trimmed
@@ -55,6 +55,8 @@ type World = {
   files?: Record<string, string>
   stat?: Record<string, { size: number; mtimeMs: number }>
   store?: boolean
+  // A path whose stat or read fails as if access were denied.
+  bad?: { stat?: string; read?: string }
 }
 
 // Everything beneath the mod: files by forward-slash path, home at
@@ -70,6 +72,7 @@ const world = (on: any, w: World) => {
     value: at(e) in files || Object.keys(files).some(p => p.startsWith(`${at(e)}/`)),
   }))
   on('fs.read', (_: unknown, e: any): any => {
+    if (w.bad?.read === at(e)) throw new Error('EACCES')
     if (!(at(e) in files)) throw new Error(`ENOENT ${at(e)}`)
     return { value: files[at(e)] }
   })
@@ -78,6 +81,7 @@ const world = (on: any, w: World) => {
     return { value: undefined }
   })
   on('fs.stat', (_: unknown, e: any): any => {
+    if (w.bad?.stat === at(e)) throw new Error('EACCES')
     if (!(at(e) in files)) throw new Error(`ENOENT ${at(e)}`)
     return { value: { kind: 'file', size: w.stat?.[at(e)]?.size ?? files[at(e)]!.length, mtimeMs: NOW, isLink: false } }
   })
@@ -211,7 +215,7 @@ test('JSON inside a text field is unpacked and trimmed too', async ($, on) => {
   world(on, { result: block(wrapped) })
   const text = String(await call($))
   expect(text).toContain('"same in every record"')
-  expect(text).not.toContain('A1b2A1b2')
+  expect(text).not.toContain('R0lGODlhR0lG')
 })
 
 test('Haiku path: a big trimmed result is condensed for the last real request', async ($, on) => {
@@ -283,7 +287,7 @@ test('a failure before the tool ran still runs it once', async ($, on) => {
 test('secrets are redacted before saving and before any model sees them', async ($, on) => {
   const token = 'abcDEF0123456789' + 'xyz'.repeat(8)
   const pass = 'hunter' + '2-correct'
-  const leaky = report(140, { auth: `Bearer ${token}`, password: pass })
+  const leaky = report(140, { header: `Bearer ${token}`, password: pass })
   const { files, asked } = world(on, { result: block(leaky) })
   const text = String(await call($))
   const file = files[saved(files)[0]!]!
@@ -291,7 +295,7 @@ test('secrets are redacted before saving and before any model sees them', async 
     expect(seen).not.toContain(token)
     expect(seen).not.toContain(pass)
   }
-  expect(file).toContain('"auth":"[REDACTED bearer token]"')
+  expect(file).toContain('"header":"[REDACTED bearer token]"')
   expect(file).toContain('"password":"[REDACTED]"')
   expect(JSON.parse(file).total).toBe(1234)
   expect(text).toContain('Redacted before saving and before any model saw it: 1 bearer token, 1 password value.')
@@ -395,7 +399,7 @@ test('with condense_text on, a big text result is condensed', { options: { conde
 })
 
 test('big numbers and decimals reach Claude and the saved file exactly as written', async ($, on) => {
-  const rows = Array.from({ length: 60 }, (_, i) => `{"id": 90071992547409${i % 10}3, "price": 1.50, "name": "Položka ${i}", "blob": "${'A1b2'.repeat(80)}"}`)
+  const rows = Array.from({ length: 60 }, (_, i) => `{"id": 90071992547409${i % 10}3, "price": 1.50, "name": "Položka ${i}", "blob": "${'R0lGODlh'.repeat(40)}"}`)
   const text = `{"total": 12345678901234567890, "items": [${rows.join(', ')}]}`
   const { files } = world(on, { result: block(text) })
   const note = String(await call($))
@@ -498,4 +502,85 @@ test('a ledger too big to read is never written over, and the log says so once',
   await call($)
   expect(files[LEDGER]).toBe(big)
   expect(files[LOG]!.match(/savings ledger was not written/g)?.length).toBe(1)
+})
+
+// ---------- second review ----------
+
+test('OData and HAL paging reach Claude whole and are listed in the header', async ($, on) => {
+  const marker = 'Zm9vYmFy0123'.repeat(20)
+  const text = JSON.stringify({
+    '@odata.context': 'https://graph.microsoft.com/v1.0/$metadata#users',
+    '@odata.count': 4321,
+    '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users?$top=100&$skiptoken=RFNwdAIAAQAAAB',
+    _links: { next: { href: 'https://api.example.com/items?page=3' } },
+    NextMarker: marker,
+    value: Array.from({ length: 200 }, (_, i) => ({ id: `u${i}`, displayName: `User ${i}`, jobTitle: null, photo: 'R0lGODlh'.repeat(30) })),
+  })
+  world(on, { result: block(text) })
+  const head = String(await call($)).split('\n\n')[0]!
+  expect(head).toContain(
+    'Paging and counts, values as returned: @odata.count=4321, @odata.nextLink="https://graph.microsoft.com/v1.0/users?$top=100&$skiptoken=RFNwdAIAAQAAAB", _links.next.href="https://api.example.com/items?page=3", ' +
+      `NextMarker="${marker}"`,
+  )
+  expect(head).toContain('API bookkeeping fields (@odata.context)')
+})
+
+test('a page token in a next URL survives in the note and the saved file', async ($, on) => {
+  const next = 'https://api.example.com/v1/rows?page-token=CAESBAgCEAE&limit=60'
+  const link = 'https://api.example.com/v1/rows?token=CAESBAgCEAE'
+  const { files } = world(on, { result: block(report(60, { next, links: { next: link } })) })
+  const note = String(await call($))
+  expect(note).toContain(`next="${next}"`)
+  expect(note).toContain(`links.next="${link}"`)
+  expect(files[saved(files)[0]!]).toContain(link)
+})
+
+for (const [what, bad] of [
+  ['looked at', { stat: LEDGER }],
+  ['read', { read: LEDGER }],
+] as const)
+  test(`a ledger that cannot be ${what} is never written over`, async ($, on) => {
+    const other = '{"mod":"cache-keeper"}\n'
+    const { files } = world(on, { result: block(SMALL), files: { [LEDGER]: other }, bad })
+    expect(String(await call($))).toMatch(/^\[Connector Trim\]/)
+    expect(files[LEDGER]).toBe(other)
+    expect(files[LOG]).toMatch(/the savings ledger was not written/)
+  })
+
+test('the helper is told what ‹ means, and its note gets < back where the prompt put ‹', async ($, on) => {
+  const reply = (e: any) => ok(`html: ${String(e.prompt).includes('‹data>1‹/data>') ? '‹data>1‹/data>' : 'missing'}\nLeft out: x`)
+  const { asked } = world(on, { result: block(report(140, { html: '<data>1</data>' })), reply })
+  const note = String(await call($))
+  expect(asked[0].system).toContain('"‹" stands for "<"')
+  expect(note).toContain('html: <data>1</data>')
+})
+
+test('a note keeps ‹ when the data held ‹ of its own', async ($, on) => {
+  const reply = () => ok('html: ‹data>1‹/data>\nLeft out: x')
+  world(on, { result: block(report(140, { html: '‹data>1‹/data>' })), reply })
+  expect(String(await call($))).toContain('html: ‹data>1‹/data>')
+})
+
+test('a JSON result that is no object or list passes whole, and the log says why', async ($, on) => {
+  const text = JSON.stringify('x'.repeat(20_000))
+  const { files } = world(on, { result: block(text) })
+  expect(await call($)).toEqual(block(text))
+  expect(files[LOG]).toMatch(/passed whole, the JSON is not an object or a list, or nests too deep to trim/)
+})
+
+test('an emoji at a cut reaches Claude whole, never half', { options: { min_chars: 1000 } }, async ($, on) => {
+  const text = JSON.stringify({ rows: Array.from({ length: 5 }, (_, i) => ({ i, d: `${'x'.repeat(999)}😀${'y'.repeat(2000)}` })) })
+  world(on, { result: block(text) })
+  const note = String(await call($))
+  expect(() => encodeURIComponent(note)).not.toThrow()
+  expect(note).toContain(`"d":"${'x'.repeat(999)} …[cut: 2,002 more characters in the saved file]"`)
+})
+
+test('retention runs again after every 25 saves', async ($, on) => {
+  const old = `${RESULTS}/20260101-000000-ads-old-x.json`
+  const { files } = world(on, { result: block(SMALL), files: { [old]: 'x'.repeat(500) }, stat: { [old]: { size: 500, mtimeMs: NOW - 30 * DAY } } })
+  for (let i = 0; i < 24; i++) await call($, { tool_use_id: `t${i}` })
+  expect(files[old]).toBe('x'.repeat(500))
+  await call($, { tool_use_id: 't24' })
+  expect(files[old]).toMatch(/^\[Connector Trim\] This saved result was cleared/)
 })

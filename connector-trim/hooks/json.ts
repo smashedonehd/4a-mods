@@ -19,17 +19,23 @@ export function put(o: Json, k: string, v: unknown) {
 }
 
 // Called for each string value: its span in the text (quotes included), its
-// value, and the key it stands under (an array's elements take the array's).
-export type Visit = (start: number, end: number, value: string, key: string | undefined) => void
+// value, and the keys it stands under, outermost first (an array's elements
+// stand under the array's key). The path is live: copy it to keep it.
+export type Visit = (start: number, end: number, value: string, path: readonly string[]) => void
 
 const NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 const WS = /[ \t\n\r]*/y
 
+// Thrown for text that is not JSON: one object, since building an error and
+// its stack for each of many small strings costs more than reading them.
+const NOT_JSON = new SyntaxError('not JSON')
+
 // The value of `text`, which must be one JSON value; throws when it is not.
 export function readJson(text: string, visit?: Visit): unknown {
   let i = 0
+  const path: string[] = []
   const fail = (): never => {
-    throw new SyntaxError(`not JSON at ${i}`)
+    throw NOT_JSON
   }
   const ws = () => {
     WS.lastIndex = i
@@ -51,7 +57,7 @@ export function readJson(text: string, visit?: Visit): unknown {
     i = j + 1
     return [JSON.parse(text.slice(start, i)) as string, start]
   }
-  const value = (key: string | undefined): unknown => {
+  const value = (): unknown => {
     ws()
     const c = text[i]
     if (c === '{') {
@@ -66,7 +72,9 @@ export function readJson(text: string, visit?: Visit): unknown {
         ws()
         if (text[i] !== ':') fail()
         i++
-        put(o, k, value(k))
+        path.push(k)
+        put(o, k, value())
+        path.pop()
         ws()
         if (text[i] === ',') i++
         else if (text[i] === '}') return (i++, o)
@@ -79,7 +87,7 @@ export function readJson(text: string, visit?: Visit): unknown {
       ws()
       if (text[i] === ']') return (i++, a)
       for (;;) {
-        a.push(value(key))
+        a.push(value())
         ws()
         if (text[i] === ',') i++
         else if (text[i] === ']') return (i++, a)
@@ -88,7 +96,7 @@ export function readJson(text: string, visit?: Visit): unknown {
     }
     if (c === '"') {
       const [s, start] = str()
-      visit?.(start, i, s, key)
+      visit?.(start, i, s, path)
       return s
     }
     for (const [word, v] of [['true', true], ['false', false], ['null', null]] as const)
@@ -101,7 +109,7 @@ export function readJson(text: string, visit?: Visit): unknown {
     const n = Number(raw)
     return String(n) === raw ? n : new Exact(raw)
   }
-  const v = value(undefined)
+  const v = value()
   ws()
   if (i !== text.length) fail()
   return v

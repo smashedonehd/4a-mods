@@ -6,10 +6,25 @@ import type { Json } from './json.ts'
 
 export { isObject, parseJson, ser }
 export const NL = '\n'
+// A text value inside a list is cut past this many characters.
 export const STRING_CAP = 1000
+// A text value outside every list (beside the records) is kept whole up to this.
+export const HEAD_CAP = 4000
 // Approximate tokens, the way the savings ledger counts them.
 export const tokens = (chars: number) => Math.ceil(chars / 4)
 export const fmt = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+// ---------- slicing ----------
+
+const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff
+const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff
+// An end index that does not split a surrogate pair: one back when it would.
+export const safeEnd = (s: string, n: number) => (n > 0 && n < s.length && isHigh(s.charCodeAt(n - 1)) ? n - 1 : n)
+// A start index that does not split a surrogate pair: one on when it would.
+export const safeStart = (s: string, n: number) => (n > 0 && n < s.length && isLow(s.charCodeAt(n)) ? n + 1 : n)
+// The first `n` characters, or the last, never half an emoji.
+export const clip = (s: string, n: number) => s.slice(0, safeEnd(s, n))
+export const clipEnd = (s: string, n: number) => s.slice(safeStart(s, Math.max(0, s.length - n)))
 
 // ---------- the result's text ----------
 
@@ -38,36 +53,65 @@ export function textsOf(result: unknown): { texts: string[] } | { skip: string }
 
 const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-// Keys whose value is a credential. `token` alone is one; a paging token
-// (`next_token`, `sync_token`) is not.
-const SECRET_KEYS = new Set(
-  (
-    'password passwd passphrase secret clientsecret apikey xapikey apitoken accesstoken refreshtoken idtoken ' +
-    'authtoken bearertoken sessiontoken token authorization privatekey secretkey secretaccesskey'
-  ).split(' '),
-)
-export const isSecretKey = (key: string) => SECRET_KEYS.has(norm(key))
+// A token that pages rather than signs in: `next_token`, `pageToken`,
+// `$skiptoken`, `continuationToken`, `syncToken`, `scroll_token`.
+const PAGE_TOKEN = /(?:next|page|continuation|sync|skip|resume|start|scroll)token/
+// Fields about a token rather than the token itself: `token_type`, `token_expires_in`.
+const TOKEN_META = /token(?:type|count|usage|limit|expiry|expires[a-z]*|ttl|length|lifetime)$/
+const SECRET_WORDS =
+  /secret|password|passwd|passphrase|credential|cookie|apikey|accesskey|privatekey|connectionstring|authorization|signature|jwt/
+// Short names that are a credential only as the whole key.
+const SECRET_NAMES = new Set(['auth', 'sessionid', 'sessionkey', 'dsn'])
+// A value that is a file path, as `pwd` holds in a shell's output.
+const isPath = (v: string) => /^(?:[A-Za-z]:[\\/]|[\\/~]|\.{1,2}[\\/])/.test(v)
+
+// Keys whose value is a credential: a key with a secret word in it, and a key
+// with `token` in it that is no paging token. `pwd` is a password unless its
+// value is a path.
+export function isSecretKey(key: string, value?: string) {
+  const n = norm(key)
+  if (n === 'pwd') return typeof value === 'string' && !isPath(value)
+  if (SECRET_WORDS.test(n) || SECRET_NAMES.has(n)) return true
+  return n.includes('token') && !PAGE_TOKEN.test(n) && !TOKEN_META.test(n)
+}
 
 // Keys of paging and counts: kept as returned and listed in the header.
 const PAGING = new Set(
   (
-    'page pages pagenumber pagesize perpage pagetoken nextpage hasnextpage haspreviouspage hasmore more total ' +
-    'totalcount totalresults totalrows totalsize count rowcount offset limit cursor next previous after before ' +
-    'startindex itemsperpage truncated scrollid'
+    'page pages pagenumber pagesize perpage nextpage hasnextpage haspreviouspage hasmore more total totalcount ' +
+    'totalresults totalrows totalsize totalitems count rowcount offset limit skip cursor next prev previous after ' +
+    'before startindex itemsperpage truncated scrollid marker bookmark odatacount lastevaluatedkey ' +
+    'exclusivestartkey startingafter endingbefore'
   ).split(' '),
 )
-export const isPaging = (key: string) =>
-  PAGING.has(norm(key).replace(/[0-9]/g, '')) || (/token|cursor|continuation/.test(norm(key)) && !isSecretKey(key))
-// Every field of a GraphQL `pageInfo` is paging.
-const isPagingGroup = (key: string) => norm(key) === 'pageinfo'
+// Links that are a record's own address, not the way to another page.
+const OWN_LINKS = new Set(['selflink', 'editlink', 'odataeditlink'])
+const pagingCache = new Map<string, boolean>()
+export function isPaging(key: string) {
+  let hit = pagingCache.get(key)
+  if (hit === undefined) {
+    const n = norm(key)
+    hit =
+      !isSecretKey(key) &&
+      (PAGING.has(n.replace(/[0-9]/g, '')) ||
+        n.startsWith('next') ||
+        (/links?$/.test(n) && !OWN_LINKS.has(n)) ||
+        /cursor|continuation|marker|bookmark/.test(n) ||
+        PAGE_TOKEN.test(n))
+    if (pagingCache.size < 10_000) pagingCache.set(key, hit)
+  }
+  return hit
+}
+// Objects whose every field is paging, whatever its name: GraphQL `pageInfo`,
+// and the object under any paging key (HAL `_links`, DynamoDB `LastEvaluatedKey`).
+const isPagingGroup = (key: string) => isPaging(key) || ['pageinfo', 'pagination', 'paging'].includes(norm(key))
 
 // ---------- secrets ----------
 
 // Conservative: formats with a fixed shape, and a value written beside a key
 // that names a secret. A miss is possible; a false hit costs one value.
 const PATTERNS: [RegExp, string][] = [
-  [/-{5}BEGIN [A-Z ]*PRIVATE KEY-{5}[\s\S]*?-{5}END [A-Z ]*PRIVATE KEY-{5}/g, 'private key'],
-  [/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/g, 'bearer token'],
+  [/\bbearer[ \t]{1,8}[A-Za-z0-9._~+/-]{16,}=*/gi, 'bearer token'],
   // `sk-ant-…` and `sk-proj-…`, or one unbroken run with a digit in it: a
   // slug such as `sk-suche-zachody` is no key.
   [/\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|\bsk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
@@ -76,21 +120,67 @@ const PATTERNS: [RegExp, string][] = [
   [/\bAIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
   [/\bya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
   [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
+  [/\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]{5,}/g, 'JWT'],
 ]
-const KEYS =
-  'password|passwd|passphrase|client[_-]?secret|secret[_-]?access[_-]?key|secret|x-api-key|api[_-]?key|api[_-]?token|' +
-  'access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|bearer[_-]?token|session[_-]?token|token|private[_-]?key'
-// `Authorization: Basic …`: the scheme and credentials go.
-const AUTH = /\b(Authorization["']?\s*[:=]\s*["']?)(?:Basic|Digest|Token)\s+[^\s"',;]+/gi
-// `password="…"` or `password: '…'`: the value to its closing quote.
-const QUOTED = new RegExp(`\\b(${KEYS})(["']?\\s*[:=]\\s*)(["'])(?!\\[REDACTED)([^"'\\n]+)\\3`, 'gi')
-// `password=…` unquoted. Not after a colon: "password: reset it" is prose.
-const EQUALS = new RegExp(`\\b(${KEYS})(\\s*=\\s*)(?!\\[REDACTED)([^\\s"',;&<>]{4,})`, 'gi')
+// `Authorization: Basic …`, any case: the scheme and credentials go.
+const AUTH = /\b(authorization["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:basic|digest|token|bearer)[ \t]{1,8}[^\s"',;]+/gi
+// `postgres://user:password@host`: the password goes.
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{1,20}:\/\/[^\s:/@"']{1,256}:)(?!\[REDACTED)[^\s/@"']{1,256}@/gi
+// A name a value is written beside: whole, not the tail of a longer word.
+const NAME = String.raw`(?<![\w.-])([A-Za-z_][\w.-]{0,63})`
+// `password="…"` or `"password": '…'`: the value to its closing quote.
+const QUOTED = new RegExp(`${NAME}(["']?[ \\t]{0,8}[:=][ \\t]{0,8})(["'])(?!\\[REDACTED)([^"'\\n]+)\\3`, 'g')
+// `password=…` unquoted: one `=`, the value right after it.
+const EQUALS = new RegExp(`${NAME}=(?![=\\s])([^\\s"',;&<>]+)`, 'g')
+// `x-api-key: abc123…` header style: one word of 8 or more with a digit in it,
+// so "password: reset it in settings" stays.
+const COLON = new RegExp(`${NAME}(["']?:[ \\t]{0,8})(?!["'\\[])([^\\s"',;]{8,})`, 'g')
+// Values a name may stand beside without being a secret: code and empties.
+const NOT_A_VALUE = /^(?:none|null|nil|undefined|true|false|\d{4}-\d\d-\d\d.*)$/i
 
-// Secrets in plain text, by pattern.
-export function redactText(text: string) {
+// A private key block, found by index: a header with no END marker after it
+// is cut through the whole base64 lines that follow (a blank line or a line
+// with any other character ends it). Linear in the text.
+const PEM_HEAD = /-{5}BEGIN (?:[A-Z]+ ){0,4}PRIVATE KEY-{5}/y
+const PEM_TAIL = /-{5}END (?:[A-Z]+ ){0,4}PRIVATE KEY-{5}/y
+function redactPem(text: string, found: string[]) {
+  let out = ''
+  let at = 0
+  let noEnd = false
+  for (let i = text.indexOf('-----BEGIN ', 0); i >= 0; i = text.indexOf('-----BEGIN ', Math.max(i + 1, at))) {
+    PEM_HEAD.lastIndex = i
+    if (!PEM_HEAD.test(text)) continue
+    let end = -1
+    for (let j = noEnd ? -1 : text.indexOf('-----END ', PEM_HEAD.lastIndex); j >= 0; j = text.indexOf('-----END ', j + 1)) {
+      PEM_TAIL.lastIndex = j
+      if (PEM_TAIL.test(text)) {
+        end = PEM_TAIL.lastIndex
+        break
+      }
+    }
+    if (end < 0) {
+      noEnd = true
+      end = PEM_HEAD.lastIndex
+      for (let first = true; end < text.length; first = false) {
+        const eol = text.indexOf(NL, end)
+        const line = text.slice(end, eol < 0 ? text.length : eol)
+        if (!/^[A-Za-z0-9+/=]*\r?$/.test(line) || (!first && line.trim() === '')) break
+        end = eol < 0 ? text.length : eol + 1
+      }
+    }
+    found.push('private key')
+    out += `${text.slice(at, i)}[REDACTED private key]`
+    at = end
+  }
+  return out + text.slice(at)
+}
+
+// Secrets in plain text. Under a paging key, a bare `token=` is the page's
+// token and stays; a credential named as one (`access_token=`) still goes.
+export function redactText(text: string, paging = false) {
   const found: string[] = []
-  let out = text
+  const secret = (name: string, value: string) => isSecretKey(name, value) && !(paging && norm(name) === 'token')
+  let out = redactPem(text, found)
   for (const [re, kind] of PATTERNS)
     out = out.replace(re, () => {
       found.push(kind)
@@ -100,13 +190,24 @@ export function redactText(text: string) {
     found.push('authorization value')
     return `${head}[REDACTED]`
   })
-  out = out.replace(QUOTED, (_m, key: string, sep: string, q: string) => {
-    found.push(`${key.toLowerCase()} value`)
-    return `${key}${sep}${q}[REDACTED]${q}`
+  out = out.replace(URL_PASSWORD, (_m, head: string) => {
+    found.push('URL password')
+    return `${head}[REDACTED]@`
   })
-  out = out.replace(EQUALS, (_m, key: string, sep: string) => {
-    found.push(`${key.toLowerCase()} value`)
-    return `${key}${sep}[REDACTED]`
+  out = out.replace(QUOTED, (m, name: string, sep: string, q: string, value: string) => {
+    if (!secret(name, value)) return m
+    found.push(`${norm(name)} value`)
+    return `${name}${sep}${q}[REDACTED]${q}`
+  })
+  out = out.replace(EQUALS, (m, name: string, value: string) => {
+    if (value.length < 6 || value.startsWith('[') || NOT_A_VALUE.test(value) || !secret(name, value)) return m
+    found.push(`${norm(name)} value`)
+    return `${name}=[REDACTED]`
+  })
+  out = out.replace(COLON, (m, name: string, sep: string, value: string) => {
+    if (!/\d/.test(value) || NOT_A_VALUE.test(value) || !secret(name, value)) return m
+    found.push(`${norm(name)} value`)
+    return `${name}${sep}[REDACTED]`
   })
   return { text: out, found }
 }
@@ -119,13 +220,15 @@ export function redactJson(text: string): { text: string; found: string[] } | un
   const edits: [number, number, string][] = []
   const found: string[] = []
   try {
-    readJson(text, (start, end, value, key) => {
+    readJson(text, (start, end, value, path) => {
+      const key = path[path.length - 1]
       let out: string | undefined
-      if (key !== undefined && isSecretKey(key) && value !== '' && !value.startsWith('[REDACTED')) {
+      if (key !== undefined && isSecretKey(key, value) && value !== '' && !value.startsWith('[REDACTED')) {
         out = '[REDACTED]'
         found.push(`${norm(key)} value`)
       } else {
-        const r = (/^\s*[[{]/.test(value) && redactJson(value)) || redactText(value)
+        const paging = path.some(isPagingGroup)
+        const r = (/^\s*[[{]/.test(value) && redactJson(value)) || redactText(value, paging)
         if (r.text !== value) {
           out = r.text
           found.push(...r.found)
@@ -175,8 +278,8 @@ export function isFiller(text: string) {
 // What the person and the assistant wrote, minus the reminders the engine
 // puts into user rows.
 const clean = (s: string) => s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
-const head = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
-const tail = (s: string, n: number) => (s.length > n ? `…${s.slice(-n)}` : s)
+const head = (s: string, n: number) => (s.length > n ? `${clip(s, n)}…` : s)
+const tail = (s: string, n: number) => (s.length > n ? `…${clipEnd(s, n)}` : s)
 
 export type Row = { role: string; text: string; toolUses?: readonly { tool_use_id: string }[] }
 
@@ -227,7 +330,7 @@ export function pagingOf(data: unknown, prefix = '') {
     if (!isObject(v)) return
     for (const [k, x] of Object.entries(v)) {
       if ((group || isPaging(k)) && isScalar(x)) out.push(`${prefix}${path}${k}=${ser(x)}`)
-      else walk(x, `${path}${k}.`, isPagingGroup(k))
+      else walk(x, `${path}${k}.`, group || isPagingGroup(k))
     }
   }
   walk(data, '', false)
@@ -258,9 +361,13 @@ export const newStats = (): TrimStats => ({
 export const SAME = 'same in every record'
 export const BLOB_MARK = '[base64 data: in the saved file]'
 const BLOB = /^(?:data:[\w/+.-]+;base64,)?[A-Za-z0-9+/_-]{200,}={0,2}$/
+// Base64, not a long hex id: letters and digits both, and a character hex
+// has not, `=` padding, or a length no id runs to.
+const isBlob = (v: string) =>
+  BLOB.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v) && (/[G-Zg-z+/_]/.test(v) || v.endsWith('=') || v.length >= 1000)
 const DROPPED = Symbol('base64')
-// Bookkeeping fields APIs add to every object.
-const NOISE = /^(etag|__typename|_links|selfLink|@odata\.\w+)$/i
+// Bookkeeping fields APIs add to every object. Paging fields are never here.
+const NOISE = /^(?:etag|__typename|selfLink|@odata\.(?:etag|type|id|editLink|context))$/i
 
 const isEmpty = (v: unknown) =>
   v === null ||
@@ -269,28 +376,33 @@ const isEmpty = (v: unknown) =>
   (Array.isArray(v) && v.length === 0) ||
   (isObject(v) && Object.keys(v).length === 0)
 
-function trimString(v: string, words: ReadonlySet<string>, t: TrimStats): unknown {
+// A text value: JSON in it is shown as JSON; inside a list, base64 is left out
+// and a long value is cut. Beside the records, a value is kept whole up to
+// HEAD_CAP characters, so a cursor or link under an unknown name survives.
+function trimString(v: string, words: ReadonlySet<string>, t: TrimStats, inList: boolean): unknown {
   const inner = v.length > 1 ? parseJson(v) : undefined
-  // JSON written inside a text value is shown as JSON, when it holds anything.
   if (inner !== undefined && !isEmpty(inner)) {
     t.unpacked += 1
-    return trimValue(inner, words, t, false)
+    return trimValue(inner, words, t, false, inList)
   }
-  if (BLOB.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v)) return DROPPED
+  if (!inList && v.length <= HEAD_CAP) return v
+  if (isBlob(v)) return DROPPED
   if (v.length > STRING_CAP) {
     t.cut += 1
-    return `${v.slice(0, STRING_CAP)} …[cut: ${fmt(v.length - STRING_CAP)} more characters in the saved file]`
+    const kept = clip(v, STRING_CAP)
+    return `${kept} …[cut: ${fmt(v.length - kept.length)} more characters in the saved file]`
   }
   return v
 }
 
 // One trimmed value. Only an object's fields are ever left out; an array keeps
-// every element in its place, since a row's position is its meaning.
-function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: boolean): unknown {
-  if (typeof v === 'string') return trimString(v, words, t)
+// every element in its place, since a row's position is its meaning. In a
+// paging group every single value travels as returned.
+function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: boolean, inList: boolean): unknown {
+  if (typeof v === 'string') return group ? v : trimString(v, words, t, inList)
   if (Array.isArray(v)) {
     const items = v.map(x => {
-      const y = trimValue(x, words, t, false)
+      const y = trimValue(x, words, t, group, true)
       if (y !== DROPPED) return y
       t.blobItems += 1
       return BLOB_MARK
@@ -301,16 +413,17 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
   const out: Json = {}
   for (const [k, x] of Object.entries(v)) {
     const named = isNamed(k, words)
+    const paging = group || isPaging(k)
     // Paging, cursors and single values the task names travel as returned.
-    if ((group || named || isPaging(k)) && isScalar(x)) {
+    if ((paging || named) && isScalar(x)) {
       put(out, k, x)
       continue
     }
-    if (!named && NOISE.test(k)) {
+    if (!named && !paging && NOISE.test(k)) {
       t.noise.add(k)
       continue
     }
-    const y = trimValue(x, words, t, isPagingGroup(k))
+    const y = trimValue(x, words, t, group || isPagingGroup(k), inList)
     if (y === DROPPED) t.blobs.add(k)
     else if (isEmpty(y) && !named) t.empty.add(k)
     else put(out, k, y)
@@ -362,31 +475,38 @@ export function layout(v: unknown, pad = ''): string {
 }
 
 // JSON blocks trimmed field by field, each block on its own: paging at the
-// top of the second block is still the top. Undefined when a block is no JSON.
+// top of the second block is still the top. Undefined when a block is not an
+// object or a list, or nests too deep to walk.
 export function trimJson(texts: readonly string[], words: ReadonlySet<string>) {
   const data = texts.map(parseJson)
   if (data.some(d => d === undefined)) return undefined
-  const t = newStats()
-  const many = data.length > 1
-  const text = data
-    .map((d, i) => `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false))}`)
-    .join(`${NL}${NL}`)
-  const paging = data
-    .map((d, i) => pagingOf(d, many ? `block ${i + 1}: ` : ''))
-    .filter(Boolean)
-    .join(', ')
-  return { text, paging, stats: t }
+  try {
+    const t = newStats()
+    const many = data.length > 1
+    const text = data
+      .map((d, i) => `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false, false))}`)
+      .join(`${NL}${NL}`)
+    const paging = data
+      .map((d, i) => pagingOf(d, many ? `block ${i + 1}: ` : ''))
+      .filter(Boolean)
+      .join(', ')
+    return { text, paging, stats: t }
+  } catch {
+    return undefined
+  }
 }
 
-// Plain text keeps every character but trailing blanks on a line and runs of
-// more than one blank line. Line by line: no regex that can take quadratic time.
+// Plain text keeps every character but blanks at line ends and runs of more
+// than one blank line; a line keeps its own ending (CRLF or LF). Line by line:
+// no regex that can take quadratic time.
 export function trimPlain(texts: readonly string[]) {
   const out: string[] = []
   let blank = 0
   for (const line of texts.join(`${NL}${NL}`).split(NL)) {
+    const cr = line.endsWith('\r') ? '\r' : ''
     const kept = line.trimEnd()
     blank = kept === '' ? blank + 1 : 0
-    if (blank < 2) out.push(kept)
+    if (blank < 2) out.push(kept + cr)
   }
   return out.join(NL)
 }
@@ -415,26 +535,86 @@ export function reshaped(t: TrimStats) {
   ].join('; ')
 }
 
-// Lines of at most `size` characters each, grouped into parts for the helper.
+// Where a piece of a long line ends, at most at `end` and past the middle of
+// the piece: after a comma that ends a JSON element (`,"` `,{` `,[`), else
+// after a blank, else after any comma, else at `end` (never inside a
+// surrogate pair). None of these falls inside a number.
+function breakAt(line: string, start: number, end: number) {
+  if (end >= line.length) return line.length
+  const floor = start + ((end - start) >> 1)
+  let blank = -1
+  let comma = -1
+  for (let k = end - 1; k > floor; k--) {
+    const c = line[k]
+    if (c === ',') {
+      const next = line[k + 1]
+      if (next === '"' || next === '{' || next === '[') return k + 1
+      if (comma < 0) comma = k + 1
+    } else if (blank < 0 && (c === ' ' || c === '\t')) blank = k + 1
+  }
+  if (blank > 0) return blank
+  if (comma > 0) return comma
+  return safeEnd(line, end)
+}
+
+// Lines grouped into parts of at most `size` characters for the helper. A
+// line longer than that is split at a value boundary, each piece its own part.
 export function chunks(text: string, size: number) {
   const parts: string[] = []
-  let part = ''
-  for (const line of text.split(NL)) {
-    for (let i = 0; i < Math.max(line.length, 1); i += size) {
-      const piece = line.slice(i, i + size)
-      if (part.length > 0 && part.length + piece.length + 1 > size) {
-        parts.push(part)
-        part = ''
-      }
-      part = part === '' ? piece : `${part}${NL}${piece}`
-    }
+  let part: string | undefined
+  const flush = () => {
+    if (part !== undefined && part !== '') parts.push(part)
+    part = undefined
   }
-  if (part !== '') parts.push(part)
+  for (const line of text.split(NL)) {
+    if (line.length > size) {
+      flush()
+      for (let i = 0; i < line.length; ) {
+        const b = breakAt(line, i, i + size)
+        parts.push(line.slice(i, b))
+        i = b
+      }
+      continue
+    }
+    if (part !== undefined && part.length + 1 + line.length > size) flush()
+    part = part === undefined ? line : `${part}${NL}${line}`
+  }
+  flush()
   return parts
 }
 
-// Text going into the helper's prompt cannot open or close the prompt's own tags.
-export const neutral = (s: string) => s.replace(/<(\s*\/?\s*(?:data|task|call)\b)/gi, '‹$1')
+// ---------- the helper prompt's tags ----------
+
+const TAGS = ['data', 'task', 'call']
+const isBlankAt = (s: string, i: number) => i < s.length && /\s/.test(s[i]!)
+
+// Every `from` that opens or closes one of the prompt's own tags (`<data`,
+// `</ task`, `< /CALL`), swapped for `to`. One pass: each blank run after a
+// mark is read once, so a long run cannot make it slow.
+function swapTags(s: string, from: string, to: string) {
+  let out = ''
+  let at = 0
+  for (let i = s.indexOf(from); i >= 0; i = s.indexOf(from, i + 1)) {
+    let j = i + 1
+    while (isBlankAt(s, j)) j++
+    if (s[j] === '/') {
+      j++
+      while (isBlankAt(s, j)) j++
+    }
+    if (TAGS.includes(s.slice(j, j + 4).toLowerCase()) && !/[A-Za-z0-9_]/.test(s[j + 4] ?? '')) {
+      out += s.slice(at, i) + to
+      at = i + 1
+    }
+  }
+  return out + s.slice(at)
+}
+
+// Text going into the helper's prompt cannot open or close the prompt's own
+// tags: their `<` is written `‹`.
+export const MARK = '‹'
+export const neutral = (s: string) => swapTags(s, '<', MARK)
+// The helper's note with each such `‹` written `<` again.
+export const restore = (s: string) => swapTags(s, MARK, '<')
 
 // ---------- the note ----------
 
