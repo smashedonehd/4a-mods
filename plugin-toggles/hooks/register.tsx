@@ -66,10 +66,9 @@ const PALETTE = [
 ]
 // A switched-on mod's On and Shown.
 const GOOD = '#16a34a'
-// The Mods tab's switch: a pill, green with the knob right when on, faded
-// while it cannot be pressed.
-const pill = (lit: boolean, live: boolean) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="26" viewBox="0 0 44 26" opacity="${live ? 1 : 0.4}"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? GOOD : '#d1d1d6'}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff"/></svg>`
+// The Mods tab's switch: a pill, green with the knob right when on.
+const pill = (lit: boolean) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="26" viewBox="0 0 44 26"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? GOOD : '#d1d1d6'}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff"/></svg>`
 // Chips drawn at most; the filter narrows the rest.
 const SHOWN = 200
 // Bumped after each write so the pane redraws.
@@ -1105,8 +1104,8 @@ export const register: Register = on => {
       const chrome = e.surface === 'terminal' ? { variant: 'secondary' as const } : {}
       // Where pictures draw, a switch is a green pill under a blank plain
       // button (the engine has no Switch element) and `glyph` is a one-glyph
-      // button. Elsewhere, a button with a green dot when lit. Either is
-      // dimmed and not pressable while it is not live.
+      // button. Elsewhere, a button with a green dot when lit. A control that
+      // is not live is a dim word or glyph; the On switch always is live.
       const pictures = Boolean(Svg) && e.surface !== 'terminal'
       const control = (
         key: string,
@@ -1126,13 +1125,11 @@ export const register: Register = on => {
           )
         if (pictures)
           return (
-            <Box key={`${key}-box`} flexShrink={0}>
-              <Svg source={pill(lit, live)} alt={label} width={44} height={26} />
-              {live && (
-                <Box position="absolute" top={0} left={0}>
-                  <Button key={key} label={'⠀⠀⠀'} plain onPress={press} />
-                </Box>
-              )}
+            <Box flexShrink={0}>
+              <Svg source={pill(lit)} alt={label} width={44} height={26} />
+              <Box position="absolute" top={0} left={0}>
+                <Button key={key} label={'⠀⠀⠀'} plain onPress={press} />
+              </Box>
             </Box>
           )
         return !live ? (
