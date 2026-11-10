@@ -327,6 +327,18 @@ test('beside the records a value is kept whole up to 4,000 characters; past that
   expect(leftOut(t.stats)).toBe('base64 fields (huge, state); the rest of 1 text value over 1,000 characters, marked where cut')
 })
 
+test('marker and bookmark keys, and lists under a paging key, are kept whole inside a list', () => {
+  const t = trimmed(
+    JSON.stringify({
+      rows: [{ id: 1, KeyMarker: b64(300), VersionIdMarker: b64(300), pageBookmark: b64(300), links: [b64(300), 'w '.repeat(800)] }],
+    }),
+  )
+  expect(t.value.rows).toEqual([
+    { id: 1, KeyMarker: b64(300), VersionIdMarker: b64(300), pageBookmark: b64(300), links: [b64(300), 'w '.repeat(800)] },
+  ])
+  expect(leftOut(t.stats)).toBe('')
+})
+
 test('a pageInfo group is kept whole inside a list, and listed in the header beside the records', () => {
   const inList = trimmed(JSON.stringify({ results: [{ id: 1, pageInfo: { blob: b64(300), prose: 'w '.repeat(800) } }] }))
   expect(inList.value.results[0].pageInfo).toEqual({ blob: b64(300), prose: 'w '.repeat(800) })
@@ -365,6 +377,7 @@ test('a key with token in it is a credential unless it pages; a secret word anyw
     'auth',
     'session_id',
     'dsn',
+    'next_auth_token',
   ])
     expect([k, isSecretKey(k), isPaging(k)]).toEqual([k, true, false])
   for (const k of [
@@ -429,6 +442,9 @@ test('a page token in a paging URL stays; a credential in one goes', () => {
   })
   const url = 'https://a/b?page-token=CAESBAgCEAE&next_token=abcdefgh&x_page_token=zzzzzzzz'
   expect(redactText(url).text).toBe(url)
+  // The tail of a name too long to read whole is not a name of its own.
+  const tailOnly = `${'p'.repeat(70)}-token=abcdefgh`
+  expect(redactText(tailOnly).text).toBe(tailOnly)
 })
 
 test('code and empties beside a secret name are not secrets', () => {
@@ -484,8 +500,8 @@ test('a value already redacted is neither changed nor counted', () => {
 })
 
 test('a bookkeeping field the task names is kept', () => {
-  const t = trimmed('{"rows":[{"id":1,"etag":"W/x"}]}', wordsOf('show the etag'))
-  expect(t.value.rows).toEqual([{ id: 1, etag: 'W/x' }])
+  const t = trimmed('{"rows":[{"id":1,"etag":"W/x","__typename":{"v":1}}]}', wordsOf('show the etag and typename'))
+  expect(t.value.rows).toEqual([{ id: 1, etag: 'W/x', __typename: { v: 1 } }])
   expect(t.stats.noise.size).toBe(0)
 })
 

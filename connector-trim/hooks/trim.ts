@@ -131,7 +131,7 @@ const NAME = String.raw`(?<![\w.-])([A-Za-z_][\w.-]{0,63})`
 // `password="…"` or `"password": '…'`: the value to its closing quote.
 const QUOTED = new RegExp(`${NAME}(["']?[ \\t]{0,8}[:=][ \\t]{0,8})(["'])(?!\\[REDACTED)([^"'\\n]+)\\3`, 'g')
 // `password=…` unquoted: one `=`, the value right after it.
-const EQUALS = new RegExp(`${NAME}=(?![=\\s])([^\\s"',;&<>]+)`, 'g')
+const EQUALS = new RegExp(`${NAME}=(?!=)([^\\s"',;&<>]+)`, 'g')
 // `x-api-key: abc123…` header style: one word of 8 or more with a digit in it,
 // so "password: reset it in settings" stays.
 const COLON = new RegExp(`${NAME}(["']?:[ \\t]{0,8})(?!["'\\[])([^\\s"',;]{8,})`, 'g')
