@@ -7,8 +7,8 @@ import {
   MARK,
   NL,
   chunks,
-  clip,
   fmt,
+  head,
   leftOut,
   matches,
   neutral,
@@ -158,8 +158,10 @@ async function appendTo($: EngineInterface, path: string, line: string, capLines
   await $.fs.write(path, text)
 }
 
-const logLine = async ($: EngineInterface, text: string) =>
-  appendTo($, (await dirsOf($)).log, `${new Date(await $.clock.now()).toISOString()} ${text}`, LOG_LINES)
+async function logLine($: EngineInterface, text: string) {
+  const [{ log }, now] = await Promise.all([dirsOf($), $.clock.now()])
+  await appendTo($, log, `${new Date(now).toISOString()} ${text}`, LOG_LINES)
+}
 
 // Errors and the reasons a big result went through whole. Never throws.
 async function log($: EngineInterface, text: string) {
@@ -179,9 +181,10 @@ async function ledger(
   helper: Helper | null,
 ) {
   await serial(async () => {
+    const [now, session] = await Promise.all([$.clock.now(), $.session.id()])
     const row = {
-      ts: new Date(await $.clock.now()).toISOString(),
-      session: (await $.session.id()) || null,
+      ts: new Date(now).toISOString(),
+      session: session || null,
       tool_use_id: e.tool_use_id ?? null,
       mod: NAME,
       tool,
@@ -232,7 +235,7 @@ async function taskFor($: EngineInterface, e: Call): Promise<Task> {
 // The call's own arguments as JSON, at most 2,000 characters.
 function argsOf(e: Call) {
   const text = JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
-  return text.length > 2000 ? `${clip(text, 2000)}…` : text
+  return head(text, 2000)
 }
 
 // ---------- the helper model ----------
@@ -333,9 +336,9 @@ async function takeFull($: EngineInterface) {
 // A free name for the saved result: one taken in the same second by another
 // result gets `-2`, `-3`, ...
 async function freePath($: EngineInterface, e: Call, tool: string, ext: 'json' | 'txt') {
-  const { results } = await dirsOf($)
+  const [{ results }, now] = await Promise.all([dirsOf($), $.clock.now()])
   const { server, name } = partsOf(tool)
-  const base = `${results}/${stamp(await $.clock.now())}-${safe(server)}-${safe(name)}-${safe(String(e.tool_use_id ?? '').slice(-8))}`
+  const base = `${results}/${stamp(now)}-${safe(server)}-${safe(name)}-${safe(String(e.tool_use_id ?? '').slice(-8))}`
   let path = `${base}.${ext}`
   for (let n = 2; await $.fs.exists(path); n++) {
     if (n > 1000) throw new Error('a thousand results in one second share this name')
@@ -359,7 +362,8 @@ async function shorten(
   ran: { result?: unknown; text?: string },
   signal: AbortSignal | undefined,
 ) {
-  const run = new Run(new Deadline(Date.now() + cfg.budgetMs))
+  const deadline = new Deadline(Date.now() + cfg.budgetMs)
+  const run = new Run(deadline)
   let stage = 'reading the result'
   let saved: string | undefined
   const whole = async (why: string) => {
@@ -390,7 +394,7 @@ async function shorten(
     const task = await taskFor($, e)
     const args = argsOf(e)
     const words = wordsOf(`${task.user} ${task.assistant} ${args}`)
-    run.deadline?.checkNow()
+    deadline.checkNow()
 
     stage = 'trimming'
     const trimmed = blocks ? trimBlocks(blocks, words, { run, maxChars: raw.length }) : undefined
@@ -414,7 +418,7 @@ async function shorten(
     const byCode = note({ ...base, how: trimmed ? 'trim' : 'text', body })
     if (!helperDue && byCode.length >= raw.length)
       return await whole(`the note (${fmt(byCode.length)}) was not shorter than the result (${fmt(raw.length)})`)
-    run.deadline?.checkNow()
+    deadline.checkNow()
     try {
       await $.fs.write(file, raw)
     } catch (err) {
