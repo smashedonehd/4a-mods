@@ -2,7 +2,7 @@
 // the deterministic trim, the task words, the note's header and retention.
 // Nothing here calls the engine, so the tests reach every rule directly.
 import { Exact, isObject, isScalar, parseJson, put, readJson, ser } from './json.ts'
-import type { Json } from './json.ts'
+import type { Frame, Json } from './json.ts'
 
 export { isObject, parseJson, ser }
 export const NL = '\n'
@@ -10,6 +10,11 @@ export const NL = '\n'
 export const STRING_CAP = 1000
 // A text value outside every list (beside the records) is kept whole up to this.
 export const HEAD_CAP = 4000
+// The header lists paging values up to this many characters in all; past
+// that it names the fields and leaves their values to the body.
+export const PAGING_CAP = 4000
+// Deeper JSON is passed whole: laying it out would cost more than it saves.
+export const MAX_DEPTH = 200
 // Approximate tokens, the way the savings ledger counts them.
 export const tokens = (chars: number) => Math.ceil(chars / 4)
 export const fmt = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
@@ -50,99 +55,232 @@ export function textsOf(result: unknown): { texts: string[] } | { skip: string }
 }
 
 // ---------- keys ----------
+//
+// A key is read as words: `nextPageToken`, `next_page_token` and
+// `NEXT-PAGE-TOKEN` are next, page, token; a word glued to `token` or `key`
+// is split when its parts are known words (`$skiptoken`: skip, token;
+// `apikey`: api, key). Each key is in one class:
+//   strong secret: a credential by its whole name; any text under it goes.
+//   weak secret: a name that often holds a credential; only a token-shaped
+//     value under it goes (no blanks, 8 characters or more, not all digits,
+//     not a date, a time or a URL).
+//   paging: the way to the next page; kept as returned when its value is
+//     paging-shaped.
+//   group: every field under it is paging, when the whole is paging-shaped.
+//   none.
 
 const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-// A token that pages rather than signs in: `next_token`, `pageToken`,
-// `$skiptoken`, `continuationToken`, `syncToken`, `scroll_token`.
-const PAGE_TOKEN = /(?:next|page|continuation|sync|skip|resume|start|scroll)token/
-// Fields about a token rather than the token itself: `token_type`, `token_expires_in`.
-const TOKEN_META = /token(?:type|count|usage|limit|expiry|expires[a-z]*|ttl|length|lifetime)$/
-const SECRET_WORDS =
-  /secret|password|passwd|passphrase|credential|cookie|apikey|accesskey|privatekey|connectionstring|authorization|signature|jwt/
-// Short names that are a credential only as the whole key.
-const SECRET_NAMES = new Set(['auth', 'sessionid', 'sessionkey', 'dsn'])
-// A value that is a file path, as `pwd` holds in a shell's output.
-const isPath = (v: string) => /^(?:[A-Za-z]:[\\/]|[\\/~]|\.{1,2}[\\/])/.test(v)
+// Words that make `<word>_token` a page's token.
+const PAGE_WORDS = new Set(
+  'next prev previous page paging pagination continuation sync skip resume start scroll cursor delta bookmark marker offset after before'.split(
+    ' ',
+  ),
+)
+// Words that make `<word>_token` or `<word>_key` a credential.
+const CREDENTIAL_WORDS = new Set(
+  'private oauth bot csrf auth personal access github security session bearer api signing webhook app client secret encryption ssh subscription master deploy consumer'.split(
+    ' ',
+  ),
+)
+const GLUED = [...PAGE_WORDS, ...CREDENTIAL_WORDS].sort((a, b) => b.length - a.length)
 
-// Keys whose value is a credential: a key with a secret word in it, and a key
-// with `token` in it that is no paging token. `pwd` is a password unless its
-// value is a path.
-export function isSecretKey(key: string, value?: string) {
-  const n = norm(key)
-  if (n === 'pwd') return typeof value === 'string' && !isPath(value)
-  if (SECRET_WORDS.test(n) || SECRET_NAMES.has(n)) return true
-  return n.includes('token') && !PAGE_TOKEN.test(n) && !TOKEN_META.test(n)
+// `skiptoken` in skip, token; a glued word with an unknown part stays whole.
+function unglue(word: string): string[] {
+  const tail = word.endsWith('token') ? 'token' : word.endsWith('key') ? 'key' : ''
+  if (tail === '' || word === tail) return [word]
+  const out: string[] = []
+  let head = word.slice(0, -tail.length)
+  while (head !== '') {
+    const w = GLUED.find(g => head.startsWith(g))
+    if (!w) return [word]
+    out.push(w)
+    head = head.slice(w.length)
+  }
+  return [...out, tail]
 }
 
-// Keys of paging and counts: kept as returned and listed in the header.
-const PAGING = new Set(
+export function keyWords(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .flatMap(unglue)
+}
+
+// Credentials by their whole name, any case and separators.
+const STRONG = new Set(
   (
-    'page pages pagenumber pagesize perpage nextpage hasnextpage haspreviouspage hasmore more total totalcount ' +
-    'totalresults totalrows totalsize totalitems count rowcount offset limit skip cursor next prev previous after ' +
-    'before startindex itemsperpage truncated scrollid marker bookmark odatacount lastevaluatedkey ' +
-    'exclusivestartkey startingafter endingbefore'
+    'password passwd passphrase secret clientsecret apikey xapikey apisecret accesskey secretkey privatekey ' +
+    'accesstoken refreshtoken idtoken authorization proxyauthorization cookie setcookie connectionstring dsn pwd'
   ).split(' '),
 )
-// Links that are a record's own address, not the way to another page.
-const OWN_LINKS = new Set(['selflink', 'editlink', 'odataeditlink'])
-const pagingCache = new Map<string, boolean>()
-export function isPaging(key: string) {
-  let hit = pagingCache.get(key)
+// Words that make any key a weak secret: `password_hash`, `x-auth-token`.
+const WEAK_WORDS = /^(?:secrets?|passwords?|credentials?|cookies?|signatures?|auth|jwts?)$/
+// Short names that are a weak secret on their own: Azure's `sig`.
+const WEAK_NAMES = new Set(['token', 'sig'])
+
+export type SecretKind = 'strong' | 'weak'
+const secretCache = new Map<string, SecretKind | 'none'>()
+// The secret class of a key by its name alone (`pwd` is strong here; a path
+// under it is no secret, see `isSecretValue`).
+export function secretKind(key: string): SecretKind | undefined {
+  let hit = secretCache.get(key)
   if (hit === undefined) {
     const n = norm(key)
+    const w = keyWords(key)
+    const last = w[w.length - 1]
+    const before = w[w.length - 2]
+    hit = STRONG.has(n)
+      ? 'strong'
+      : WEAK_NAMES.has(n) ||
+          w.some(x => WEAK_WORDS.test(x)) ||
+          ((last === 'token' || last === 'key') && before !== undefined && CREDENTIAL_WORDS.has(before))
+        ? 'weak'
+        : 'none'
+    if (secretCache.size < 10_000) secretCache.set(key, hit)
+  }
+  return hit === 'none' ? undefined : hit
+}
+
+// A value that is a file path, as `pwd` holds in a shell's output.
+const isPath = (v: string) => /^(?:[A-Za-z]:[\\/]|[\\/~]|\.{1,2}[\\/])/.test(v)
+const DATE = /^(?:\d{4}-\d\d-\d\d|\d{1,2}:\d\d)/
+const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i
+// A value shaped like a credential: no blanks, 8 characters or more, not all
+// digits, not a date, a time or a URL.
+export const isTokenShaped = (v: string) =>
+  v.length >= 8 && !/\s/.test(v) && !/^\d+$/.test(v) && !DATE.test(v) && !URL_START.test(v)
+
+// Whether this value under this key is a secret: any text under a strong key
+// (`pwd` unless a path), a token-shaped value under a weak one.
+export function isSecretValue(key: string, value: string) {
+  if (value === '' || value.startsWith('[REDACTED')) return false
+  const kind = secretKind(key)
+  if (kind === 'strong') return norm(key) !== 'pwd' || !isPath(value)
+  return kind === 'weak' && isTokenShaped(value)
+}
+
+// Paging by name. A paging token is `<page word>_token`.
+const PAGING_NAMES = new Set(
+  (
+    'page pages pagenumber pagesize perpage pagecount nextpage hasnextpage haspreviouspage hasmore more total totalcount ' +
+    'totalresults totalrows totalsize totalitems totalpages count rowcount offset limit skip cursor next prev previous ' +
+    'after before startindex startat maxresults itemsperpage truncated istruncated islast scrollid marker bookmark ' +
+    'continuation odatacount lastevaluatedkey exclusivestartkey startingafter endingbefore searchafter pitid sinceid maxid'
+  ).split(' '),
+)
+// `next_link`, `prevPageToken`, `@odata.deltaLink`, `last_page`, `nextRecordsUrl`.
+const LINK_FIRST = new Set(['next', 'prev', 'previous', 'first', 'last', 'delta'])
+const LINK_LAST = new Set(['link', 'url', 'uri', 'href', 'page', 'token', 'cursor', 'key', 'marker', 'offset', 'id'])
+// Words that make any key paging: `endCursor`, `KeyMarker`, `pageBookmark`, `resumePoint`.
+const PAGING_WORDS = new Set(['cursor', 'marker', 'bookmark', 'continuation', 'resume', 'scroll'])
+// Objects whose fields are all paging.
+const GROUP_NAMES = new Set(['pageinfo', 'pagination', 'paging', 'links'])
+
+const pagingCache = new Map<string, boolean>()
+export function isPagingName(key: string) {
+  let hit = pagingCache.get(key)
+  if (hit === undefined) {
+    let w = keyWords(key)
+    if (w[0] === 'odata') w = w.slice(1)
+    const first = w[0]
+    const last = w[w.length - 1]
+    const before = w[w.length - 2]
     hit =
-      !isSecretKey(key) &&
-      (PAGING.has(n.replace(/[0-9]/g, '')) ||
-        n.startsWith('next') ||
-        (/links?$/.test(n) && !OWN_LINKS.has(n)) ||
-        /cursor|continuation|marker|bookmark/.test(n) ||
-        PAGE_TOKEN.test(n))
+      secretKind(key) === undefined &&
+      w.length > 0 &&
+      (PAGING_NAMES.has(norm(key)) ||
+        (w.length >= 2 && LINK_FIRST.has(first!) && LINK_LAST.has(last!)) ||
+        w.some(x => PAGING_WORDS.has(x)) ||
+        (last === 'token' && before !== undefined && PAGE_WORDS.has(before)))
     if (pagingCache.size < 10_000) pagingCache.set(key, hit)
   }
   return hit
 }
-// Objects whose every field is paging, whatever its name: GraphQL `pageInfo`,
-// and the object under any paging key (HAL `_links`, DynamoDB `LastEvaluatedKey`).
-const isPagingGroup = (key: string) => isPaging(key) || ['pageinfo', 'pagination', 'paging'].includes(norm(key))
+const isGroupName = (key: string) => GROUP_NAMES.has(norm(key)) || isPagingName(key)
 
-// ---------- secrets ----------
+export type KeyClass = SecretKind | 'paging' | 'group' | 'none'
+// The class of a key by its name, for the rules above and their tests.
+export function keyClass(key: string): KeyClass {
+  return secretKind(key) ?? (isPagingName(key) ? 'paging' : GROUP_NAMES.has(norm(key)) ? 'group' : 'none')
+}
 
-// Conservative: formats with a fixed shape, and a value written beside a key
-// that names a secret. A miss is possible; a false hit costs one value.
+// A value paging can hold: a number, a boolean, null, a string without
+// blanks (a cursor or a URL), or an object or list of at most 20 such values
+// all told. Prose, or a list of records, under a paging name is data.
+export function isPagingShaped(v: unknown) {
+  let left = 20
+  const ok = (x: unknown, depth: number): boolean => {
+    if (typeof x === 'string') return !/\s/.test(x)
+    if (isScalar(x)) return true
+    const xs = Array.isArray(x) ? x : isObject(x) ? Object.values(x) : undefined
+    if (!xs || depth > 4 || (left -= xs.length) < 0) return false
+    return xs.every(y => ok(y, depth + 1))
+  }
+  return ok(v, 0)
+}
+// A field that is paging: by its name and the shape of its value.
+const isPagingField = (key: string, v: unknown) => isPagingName(key) && isPagingShaped(v)
+const isPagingGroup = (key: string, v: unknown) => isGroupName(key) && isPagingShaped(v)
+
+// ---------- secrets in text ----------
+
+// Fixed shapes. Each starts where no character of its own body stands before
+// it, so a long run of near misses is read once, not once per start.
 const PATTERNS: [RegExp, string][] = [
-  [/\bbearer[ \t]{1,8}[A-Za-z0-9._~+/-]{16,}=*/gi, 'bearer token'],
+  [/(?<![\w.~+/-])bearer[ \t]{1,8}[A-Za-z0-9._~+/-]{16,}=*/gi, 'bearer token'],
   // `sk-ant-…` and `sk-proj-…`, or one unbroken run with a digit in it: a
   // slug such as `sk-suche-zachody` is no key.
-  [/\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|\bsk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
-  [/\bgh[opsu]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}/g, 'GitHub token'],
+  [/(?<![\w-])sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|(?<![\w-])sk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
+  [/(?<!\w)(?:sk|rk)_live_[A-Za-z0-9]{20,}/g, 'Stripe key'],
+  [/(?<!\w)gh[opsu]_[A-Za-z0-9]{30,}|(?<!\w)github_pat_[A-Za-z0-9_]{30,}/g, 'GitHub token'],
+  [/(?<![\w-])glpat-[A-Za-z0-9_-]{20,}/g, 'GitLab token'],
+  [/(?<!\w)npm_[A-Za-z0-9]{36}(?!\w)/g, 'npm token'],
   [/\bAKIA[0-9A-Z]{16}\b/g, 'AWS key'],
-  [/\bAIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
-  [/\bya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
-  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
-  [/\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]{5,}/g, 'JWT'],
+  [/(?<![\w-])AIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
+  [/(?<![\w.-])ya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
+  [/(?<![\w-])xox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
+  [/(?<![\w.-])eyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]{5,}/g, 'JWT'],
 ]
-// `Authorization: Basic …`, any case: the scheme and credentials go.
+// `Authorization: Basic …`, any case, any scheme: the scheme and credentials go.
 const AUTH = /\b(authorization["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:basic|digest|token|bearer)[ \t]{1,8}[^\s"',;]+/gi
-// `postgres://user:password@host`: the password goes.
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{1,20}:\/\/[^\s:/@"']{1,256}:)(?!\[REDACTED)[^\s/@"']{1,256}@/gi
+// `postgres://user:password@host`, `redis://:password@host`: the password goes.
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{1,20}:\/\/[^\s:/@"']{0,256}:)(?!\[REDACTED)[^\s/@"']{1,256}@/gi
 // A name a value is written beside: whole, not the tail of a longer word.
 const NAME = String.raw`(?<![\w.-])([A-Za-z_][\w.-]{0,63})`
-// `password="…"` or `"password": '…'`: the value to its closing quote.
-const QUOTED = new RegExp(`${NAME}(["']?[ \\t]{0,8}[:=][ \\t]{0,8})(["'])(?!\\[REDACTED)([^"'\\n]+)\\3`, 'g')
-// `password=…` unquoted: one `=`, the value right after it.
-const EQUALS = new RegExp(`${NAME}=(?!=)([^\\s"',;&<>]+)`, 'g')
-// `x-api-key: abc123…` header style: one word of 8 or more with a digit in it,
-// so "password: reset it in settings" stays.
-const COLON = new RegExp(`${NAME}(["']?:[ \\t]{0,8})(?!["'\\[])([^\\s"',;]{8,})`, 'g')
-// Values a name may stand beside without being a secret: code and empties.
-const NOT_A_VALUE = /^(?:none|null|nil|undefined|true|false|\d{4}-\d\d-\d\d.*)$/i
+// `password="…"`, `"password": '…'`, `password := "…"`: the value to its matching quote.
+const QUOTED = new RegExp(`${NAME}(["']?[ \\t]{0,8}(?::=|=>|[:=])[ \\t]{0,8})(?:"([^"\\n]*)"|'([^'\\n]*)')`, 'g')
+// `password=…`, `PASSWORD = …`: one `=`, a value up to a blank, quote,
+// bracket, comma or semicolon.
+const EQUALS = new RegExp(`${NAME}([ \\t]{0,8}=[ \\t]{0,8})(?![=>])([^\\s"',;&<>()\\[\\]{}]+)`, 'g')
+// `x-api-key: abc123…`: header style, one word.
+const COLON = new RegExp(`${NAME}(["']?:[ \\t]{0,8})(?!["'\\[])([^\\s"',;]+)`, 'g')
+// Values beside a secret name that are code or empties, not secrets.
+const NOT_A_VALUE = /^(?:none|null|nil|undefined|true|false)$/i
+const CAPS_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|^[A-Z]+$/
+const DOTTED_NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
+const isCode = (v: string, next: string | undefined) =>
+  next === '(' || NOT_A_VALUE.test(v) || CAPS_NAME.test(v) || DOTTED_NAME.test(v) || DATE.test(v)
+
+// Whether `value`, written beside `name` in text, is a secret. A strong name
+// takes any value of 6 characters or more; a weak one a token-shaped value
+// with a digit in it. In a paging value a bare `token` is the page's token.
+function textSecret(name: string, value: string, next: string | undefined, paging: boolean) {
+  if (value.startsWith('[REDACTED') || isCode(value, next)) return false
+  if (paging && norm(name) === 'token') return false
+  const kind = secretKind(name)
+  if (kind === 'strong') return value.length >= 6 && (norm(name) !== 'pwd' || !isPath(value))
+  return kind === 'weak' && isTokenShaped(value) && /\d/.test(value)
+}
 
 // A private key block, found by index: a header with no END marker after it
 // is cut through the whole base64 lines that follow (a blank line or a line
 // with any other character ends it). Linear in the text.
-const PEM_HEAD = /-{5}BEGIN (?:[A-Z]+ ){0,4}PRIVATE KEY-{5}/y
-const PEM_TAIL = /-{5}END (?:[A-Z]+ ){0,4}PRIVATE KEY-{5}/y
+const PEM_HEAD = /-{5}BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-{5}/y
+const PEM_TAIL = /-{5}END (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-{5}/y
 function redactPem(text: string, found: string[]) {
   let out = ''
   let at = 0
@@ -175,74 +313,126 @@ function redactPem(text: string, found: string[]) {
   return out + text.slice(at)
 }
 
-// Secrets in plain text. Under a paging key, a bare `token=` is the page's
-// token and stays; a credential named as one (`access_token=`) still goes.
+// Secrets in plain text. In a paging value (a cursor or a next-page URL)
+// only `name=value` pairs with a credential name are redacted: a cursor is
+// opaque and may look like any key.
 export function redactText(text: string, paging = false) {
   const found: string[] = []
-  const secret = (name: string, value: string) => isSecretKey(name, value) && !(paging && norm(name) === 'token')
-  let out = redactPem(text, found)
-  for (const [re, kind] of PATTERNS)
-    out = out.replace(re, () => {
-      found.push(kind)
-      return `[REDACTED ${kind}]`
+  const hit = (name: string) => {
+    found.push(`${norm(name)} value`)
+    return '[REDACTED]'
+  }
+  let out = text
+  if (!paging) {
+    out = redactPem(out, found)
+    for (const [re, kind] of PATTERNS)
+      out = out.replace(re, () => {
+        found.push(kind)
+        return `[REDACTED ${kind}]`
+      })
+    out = out.replace(AUTH, (_m, head: string) => {
+      found.push('authorization value')
+      return `${head}[REDACTED]`
     })
-  out = out.replace(AUTH, (_m, head: string) => {
-    found.push('authorization value')
-    return `${head}[REDACTED]`
-  })
+  }
   out = out.replace(URL_PASSWORD, (_m, head: string) => {
     found.push('URL password')
     return `${head}[REDACTED]@`
   })
-  out = out.replace(QUOTED, (m, name: string, sep: string, q: string, value: string) => {
-    if (!secret(name, value)) return m
-    found.push(`${norm(name)} value`)
-    return `${name}${sep}${q}[REDACTED]${q}`
-  })
-  out = out.replace(EQUALS, (m, name: string, value: string) => {
-    if (value.length < 6 || value.startsWith('[') || NOT_A_VALUE.test(value) || !secret(name, value)) return m
-    found.push(`${norm(name)} value`)
-    return `${name}=[REDACTED]`
-  })
-  out = out.replace(COLON, (m, name: string, sep: string, value: string) => {
-    if (!/\d/.test(value) || NOT_A_VALUE.test(value) || !secret(name, value)) return m
-    found.push(`${norm(name)} value`)
-    return `${name}${sep}[REDACTED]`
-  })
+  if (!paging)
+    out = out.replace(QUOTED, (m, name: string, sep: string, dq: string | undefined, sq: string | undefined) => {
+      const value = dq ?? sq ?? ''
+      const q = dq === undefined ? "'" : '"'
+      return textSecret(name, value, undefined, false) ? `${name}${sep}${q}${hit(name)}${q}` : m
+    })
+  out = out.replace(EQUALS, (m, name: string, sep: string, value: string, at: number, all: string) =>
+    textSecret(name, value, all[at + m.length], paging) ? `${name}${sep}${hit(name)}` : m,
+  )
+  if (!paging)
+    out = out.replace(COLON, (m, name: string, sep: string, value: string, at: number, all: string) =>
+      textSecret(name, value, all[at + m.length], false) ? `${name}${sep}${hit(name)}` : m,
+    )
   return { text: out, found }
 }
 
-// Secrets in a JSON text, which stays valid JSON: a string under a secret key
-// is replaced whole, other strings are redacted by pattern, and JSON written
-// inside a string is redacted the same way. Numbers, booleans and null under
-// a secret key are left as they are. Undefined when the text is not JSON.
+// ---------- secrets in JSON ----------
+
+type Context = { paging: boolean; secret: boolean }
+const TOP: Context = { paging: false, secret: false }
+
+// What a container's place says about the strings in it: under a paging
+// group (every value paging), under a secret-named key (token-shaped values
+// are secrets), or neither.
+function contextOf(frame: Frame | undefined, memo: Map<Frame, Context>): Context {
+  if (!frame) return TOP
+  let ctx = memo.get(frame)
+  if (!ctx) {
+    const up = contextOf(frame.parent, memo)
+    const key = frame.key
+    ctx = {
+      paging: up.paging || (key !== undefined && isPagingGroup(key, frame.holder)),
+      secret: up.secret || (key !== undefined && secretKind(key) !== undefined),
+    }
+    memo.set(frame, ctx)
+  }
+  return ctx
+}
+
+// A `{name, value}` or `{key, value}` pair, as HTTP header lists are written:
+// the value is judged by the name beside it.
+function nameBeside(key: string | undefined, frame: Frame | undefined) {
+  if (key !== 'value' || !frame || !isObject(frame.holder)) return undefined
+  const n = frame.holder.name ?? frame.holder.key ?? frame.holder.header
+  return typeof n === 'string' ? n : undefined
+}
+
+// Secrets in a JSON text, which stays valid JSON; undefined when it is not
+// JSON. Only strings change; each one by these rules, in order:
+//   under a strong key: any text goes; under a weak key: a token-shaped value;
+//   beside a `name` that is a secret's: judged by that name;
+//   under a secret-named object or list, at any depth: a token-shaped value;
+//   in a paging group or a paging field: only credential `name=value` pairs;
+//   anything else: the text patterns, and JSON inside it the same way.
+// Under a paging group a weak name (a bare `token`) is the page's, not a secret.
 export function redactJson(text: string): { text: string; found: string[] } | undefined {
-  const edits: [number, number, string][] = []
-  const found: string[] = []
+  const strings: [number, number, string, string | undefined, Frame | undefined][] = []
   try {
-    readJson(text, (start, end, value, path) => {
-      const key = path[path.length - 1]
-      let out: string | undefined
-      if (key !== undefined && isSecretKey(key, value) && value !== '' && !value.startsWith('[REDACTED')) {
-        out = '[REDACTED]'
-        found.push(`${norm(key)} value`)
-      } else {
-        const paging = path.some(isPagingGroup)
-        const r = (/^\s*[[{]/.test(value) && redactJson(value)) || redactText(value, paging)
-        if (r.text !== value) {
-          out = r.text
-          found.push(...r.found)
-        }
-      }
-      if (out !== undefined) edits.push([start, end, JSON.stringify(out)])
-    })
+    readJson(text, (start, end, value, key, frame) => strings.push([start, end, value, key, frame]))
   } catch {
     return undefined
   }
+  const memo = new Map<Frame, Context>()
+  const found: string[] = []
   let out = ''
   let at = 0
-  for (const [start, end, s] of edits) {
-    out += text.slice(at, start) + s
+  for (const [start, end, value, key, frame] of strings) {
+    if (value === '' || value.startsWith('[REDACTED')) continue
+    const ctx = contextOf(frame, memo)
+    const kind = key === undefined ? undefined : secretKind(key)
+    const beside = nameBeside(key, frame)
+    // The name that makes this value a secret, if one does.
+    const by =
+      key !== undefined && (kind === 'strong' || (kind === 'weak' && !ctx.paging)) && isSecretValue(key, value)
+        ? key
+        : beside !== undefined && isSecretValue(beside, value)
+          ? beside
+          : ctx.secret && !ctx.paging && isTokenShaped(value)
+            ? (key ?? 'secret')
+            : undefined
+    let next: string | undefined
+    if (by !== undefined) {
+      next = '[REDACTED]'
+      found.push(`${norm(by)} value`)
+    } else {
+      const paging = ctx.paging || (key !== undefined && isPagingField(key, value))
+      const r = (!paging && /^\s*[[{]/.test(value) && redactJson(value)) || redactText(value, paging)
+      if (r.text !== value) {
+        next = r.text
+        found.push(...r.found)
+      }
+    }
+    if (next === undefined) continue
+    out += text.slice(at, start) + JSON.stringify(next)
     at = end
   }
   return { text: out + text.slice(at), found }
@@ -276,8 +466,9 @@ export function isFiller(text: string) {
 }
 
 // What the person and the assistant wrote, minus the reminders the engine
-// puts into user rows.
-const clean = (s: string) => s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
+// puts into user rows (only when one is closed: an open tag alone is text).
+const clean = (s: string) =>
+  (s.includes('</system-reminder>') ? s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '') : s).trim()
 const head = (s: string, n: number) => (s.length > n ? `${clip(s, n)}…` : s)
 const tail = (s: string, n: number) => (s.length > n ? `…${clipEnd(s, n)}` : s)
 
@@ -322,19 +513,27 @@ export function isNamed(key: string, words: ReadonlySet<string>) {
 
 // ---------- paging ----------
 
-// The paging and count fields outside the records, values as returned:
-// `page=2, total=1234, data.pageInfo.endCursor="abc"`.
+// The paging and count fields outside the records, as [name, value as
+// returned]: `page`, `2`; `data.pageInfo.endCursor`, `"abc"`.
 export function pagingOf(data: unknown, prefix = '') {
-  const out: string[] = []
+  const out: [string, string][] = []
   const walk = (v: unknown, path: string, group: boolean) => {
     if (!isObject(v)) return
     for (const [k, x] of Object.entries(v)) {
-      if ((group || isPaging(k)) && isScalar(x)) out.push(`${prefix}${path}${k}=${ser(x)}`)
-      else walk(x, `${path}${k}.`, group || isPagingGroup(k))
+      if ((group || isPagingField(k, x)) && isScalar(x)) out.push([`${prefix}${path}${k}`, ser(x)])
+      else walk(x, `${path}${k}.`, group || isPagingGroup(k, x))
     }
   }
   walk(data, '', false)
-  return out.join(', ')
+  return out
+}
+
+// The header's paging line: `name=value, …`, or past PAGING_CAP characters
+// the names alone.
+export function pagingLine(fields: readonly [string, string][]) {
+  const full = fields.map(([k, v]) => `${k}=${v}`).join(', ')
+  if (full.length <= PAGING_CAP) return full
+  return `${fields.map(([k]) => k).join(', ')} (${fmt(full.length)} characters of values, in the body below)`
 }
 
 // ---------- the deterministic trim ----------
@@ -376,12 +575,17 @@ const isEmpty = (v: unknown) =>
   (Array.isArray(v) && v.length === 0) ||
   (isObject(v) && Object.keys(v).length === 0)
 
+// JSON in a text value that is shown as JSON: an object of two fields or
+// more, or a list of such objects. `"[12]"` or `"{}"` stays text.
+const isRecord = (v: unknown) => isObject(v) && Object.keys(v).length >= 2
+const isUnpackable = (v: unknown) => isRecord(v) || (Array.isArray(v) && v.length > 0 && v.every(isRecord))
+
 // A text value: JSON in it is shown as JSON; inside a list, base64 is left out
 // and a long value is cut. Beside the records, a value is kept whole up to
 // HEAD_CAP characters, so a cursor or link under an unknown name survives.
 function trimString(v: string, words: ReadonlySet<string>, t: TrimStats, inList: boolean): unknown {
   const inner = v.length > 1 ? parseJson(v) : undefined
-  if (inner !== undefined && !isEmpty(inner)) {
+  if (isUnpackable(inner)) {
     t.unpacked += 1
     return trimValue(inner, words, t, false, inList)
   }
@@ -413,7 +617,7 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
   const out: Json = {}
   for (const [k, x] of Object.entries(v)) {
     const named = isNamed(k, words)
-    const paging = group || isPaging(k)
+    const paging = group || isPagingField(k, x)
     // Paging, cursors and single values the task names travel as returned.
     if ((paging || named) && isScalar(x)) {
       put(out, k, x)
@@ -423,7 +627,7 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
       t.noise.add(k)
       continue
     }
-    const y = trimValue(x, words, t, group || isPagingGroup(k), inList)
+    const y = trimValue(x, words, t, group || isPagingGroup(k, x), inList)
     if (y === DROPPED) t.blobs.add(k)
     else if (isEmpty(y) && !named) t.empty.add(k)
     else put(out, k, y)
@@ -474,22 +678,26 @@ export function layout(v: unknown, pad = ''): string {
   return ser(v)
 }
 
+// Whether a value nests deeper than `limit`; it stops at the limit.
+function tooDeep(v: unknown, limit: number): boolean {
+  if (limit < 0) return true
+  const xs = Array.isArray(v) ? v : isObject(v) ? Object.values(v) : undefined
+  return xs !== undefined && xs.some(x => tooDeep(x, limit - 1))
+}
+
 // JSON blocks trimmed field by field, each block on its own: paging at the
 // top of the second block is still the top. Undefined when a block is not an
-// object or a list, or nests too deep to walk.
+// object or a list, or nests deeper than MAX_DEPTH.
 export function trimJson(texts: readonly string[], words: ReadonlySet<string>) {
   const data = texts.map(parseJson)
-  if (data.some(d => d === undefined)) return undefined
+  if (data.some(d => d === undefined || tooDeep(d, MAX_DEPTH))) return undefined
   try {
     const t = newStats()
     const many = data.length > 1
     const text = data
       .map((d, i) => `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false, false))}`)
       .join(`${NL}${NL}`)
-    const paging = data
-      .map((d, i) => pagingOf(d, many ? `block ${i + 1}: ` : ''))
-      .filter(Boolean)
-      .join(', ')
+    const paging = pagingLine(data.flatMap((d, i) => pagingOf(d, many ? `block ${i + 1}: ` : '')))
     return { text, paging, stats: t }
   } catch {
     return undefined

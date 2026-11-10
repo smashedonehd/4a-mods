@@ -18,10 +18,15 @@ export function put(o: Json, k: string, v: unknown) {
   Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true })
 }
 
+// The object or list a string stands in, and where that container stands: the
+// key it is under (a list's elements take the list's key) and its parent. The
+// container is complete once the whole text has been read.
+export type Frame = { key: string | undefined; holder: Json | unknown[]; parent: Frame | undefined }
+
 // Called for each string value: its span in the text (quotes included), its
-// value, and the keys it stands under, outermost first (an array's elements
-// stand under the array's key). The path is live: copy it to keep it.
-export type Visit = (start: number, end: number, value: string, path: readonly string[]) => void
+// value, the key it stands under (an array's elements take the array's), and
+// the container it is in.
+export type Visit = (start: number, end: number, value: string, key: string | undefined, frame: Frame | undefined) => void
 
 const NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 const WS = /[ \t\n\r]*/y
@@ -33,7 +38,7 @@ const NOT_JSON = new SyntaxError('not JSON')
 // The value of `text`, which must be one JSON value; throws when it is not.
 export function readJson(text: string, visit?: Visit): unknown {
   let i = 0
-  const path: string[] = []
+  let frame: Frame | undefined
   const fail = (): never => {
     throw NOT_JSON
   }
@@ -57,14 +62,16 @@ export function readJson(text: string, visit?: Visit): unknown {
     i = j + 1
     return [JSON.parse(text.slice(start, i)) as string, start]
   }
-  const value = (): unknown => {
+  const value = (key: string | undefined): unknown => {
     ws()
     const c = text[i]
     if (c === '{') {
       i++
       const o: Json = {}
+      const outer = frame
+      if (visit) frame = { key, holder: o, parent: outer }
       ws()
-      if (text[i] === '}') return (i++, o)
+      if (text[i] === '}') return (i++, (frame = outer), o)
       for (;;) {
         ws()
         if (text[i] !== '"') fail()
@@ -72,31 +79,31 @@ export function readJson(text: string, visit?: Visit): unknown {
         ws()
         if (text[i] !== ':') fail()
         i++
-        path.push(k)
-        put(o, k, value())
-        path.pop()
+        put(o, k, value(k))
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === '}') return (i++, o)
+        else if (text[i] === '}') return (i++, (frame = outer), o)
         else fail()
       }
     }
     if (c === '[') {
       i++
       const a: unknown[] = []
+      const outer = frame
+      if (visit) frame = { key, holder: a, parent: outer }
       ws()
-      if (text[i] === ']') return (i++, a)
+      if (text[i] === ']') return (i++, (frame = outer), a)
       for (;;) {
-        a.push(value())
+        a.push(value(key))
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === ']') return (i++, a)
+        else if (text[i] === ']') return (i++, (frame = outer), a)
         else fail()
       }
     }
     if (c === '"') {
       const [s, start] = str()
-      visit?.(start, i, s, path)
+      visit?.(start, i, s, key, frame)
       return s
     }
     for (const [word, v] of [['true', true], ['false', false], ['null', null]] as const)
@@ -109,7 +116,7 @@ export function readJson(text: string, visit?: Visit): unknown {
     const n = Number(raw)
     return String(n) === raw ? n : new Exact(raw)
   }
-  const v = value()
+  const v = value(undefined)
   ws()
   if (i !== text.length) fail()
   return v

@@ -584,3 +584,73 @@ test('retention runs again after every 25 saves', async ($, on) => {
   await call($, { tool_use_id: 't24' })
   expect(files[old]).toMatch(/^\[Connector Trim\] This saved result was cleared/)
 })
+
+// ---------- third review ----------
+
+test('ordinary data under secret-sounding and paging-sounding names reaches Claude as data', async ($, on) => {
+  const jwt = ['eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9', 'eyJib3JkZXJfcmFuayI6NDI5MTY3fQ', 'Zm9vYmFyYmF6cXV4MTIz'].join('.')
+  const delta = 'https://graph.microsoft.com/v1.0/me/messages/delta?$deltatoken=LztZwWjo5IivWBhyxw5rACKxf7mPm0oW6JZZ7fvdI'
+  const text = report(60, {
+    tokens: ['the', 'quick'],
+    usage: { prompt_tokens: '120', max_tokens: '4096' },
+    signature: 'Best regards, John',
+    '@odata.deltaLink': delta,
+    next_page: { offset: jwt },
+    api_key: 'k1',
+  })
+  const { files } = world(on, { result: block(text) })
+  const note = String(await call($))
+  const head = note.split('\n\n')[0]!
+  expect(head).toContain(`@odata.deltaLink="${delta}"`)
+  expect(head).toContain(`next_page.offset="${jwt}"`)
+  expect(head).toContain('Redacted before saving and before any model saw it: 1 apikey value.')
+  for (const s of ['"tokens": ["the","quick"]', '"prompt_tokens":"120"', '"signature": "Best regards, John"']) expect([s, note.includes(s)]).toEqual([s, true])
+  expect(files[saved(files)[0]!]).toBe(text.replace('"api_key":"k1"', '"api_key":"[REDACTED]"'))
+})
+
+test('a result that redaction makes too big to save passes whole, and the log says so', async ($, on) => {
+  const text = `[${Array.from({ length: 200_000 }, () => '{"password":"a"}').join(',')}]`
+  const { files } = world(on, { result: block(text) })
+  expect(await call($)).toEqual(block(text))
+  expect(saved(files)).toEqual([])
+  expect(files[LOG]).toMatch(/bytes once redacted is more than one saved file holds/)
+})
+
+test('two results in one second whose ids end alike are saved to two files', async ($, on) => {
+  const { files } = world(on, { result: block(SMALL) })
+  await call($, { tool_use_id: 'toolu_01AAAAAAAAAAAAAAAAAAAAAA' })
+  await call($, { tool_use_id: 'toolu_01BBBBBBBBBBAAAAAAAA' })
+  await call($, { tool_use_id: 'toolu_01CCAAAAAAAA' })
+  const names = saved(files)
+  expect(names).toHaveLength(3)
+  expect(names[1]).toMatch(/-AAAAAAAA-2\.json$/)
+  expect(names[2]).toMatch(/-AAAAAAAA-3\.json$/)
+})
+
+test('a ledger with no line end gets one before the new line', async ($, on) => {
+  const { files } = world(on, { result: block(SMALL), files: { [LEDGER]: '{"mod":"other"}' } })
+  await call($)
+  const lines = files[LEDGER]!.split('\n')
+  expect(lines[0]).toBe('{"mod":"other"}')
+  expect(JSON.parse(lines[1]!).mod).toBe('connector-trim')
+})
+
+test('a ledger over 3 MB is copied aside and started again', async ($, on) => {
+  const old = '{"mod":"other"}\n'.repeat(200_000)
+  const { files } = world(on, { result: block(SMALL), files: { [LEDGER]: old } })
+  await call($)
+  const aside = Object.keys(files).filter(p => /savings-\d{8}-\d{6}\.jsonl$/.test(p))
+  expect(aside).toHaveLength(1)
+  expect(files[aside[0]!]).toBe(old)
+  expect(files[LEDGER]!.split('\n').filter(Boolean)).toHaveLength(1)
+})
+
+for (const [where, extra, rows] of [
+  ['the arguments', { q: '‹data>' }, undefined],
+  ['the task', {}, [{ role: 'user', text: 'show ‹data> rows', toolUses: [] }]],
+] as const)
+  test(`a note keeps ‹ when ${where} held one`, async ($, on) => {
+    const reply = () => ok('html: ‹data>1\nLeft out: x')
+    world(on, { result: block(BIG), reply, rows })
+    expect(String(await call($, extra))).toContain('html: ‹data>1')
+  })

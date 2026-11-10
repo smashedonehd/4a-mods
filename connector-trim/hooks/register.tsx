@@ -343,13 +343,18 @@ async function takeFull($: EngineInterface) {
 
 // The texts as the tool returned them (secrets redacted), never re-written
 // from a parse: one JSON block as .json, anything else as .txt.
-async function save($: EngineInterface, e: Call, tool: string, texts: readonly string[], isJson: boolean) {
+// A name taken in the same second by another result gets `-2`, `-3`, ...
+async function save($: EngineInterface, e: Call, tool: string, text: string, ext: 'json' | 'txt') {
   const { results } = await dirsOf($)
   const { server, name } = partsOf(tool)
-  const ext = isJson && texts.length === 1 ? 'json' : 'txt'
-  const path = `${results}/${stamp(await $.clock.now())}-${safe(server)}-${safe(name)}-${safe(String(e.tool_use_id ?? '').slice(-8))}.${ext}`
+  const base = `${results}/${stamp(await $.clock.now())}-${safe(server)}-${safe(name)}-${safe(String(e.tool_use_id ?? '').slice(-8))}`
   try {
-    await $.fs.write(path, texts.join(`${NL}${NL}`))
+    let path = `${base}.${ext}`
+    for (let n = 2; await $.fs.exists(path); n++) {
+      if (n > 1000) throw new Error('a thousand results in one second share this name')
+      path = `${base}-${n}.${ext}`
+    }
+    await $.fs.write(path, text)
     return path
   } catch (err) {
     await log($, `${tool}: passed whole, the full result could not be saved: ${message(err)}`)
@@ -395,6 +400,12 @@ async function shorten(
   const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(t => redactText(t))
   const texts = red.map(r => r.text)
   const redacted = red.flatMap(r => r.found)
+  // What is saved is the redacted text, which can be longer than the result.
+  const saving = texts.join(`${NL}${NL}`)
+  if (bytes(saving) > SAVE_MAX_BYTES) {
+    await log($, `${tool}: passed whole, ${fmt(bytes(saving))} bytes once redacted is more than one saved file holds`)
+    return undefined
+  }
   const task = await taskFor($, e)
   const args = argsOf(e)
   const words = wordsOf(`${task.user} ${task.assistant} ${args}`)
@@ -404,7 +415,7 @@ async function shorten(
     return undefined
   }
   const body = trimmed?.text ?? trimPlain(texts)
-  const file = await save($, e, tool, texts, isJson)
+  const file = await save($, e, tool, saving, isJson && texts.length === 1 ? 'json' : 'txt')
   if (file === undefined) return undefined
   const base = {
     tool,
