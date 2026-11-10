@@ -1,10 +1,28 @@
 {
   "name": "cache-keeper",
-  "version": "1.6.0",
-  "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a chat off to a fresh one (/handoff); amounts shown as plan-limit percent (5h, week) instead of dollars",
+  "version": "1.7.1",
+  "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a big chat off to a fresh one (/handoff): five steps on a card above the prompt, then /clear and continue; amounts shown as plan-limit percent (5h, week) instead of dollars",
   "author": {
     "name": "4AM"
   },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "handoffOfferAt": {
+      "type": "string",
+      "title": "Handoff offer",
+      "description": "The context size at which a card above the prompt offers to hand the chat off to a fresh one (off: never). The offer's own control and /cache handoff change it too.",
+      "default": "300k",
+      "options": [
+        "off",
+        "150k",
+        "200k",
+        "250k",
+        "300k",
+        "400k",
+        "500k",
+        "600k"
+      ]
+    }
+  }
 }

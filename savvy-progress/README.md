@@ -1,0 +1,30 @@
+# savvy-progress
+
+A Claude Code mod: a progress bar above the prompt and a live panel of subagents. Made for the [savvy-flow](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-flow) skill, and useful with any subagents.
+
+**Origin:** by [johnnyvizz](https://github.com/johnnyvizz), MIT (see [LICENSE](LICENSE)). Copied from [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit/tree/c871c153ead54ad9547cc717d0f3e5a676c73986/plugins/savvy-progress) at commit `c871c15`, version 1.2.1. 4A-Mods changed two things: this README, and in 1.3.0 the bar that draws without a reported plan (`waveOf`, `autoFlow`, `bandFlow` and the `dismissed` state in `hooks/register.tsx`, at the drawing, plus `resumedLast` in the `turn.step` hook; tests in `hooks/auto.test.ts`). Upstream changes reach 4A-Mods only after someone reads them and copies them here.
+
+**Without savvy-flow** set `autoOpen` to `any`, or the panel opens only on `/agents-info`.
+
+- **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
+- **Bar without a plan** (4A-Mods, 1.3.0): when nothing reported a plan and two or more subagents run in one wave, the bar draws by itself, titled "Subagents", with finished runs out of all runs of the wave (a failed run counts as finished). A wave begins with a subagent started while no other runs, and lasts until the next such start. A subagent whose end the engine never reports (the engine reports an aborted one too) would keep its wave open; the dismiss hides it. A finished subagent that gets a follow-up joins the current wave. A reported plan that is still open always wins, and so does the unnamed `savvy-flow` bar a `savvy-*` worker starts. Dismissed, the bar stays away for the rest of the wave, and from a later wave that the dismissed wave's first subagent joins through a follow-up. The crew button counts every subagent of the session, not only the wave.
+- **Agents panel** (`/agents-info` toggles it; `/agents-info open` opens it or brings it forward without toggling): running, finished and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. `prefers-reduced-motion` stops them.
+
+## Tools it adds
+
+- `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead. The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
+
+Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
+
+## Settings
+
+`language`: `auto` (default), `en`, `ru` or `he`. Hebrew draws the bar and the panel right to left. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
+
+```json
+{ "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
+```
+
+`autoOpen`: `savvy` (default) or `any`. With `savvy` the panel opens by itself when a `savvy-*` worker starts or a plan is reported. With `any` it also opens, once per session, when any other subagent starts. `/agents-info` toggles it either way.
+
+Install instructions are in the [repository README](../README.md).

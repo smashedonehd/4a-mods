@@ -66,6 +66,9 @@ const PALETTE = [
 ]
 // A switched-on mod's On and Shown.
 const GOOD = '#16a34a'
+// The Mods tab's switch: a pill, green with the knob right when on.
+const pill = (lit: boolean) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="26" viewBox="0 0 44 26"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? GOOD : '#d1d1d6'}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff"/></svg>`
 // Chips drawn at most; the filter narrows the rest.
 const SHOWN = 200
 // Bumped after each write so the pane redraws.
@@ -996,7 +999,7 @@ export const register: Register = on => {
       read($, query),
     ])
     const canReload = hasReload(commands)
-    const { Box, Text, Button, Input } = $.ui.resolve(e) as any
+    const { Box, Text, Button, Input, Svg } = $.ui.resolve(e) as any
     if (current === 'profiles') {
       const all = await readJson($, await profilesPath($))
       const named = await read($, draft)
@@ -1099,10 +1102,37 @@ export const register: Register = on => {
         read($, modNote),
       ])
       const chrome = e.surface === 'terminal' ? { variant: 'secondary' as const } : {}
-      // A control that is a word while it cannot be pressed, else a button
-      // with a green dot when lit.
-      const control = (key: string, label: string, live: boolean, lit: boolean, press: () => unknown) =>
-        !live ? (
+      // Where pictures draw, a switch is a green pill under a blank plain
+      // button (the engine has no Switch element) and `glyph` is a one-glyph
+      // button. Elsewhere, a button with a green dot when lit. A control that
+      // is not live is a dim word or glyph; the On switch always is live.
+      const pictures = Boolean(Svg) && e.surface !== 'terminal'
+      const control = (
+        key: string,
+        label: string,
+        live: boolean,
+        lit: boolean,
+        press: () => unknown,
+        glyph?: string,
+      ) => {
+        if (pictures && glyph !== undefined)
+          return live ? (
+            <Button key={key} label={glyph} plain dimColor={!lit} onPress={press} />
+          ) : (
+            <Text key={key} dimColor>
+              {glyph}
+            </Text>
+          )
+        if (pictures)
+          return (
+            <Box flexShrink={0}>
+              <Svg source={pill(lit)} alt={label} width={44} height={26} />
+              <Box position="absolute" top={0} left={0}>
+                <Button key={key} label={'⠀⠀⠀'} plain onPress={press} />
+              </Box>
+            </Box>
+          )
+        return !live ? (
           <Text key={key} dimColor>
             {label}
           </Text>
@@ -1112,6 +1142,7 @@ export const register: Register = on => {
             <Button key={key} label={label} dimColor={!lit} {...chrome} onPress={press} />
           </Box>
         )
+      }
       return (
         <Box flexDirection="column" gap={1} padding={1}>
           {tabs($, e, current)}
@@ -1158,8 +1189,13 @@ export const register: Register = on => {
                         <Button key={`mods-open:${m.name}`} label="Open" {...chrome} onPress={() => openMod($, m)} />
                       ))}
                     {m.hideable &&
-                      control(`mods-shown:${m.name}`, hidden ? 'Hidden' : 'Shown', !off, !hidden, () =>
-                        flipMod($, m, true),
+                      control(
+                        `mods-shown:${m.name}`,
+                        hidden ? 'Hidden' : 'Shown',
+                        !off,
+                        !hidden,
+                        () => flipMod($, m, true),
+                        '\u{1F441}',
                       )}
                     {control(`mods:${m.name}`, off ? 'Off' : 'On', true, !off, () => flipMod($, m, false))}
                   </Box>

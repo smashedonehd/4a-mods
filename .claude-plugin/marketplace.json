@@ -1,6 +1,6 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list; Prompt Translate turns your draft into English with one button; Connector Trim shortens big JSON results of MCP connectors by code and Haiku and saves the full result to a file.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list; Prompt Translate turns your draft into English with one button; Savvy Progress (by johnnyvizz) shows a live panel of every subagent with its model, context, cost and time. Filetree (by Kurt Buhler) shows a file tree of what Claude reads and edits. Connector Trim shortens big JSON results of MCP connectors by code and saves the full result to a file.",
   "owner": {
     "name": "4AM"
   },
@@ -8,7 +8,7 @@
     {
       "name": "cache-keeper",
       "source": "./cache-keeper",
-      "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a chat off to a fresh one (/handoff)"
+      "description": "Keeps a big chat's prompt cache warm, warns before an expensive cold restart, shows every local chat on one board (/board), and hands a big chat off to a fresh one (/handoff), with its five steps on a card above the prompt"
     },
     {
       "name": "plugin-toggles",
@@ -18,12 +18,22 @@
     {
       "name": "plan-keeper",
       "source": "./plan-keeper",
-      "description": "Ticks a plan file's checkbox items once the task-list step of the same text is done, and lists the open items when a chat starts or clears"
+      "description": "Ticks a plan file's checkbox items once the task-list step of the same text is done, shows the plan's progress in a band and a pane (/plan-keeper), and tells Claude when a task list ends with plan items open"
     },
     {
       "name": "prompt-translate",
       "source": "./prompt-translate",
       "description": "An EN button above the prompt (or /translate) that has Haiku translate your draft into English in place, without sending it"
+    },
+    {
+      "name": "savvy-progress",
+      "source": "./savvy-progress",
+      "description": "A live panel of every subagent (/agents-info): model, effort, progress, context, estimated cost and time, plus a progress bar for savvy-flow. By johnnyvizz, MIT, copied from johnnyvizz/claude-kit"
+    },
+    {
+      "name": "filetree",
+      "source": "./filetree",
+      "description": "An IDE-style file tree pane (/filetree): the files Claude reads, writes and commits, with git status, diffs, search, previews and guarded paths. By Kurt Buhler, MIT, copied from data-goblin/claude-code-filetree"
     },
     {
       "name": "connector-trim",

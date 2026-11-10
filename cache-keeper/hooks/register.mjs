@@ -1,6 +1,7 @@
 // Cache Keeper: watches this session's prompt cache, keeps big caches warm on
 // request, refuses a cold send without asking first, and shows every local
-// session on one board (/board).
+// session on one board (/board), and hands a big chat off to a fresh one
+// (/handoff): five steps on a card above the prompt, then /clear and continue.
 //
 // Why: each request re-reads the whole context. From the cache that costs about
 // a tenth of normal input. Once the cache expires (1 hour idle on a subscription,
@@ -11,6 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
+import { rankFiles, gatherFacts, redact, draftText, forkPrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -63,7 +65,6 @@ let fleet = [] // heartbeats of every session, this one included
 const alerted = new Map() // sessionId -> state or warning key already announced
 let paneOpen = false
 let justCompacted = false
-let handoffPending = false
 
 // Skills "clear and continue" runs again in the fresh chat before the handoff,
 // but only those this chat turned on: key -> { command, args }. Mirrored in
@@ -130,24 +131,18 @@ async function reviveSkills($, list) {
   }
 }
 
-// The handoff flow. When /session-handoff runs (the band's button, /handoff, a
-// typed command, or Claude calling the skill), the answer of the turn it starts
-// is captured and saved to a file. "clear and continue" then runs /clear and
-// sends the handoff as the fresh chat's first prompt.
-// The answer is also kept as the folder's "latest" handoff (latest-*.json), so
+// The handoff. Cache Keeper writes it itself, in five steps shown on a card
+// above the prompt: it reads the conversation, finds the files it used, lists
+// skills, tools and links, has a fork of the conversation write the handoff
+// (after saving a model-free draft), then saves and checks it. "clear and
+// continue" then runs /clear and sends the handoff as the fresh chat's first
+// prompt, with live git state in front.
+// The handoff is also kept as the folder's "latest" (latest-*.json), so
 // "continue" still works after a restart for LATEST_HOURS. Using it, or sending a
 // new message in the chat that made it, marks it as used.
 const HANDOFF_SKILL = /(^|:)session-handoff$/
-const HANDOFF_HEADING = '# Session Handoff'
-const HEADING_LINE = new RegExp('^' + HANDOFF_HEADING, 'm')
-const HANDOFF_MIN = 200 // characters: a shorter text cannot hold the skill's sections
+const HANDOFF_MIN = 200 // characters: a shorter text cannot hold the handoff's sections
 const H = {
-  armed: false,
-  notTurn: '', // a turn already running when the handoff was queued: not the handoff's
-  draft: '', // the last handoff a response of the armed turn ended with
-  // once the handoff is in: 'clear' (the band's button, /handoff, the skill) clears
-  // and continues, 'none' ("keep") leaves the chat as it is
-  after: 'none',
   text: '',
   path: '',
   fid: '', // id of the latest-*.json entry this handoff came from or went to
@@ -158,18 +153,49 @@ const H = {
   // ran since, so that handoff is out of date
   clearDue: false,
   refreshed: false, // the due clear already wrote one fresh handoff of its own
-  // the band's handoff, queued behind the running turn, which Claude's own
-  // skill call in that turn took over: the queued one still runs, as the next turn
-  another: false,
-  phase: '', // what clear and continue is doing now, shown on the band
+  phase: '', // what clear and continue is doing now, shown on the card
+  kept: false, // "Keep chat" was pressed: the band stops offering to clear for this handoff
+}
+
+// The pipeline and its card. after: what follows a written handoff: 'clear'
+// clears and continues on its own, 'none' (keep) and 'ask' leave the choice
+// to the card's buttons.
+const STEP_LABELS = ['Reading the conversation', 'Finding the files you used', 'Listing skills, tools and links', 'Writing the handoff', 'Saving and checking']
+const FILES_MAX = 25 // files the handoff lists
+const FILES_CHECKED = 80 // candidates checked against the disk
+const WRITE_SCALE = 40000 // ms: the writing step's bar nears full on this scale
+const SNOOZE = 100000 // tokens the context grows before a hidden offer comes back
+const P = {
+  phase: '', // '' | 'working' | 'ready' | 'failed'
+  pending: '', // an after mode queued behind the running turn
+  after: 'ask',
+  steps: [], // { status: 'wait'|'run'|'done'|'fail', detail }
+  stepAt: 0, // when the running step started
+  file: '', // the saved handoff
+  draft: '', // the model-free draft
+  words: 0,
+  error: '',
+}
+let ticker = null
+let offerChoice = OFFER_DEFAULT // the offer's threshold as picked ('300k', 'off')
+let snoozeTo = 0 // a hidden offer stays away below this context size
+let windows = false
+
+function offerAt() {
+  return offerTokens(offerChoice) || 0
+}
+
+// The card offers a handoff: a big chat with no handoff of its own in view
+function offerShown() {
+  return !P.phase && !P.pending && !H.continuing && !(H.text && !H.fromDisk) && offerAt() > 0 && S.ctx >= offerAt() && S.ctx >= snoozeTo
 }
 
 // Soft landing: a handoff asked for while Claude works waits for the turn to
 // end. That turn is asked once, after its next batch of tools, to wind down at
 // a safe point. It is never stopped on its own: a turn that runs long past the
-// note gets a "stop now" on the band, for the person to press.
+// note gets a "stop now" on the card, for the person to press.
 const LANDING_NOTE = 'Cache Keeper: the user asked for a session handoff. It runs as soon as this turn ends. Wind down now: finish or safely pause the current step, start no new work, leave nothing half-written (save or commit work in progress the way this project expects), then end this turn with a two-line status of where things stand.'
-const LANDING_STEPS = 3 // model requests after the note before the band offers "stop now"
+const LANDING_STEPS = 3 // model requests after the note before the card offers "stop now"
 const LANDING_TOKENS = 40000 // or this much context growth since the press
 const L = {
   at: 0,
@@ -178,13 +204,14 @@ const L = {
   steps: 0, // model requests since the note
 }
 
-// The handoff is queued behind the running turn (its notTurn), and still armed
+// The handoff is queued behind the running turn
 function landing() {
-  return H.armed && S.working && !!H.notTurn && S.turnId === H.notTurn
+  return !!P.pending && S.working
 }
 
-function startLanding() {
-  Object.assign(L, { at: now, ctx0: S.ctx, noted: false, steps: 0 })
+// noted: Claude asked for the handoff itself, so it needs no note
+function startLanding(noted = false) {
+  Object.assign(L, { at: now, ctx0: S.ctx, noted, steps: 0 })
 }
 
 // How much the context grew since the press
@@ -196,7 +223,7 @@ function landingOverdue() {
   return landing() && L.noted && (L.steps >= LANDING_STEPS || landingGrowth() >= LANDING_TOKENS)
 }
 
-// After a request of the landing turn: the band's figures and "stop now" redraw
+// After a request of the landing turn: the card's figures and "stop now" redraw
 // now, not at the next heartbeat
 function landed($, result) {
   if (landing()) $.ui.invalidate('ui.render')
@@ -207,10 +234,9 @@ function landed($, result) {
 // this chat would keep /clear from running. They go on after the handoff.
 const held = []
 
-// Armed, it holds only while the handoff is queued or running: an arm left over
-// from a handoff that never ran must not swallow every later message
+// Held only while a handoff that clears is queued or running, or its clear is due
 function holdsPrompts() {
-  return (H.armed && H.after === 'clear' && (handoffPending || S.working)) || H.clearDue
+  return P.pending === 'clear' || (P.phase === 'working' && P.after === 'clear') || !!H.clearDue
 }
 
 // What cannot be sent again as it came passes the hold: a command, attachments,
@@ -223,10 +249,10 @@ function canHold(e) {
 }
 
 // A notification delivered into the running turn starts no turn, so it cannot
-// keep /clear from running. Only the handoff's own turn must not take one in.
-// What the person typed over a turn may still wait for a turn of its own.
+// keep /clear from running. What the person typed over a turn may still wait
+// for a turn of its own.
 function joinsOtherTurn(e, fromUser) {
-  return !fromUser && S.working && !!e.turnId && e.turnId === S.turnId && !isHandoffTurn(e.turnId)
+  return !fromUser && S.working && !!e.turnId && e.turnId === S.turnId
 }
 
 // Sends the held prompts in the order they came; one that cannot be sent goes
@@ -248,60 +274,11 @@ async function releaseHeld($) {
 }
 
 // Every way out of a handoff or a clear ends here: what was held goes on once
-// nothing holds it any more (a second handoff may still be on its way), and
-// the next overtaken clear may write a fresh handoff again
+// nothing holds it any more, and the next overtaken clear may write a fresh
+// handoff again
 async function settleHold($) {
   H.refreshed = false
   if (!holdsPrompts() && held.length) await releaseHeld($)
-}
-
-// Armed again inside the turn the arm is for (the skill called twice in it), or
-// the one the band's handoff queued behind, the arm keeps a clear it already
-// had and the handoff this turn already wrote. Until its capture, an arm with
-// no notTurn is for the running turn. The band's handoff taken over this way is
-// still queued: the engine runs it once this turn ends (see H.another).
-// after null: no choice made (Claude's skill call without args). Such an arm
-// keeps what the arm it joins chose, a keep included, and clears otherwise.
-function armHandoff(insideTurn, after) {
-  const live = insideTurn && H.armed
-  const queued = live && H.notTurn !== '' && H.notTurn === S.turnId
-  const again = live && (H.notTurn === '' || queued)
-  if (after === null) after = again ? H.after : 'clear'
-  if (!(again && H.after === 'clear')) H.after = after
-  if (!again) H.draft = ''
-  H.another = queued || (again && H.another)
-  H.armed = true
-  H.notTurn = insideTurn ? '' : S.working ? S.turnId : ''
-}
-
-// The turn whose answer is the handoff: an armed one other than notTurn
-function isHandoffTurn(turnId) {
-  return H.armed && turnId !== H.notTurn
-}
-
-// The handoff without any preamble Claude put before its heading. The heading
-// starts a line: one quoted inside a sentence is not it.
-function handoffBody(answer) {
-  const text = String(answer || '').trim()
-  const m = HEADING_LINE.exec(text)
-  return m ? text.slice(m.index) : text
-}
-
-// Only an answer with the skill's heading, long enough to hold its sections,
-// is a handoff: a short reply that repeats the heading line is not
-function isHandoff(body) {
-  return body.startsWith(HANDOFF_HEADING) && body.length >= HANDOFF_MIN
-}
-
-// A Stop hook that blocks the turn makes Claude answer again in the same turn,
-// and turn.complete carries only the last answer: keep the last handoff a
-// response of the armed turn ended with (a reply without the heading leaves it,
-// a rewritten handoff replaces it). A response cut off before its end
-// (max_tokens, an interrupt) is no handoff.
-function noteHandoffStep(e, result) {
-  if (!isHandoffTurn(e.turnId) || result.stopReason !== 'end_turn') return
-  const body = handoffBody(result.answer)
-  if (isHandoff(body)) H.draft = body
 }
 
 function fileStamp(ms) {
@@ -322,6 +299,11 @@ function handoffFile(name) {
   return `${home || '.'}/.claude/mods-data/cache-keeper/handoffs/${name}`.replace(/\\/g, '/')
 }
 
+// The dated file's name, without its extension
+function handoffName() {
+  return `${fileStamp(now)}-${handoffProject()}-${S.id.slice(0, 8)}`
+}
+
 // One latest handoff per folder (keyed by the full cwd, so two folders called
 // alike do not share one), overwritten on each save. '' without a cwd.
 function latestPath() {
@@ -335,7 +317,7 @@ function latestPath() {
 // The dated file and the latest copy are written independently: one failing
 // must not lose the other. Never throws.
 async function saveHandoff($, text) {
-  let path = handoffFile(`${fileStamp(now)}-${handoffProject()}-${S.id.slice(0, 8)}.md`)
+  let path = handoffFile(handoffName() + '.md')
   try {
     await $.fs.write(path, text + '\n')
   } catch {
@@ -400,82 +382,178 @@ async function loadLatestHandoff($) {
   H.fid = saved.fid || ''
   H.at = saved.at
   H.fromDisk = true
+  H.kept = false
   return ''
 }
 
-async function captureHandoff($, e) {
-  H.armed = false
-  H.notTurn = ''
-  const after = H.after
-  H.after = 'none'
-  // An interrupted turn keeps its handoff, but nothing follows on its own
-  const ended = e.reason === 'answer'
-  // The band's handoff this turn took over still runs, as the next turn, if
-  // this turn ended on its own (an interrupt may drop the engine's queue).
-  // That turn is the handoff's too: what it writes replaces this turn's, and
-  // its capture decides what follows. Armed now, before any await: its
-  // turn.start may already have come.
-  const another = ended && H.another
-  H.another = false
-  // The final answer counts when no step of the turn held a handoff
-  const body = H.draft || (ended ? handoffBody(e.answer) : '')
-  if (another) {
-    H.armed = true
-    H.after = after
-    H.draft = ''
-  }
-  // An answer that is no handoff (a reply after a Stop hook, an ordinary turn
-  // a leftover arm caught) never replaces a saved handoff
-  if (!isHandoff(body)) {
-    if (another) {
-      $.ui.toast('The handoff turn ended without a handoff. The queued handoff still runs next.', { timeoutMs: 8000 })
-      return
-    }
-    // A clear an earlier handoff made due still happens, with that handoff,
-    // unless a turn since made it out of date
-    if (H.clearDue === true) {
-      $.ui.toast('The handoff turn ended without a handoff. Clearing this chat and continuing with the earlier one.', { timeoutMs: 8000 })
-      clearAndContinueLater($, 300, true)
-      return
-    }
-    H.clearDue = false
-    $.ui.toast('The handoff turn ended without a handoff, so nothing was saved.', { timeoutMs: 8000 })
-    await settleHold($)
-    return
-  }
-  const clearing = ended && after === 'clear'
-  // A turn other than a handoff's own began over this hook (one the hold could
-  // not stop): what it does is not in this handoff. The queued handoff's turn,
-  // re-armed above, is a handoff's own, as turn.start counts it.
-  const overrun = clearing && S.working && !isHandoffTurn(S.turnId)
-  // Set before the first await: the hold must not lapse while the files are
-  // written. A later /handoff decides too: one with keep ends the hold.
-  H.clearDue = overrun ? 'stale' : clearing
-  H.text = body
-  H.fromDisk = false
-  H.at = now
-  const saved = await saveHandoff($, body)
-  H.path = saved.path
-  H.fid = saved.fid
-  const where = saved.path ? `Handoff saved to ${saved.path}.` : 'Handoff captured (the backup file could not be written).'
-  const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
-  const lead = where + lost
-  if (another) {
-    // This turn's handoff is saved; the queued one runs next and decides what follows
-    $.ui.toast(`${lead} The queued handoff still runs next${clearing ? ', and the chat then clears and continues with it' : ''}.`, { timeoutMs: 8000 })
-    return
-  }
-  if (clearing) {
-    // Off the hook too: /clear must not run inside the ending turn. Overrun, the
-    // scheduled run waits for that turn, then writes a fresh handoff (refreshHandoff)
-    $.ui.toast(`${lead} ${overrun ? 'Claude works on, so the chat clears with a fresh handoff once this turn ends.' : 'Clearing this chat and continuing with it.'}`, { timeoutMs: 8000 })
-    clearAndContinueLater($, 300, true)
-    return
-  }
-  // Nothing clears: what was held while the handoff ran goes on in this chat
-  await settleHold($)
-  $.ui.toast(`${lead} Press c on the band or type /${names.handoff} continue to clear and continue.`, { timeoutMs: 15000 })
+// ---- the pipeline -----------------------------------------------------------
+
+function freshSteps() {
+  return STEP_LABELS.map(() => ({ status: 'wait', detail: '' }))
 }
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+// While a step runs, the card redraws twice a second: its seconds and its bar
+function startTicker($) {
+  stopTicker()
+  ticker = $.clock.every(500, () => {
+    $.clock.now().then((t) => {
+      now = t
+      $.ui.invalidate('ui.render')
+    }, () => {})
+  })
+}
+
+function stopTicker() {
+  if (ticker && ticker.cancel) ticker.cancel()
+  ticker = null
+}
+
+// One step: marked running, its work, then done with its detail. A throw marks
+// it failed and goes on up.
+async function runStep($, i, work, detail) {
+  now = await $.clock.now()
+  P.stepAt = now
+  P.steps[i] = { status: 'run', detail: '' }
+  $.ui.invalidate('ui.render')
+  const value = await work()
+  now = await $.clock.now()
+  P.steps[i] = { status: 'done', detail: detail(value) }
+  $.ui.invalidate('ui.render')
+  return value
+}
+
+// Step 1: the conversation, from the API, else from the transcript file
+async function readMessages($) {
+  try {
+    const rows = await $.session.messages()
+    if (Array.isArray(rows)) return { messages: rows, fromFile: false }
+  } catch {
+    // no such API on this host, or it refused: the transcript file follows
+  }
+  const file = transcriptPath(home, S.cwd, S.id)
+  let text = ''
+  try {
+    text = await $.fs.read(file)
+  } catch {
+    throw new Error('the conversation could not be read (no $.session.messages, no transcript file)')
+  }
+  return { messages: parseTranscript(text), fromFile: true }
+}
+
+// Step 2: the files the conversation used that are still files on disk,
+// checked FILES_MAX at a time, in rank order
+async function existingFiles($, messages) {
+  const ranked = rankFiles(messages, { windows, home }).slice(0, FILES_CHECKED)
+  const kept = []
+  for (let i = 0; i < ranked.length && kept.length < FILES_MAX; i += FILES_MAX) {
+    const chunk = ranked.slice(i, i + FILES_MAX)
+    const stats = await Promise.all(chunk.map((f) => $.fs.stat(f.path).catch(() => null)))
+    chunk.forEach((f, j) => stats[j] && stats[j].kind === 'file' && kept.push(f))
+  }
+  return kept.slice(0, FILES_MAX)
+}
+
+// The draft file to open when the model step fails; a failed write keeps the
+// one before
+async function saveDraft($, name, text) {
+  const path = handoffFile(name + '.draft.md')
+  try {
+    await $.fs.write(path, text)
+    P.draft = path
+  } catch {
+    // nothing to point at
+  }
+}
+
+// Why the fork gave no handoff, as a sentence part
+function forkFailure(r) {
+  if (!r) return 'the model step gave no answer'
+  if (r.reason === 'nothing-to-fork') return 'there is no conversation to fork yet (run a turn first)'
+  if (r.reason === 'api-error') return `the model call failed${r.status ? ` (HTTP ${r.status})` : ''}`
+  if (r.reason === 'aborted') return 'the model step was interrupted'
+  if (r.reason === 'empty-reply') return 'the model step came back empty'
+  return 'the model step failed' + (r.reason ? ` (${r.reason})` : '')
+}
+
+// Runs the five steps now, or once the running turn ends. after: see P.after.
+async function runPipeline($, after = 'ask') {
+  // A later press that only asks never cancels a clear asked for earlier
+  const merged = (prev) => (prev === 'clear' ? 'clear' : after)
+  if (P.phase === 'working') {
+    P.after = merged(P.after)
+    $.ui.toast(`The handoff is already being written.${P.after === 'clear' ? ' The chat clears and continues once it is in.' : ''}`)
+    return
+  }
+  if (S.working) {
+    now = await $.clock.now()
+    if (!P.pending) startLanding()
+    P.pending = merged(P.pending)
+    $.ui.invalidate('ui.render')
+    $.ui.toast('Session handoff queued: it starts when Claude finishes this turn.')
+    return
+  }
+  // Claimed before the first await: two presses must not both get past the check
+  Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
+  H.clearDue = false
+  startTicker($)
+  try {
+    now = await $.clock.now()
+    const read = await runStep($, 0, () => readMessages($), (r) => plural(r.messages.length, 'message') + (r.fromFile ? ' (transcript file)' : ''))
+    const messages = read.messages
+    const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
+    const facts = await runStep($, 2, async () => gatherFacts(messages), (f) => [plural(f.skills.length + f.servers.length, 'skill or tool'), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
+    const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
+    const name = handoffName()
+    const reply = await runStep($, 3, async () => {
+      // Saved first: a failed or interrupted model step still leaves this
+      await saveDraft($, name, redact(draftText(g)).text)
+      const r = await $.model.fork({ prompt: forkPrompt(g) })
+      if (!r || !r.isAnswered || !String(r.text || '').trim()) throw new Error(forkFailure(r))
+      return r
+    }, () => `${Math.max(1, Math.round((now - P.stepAt) / 1000))} s`)
+    const saved = await runStep($, 4, async () => {
+      const red = redact(cleanReply(reply.text))
+      const text = red.text.trim()
+      const missing = missingSections(text)
+      if (missing.length) {
+        // Kept as the draft to open: not a handoff to continue with
+        await saveDraft($, name, text + '\n')
+        throw new Error('the handoff lacks ' + missing.map((h) => `"${h.replace(/^#+\s*/, '')}"`).join(', '))
+      }
+      const out = await saveHandoff($, text)
+      if (!out.path) throw new Error('the handoff file could not be written')
+      const back = String(await $.fs.read(out.path)).trim()
+      if (back !== text) throw new Error('the saved file does not read back the same')
+      return { ...out, text, secrets: red.count }
+    }, (s) => plural(wordCount(s.text), 'word') + (s.secrets ? `, ${plural(s.secrets, 'secret')} removed` : ''))
+    Object.assign(H, { text: saved.text, path: saved.path, fid: saved.fid, at: now, fromDisk: false, kept: false })
+    Object.assign(P, { phase: 'ready', file: saved.path, words: wordCount(saved.text) })
+    const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
+    if (P.after === 'clear') {
+      // Set before anything awaits: the hold must not lapse before the clear
+      H.clearDue = true
+      $.ui.toast(`Handoff saved to ${saved.path}.${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
+      clearAndContinueLater($, 300, true)
+    } else {
+      if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
+      await settleHold($)
+    }
+  } catch (err) {
+    const i = P.steps.findIndex((s) => s.status === 'run')
+    if (i >= 0) P.steps[i] = { status: 'fail', detail: P.steps[i].detail }
+    Object.assign(P, { phase: 'failed', error: errText(err, 160) })
+    await settleHold($)
+  } finally {
+    stopTicker()
+    $.ui.invalidate('ui.render')
+  }
+}
+
+// ---- the ending: clear and continue -----------------------------------------
 
 // The live state block goes in front of the handoff: what git says about the
 // folder at the moment of the send, so a handoff that aged between its writing
@@ -601,6 +679,7 @@ async function clearAndSend($) {
   H.path = ''
   H.fid = ''
   H.fromDisk = false
+  P.phase = ''
   const text = [head, await live, body].filter(Boolean).join('\n\n')
   try {
     if (again.length) setPhase($, `turning on ${again.length} plugin${again.length > 1 ? 's' : ''}`)
@@ -626,7 +705,7 @@ async function clearAndSend($) {
   }
 }
 
-// What follows a handoff started with these args (see H.after): "keep" leaves
+// What follows a handoff started with these args (see P.after): "keep" leaves
 // the chat, empty args give ifEmpty, anything else clears
 function afterFromArgs(args, ifEmpty = 'clear') {
   const a = String(args || '').trim().toLowerCase()
@@ -648,6 +727,15 @@ async function continueRequest($) {
   return { text: 'Clearing this chat and continuing with the last handoff.' }
 }
 
+// /handoff and a typed /session-handoff: the pipeline starts off the command's
+// hook, or queues itself behind the running turn
+function handoffRequest($, after) {
+  const queued = S.working
+  offHook($, () => runPipeline($, after), 50)
+  if (queued) return { text: 'The handoff starts when Claude finishes this turn. Watch the card above the prompt.' }
+  return { text: `Writing the handoff: watch the card above the prompt.${after === 'clear' ? ' When it is in, this chat clears and continues with it.' : ' This chat stays as it is.'}` }
+}
+
 // Off the calling hook: /clear must not run inside it. due: the clear the
 // handoff made due, which a run scheduled earlier may have done already.
 function clearAndContinueLater($, ms, due = false) {
@@ -659,89 +747,166 @@ function clearAndContinueLater($, ms, due = false) {
 }
 
 // The due clear, once a turn ran since its handoff: sent now, that handoff
-// would leave out what the turn did. A handoff already on its way decides what
-// follows instead. Otherwise one fresh handoff is written for the clear, never
-// a second: overtaken again, the chat stays as it is.
+// would leave out what the turn did. One fresh handoff is written for the
+// clear, never a second: overtaken again, the chat stays as it is.
 async function refreshHandoff($) {
   // Waits for this turn: turn.complete calls again
-  if (S.working && !H.armed) return clearAndContinue($)
+  if (S.working) return clearAndContinue($)
   H.clearDue = false
-  if (H.armed) return
+  if (P.phase === 'working' || P.pending) return
   if (H.refreshed) {
-    $.ui.toast(`Claude worked on again before the chat could clear. The chat stays as it is: press h on the band or type /${names.handoff} for a fresh handoff.`, { timeoutMs: 10000 })
+    $.ui.toast(`Claude worked on again before the chat could clear. The chat stays as it is: type /${names.handoff} for a fresh handoff.`, { timeoutMs: 10000 })
     await settleHold($)
     return
   }
-  H.refreshed = true
   $.ui.toast('Claude worked on after the handoff, so it is out of date. Writing a fresh one: the chat clears once it is in.', { timeoutMs: 8000 })
-  await runHandoff($, 'clear')
+  // A failed run's settle resets it; the clear's own settle does after a success
+  H.refreshed = true
+  await runPipeline($, 'clear')
 }
 
-// An arm while idle is left over from a handoff that never ran: not running
-function handoffRunning() {
-  return H.armed && S.working
+// A handoff queued behind the turn or being written
+// /session-handoff inside a turn: the pipeline waits for the turn to end. The
+// chat then clears and continues unless the args say "keep"; one queued
+// already keeps its own choice.
+async function queueSkillHandoff($, args) {
+  if (handoffInFlight()) return
+  now = await $.clock.now()
+  startLanding(true) // the skill's own text is the wind-down note
+  P.pending = afterFromArgs(args)
+  $.ui.invalidate('ui.render')
 }
 
-// A handoff queued behind the turn or running in it
 function handoffInFlight() {
-  return handoffPending || handoffRunning()
+  return !!P.pending || P.phase === 'working'
 }
 
-// The bands' handoff button. Waiting for the turn to wind down: how long, and
-// how much the context grew
-function handoffLabel() {
-  if (H.continuing && H.phase) return `handoff · ${H.phase}`
-  return landing() ? `handoff landing · ${minutes(now - L.at)} · +${tokens(landingGrowth())}` : handoffPending ? 'handoff queued' : handoffRunning() ? 'handoff running' : 'handoff'
-}
-
-// Runs the /session-handoff skill as if you typed it. The engine queues it
-// until Claude finishes the current turn. after: what follows once the handoff
-// is in (see H.after).
-async function runHandoff($, after = 'none') {
-  // One handoff at a time. The last press or /handoff decides what follows it.
-  // An arm while idle is left over from a handoff that never ran: start anew.
-  if (handoffInFlight()) {
-    H.after = after
-    $.ui.toast(`Session handoff is already ${handoffPending ? 'queued' : 'running'}.${after === 'clear' ? ' The chat clears and continues once it is in.' : ''}`)
-    return
-  }
-  // Before the first await: a prompt that comes meanwhile is held, and a
-  // second press finds this one
-  handoffPending = true
-  armHandoff(false, after)
-  try {
-    const commands = await $.command.list()
-    const cmd = commands.find((c) => c.name === 'session-handoff') || commands.find((c) => HANDOFF_SKILL.test(c.name))
-    if (!cmd) throw new Error('no such skill in this session')
-    now = await $.clock.now()
-    startLanding()
-    $.ui.invalidate('ui.render')
-    $.ui.toast(S.working ? 'Session handoff queued: it runs when Claude finishes this turn.' : 'Running /session-handoff.')
-    // keep in the args too: a command.run hook that sees the run later reads it
-    await $.command.run({ command: cmd.name, args: after === 'none' ? 'keep' : '' })
-  } catch (err) {
-    // Taken over by Claude's own skill call in the running turn, the arm is
-    // that turn's now, and no queued turn follows it
-    if (H.another) H.another = false
-    else H.armed = false
-    $.ui.toast('Could not start /session-handoff: ' + errText(err), { timeoutMs: 8000 })
-    // A clear made due before (a second handoff while it waited, or the
-    // queued turn this chat re-armed for) still happens, with the handoff it has
-    if (H.clearDue === true && !S.working && !H.armed) clearAndContinueLater($, 300, true)
-    else await settleHold($)
-  } finally {
-    handoffPending = false
-    $.ui.invalidate('ui.render')
-  }
-}
-
-// "stop now" on the band: the person ends the turn the handoff waits for
+// "stop now" on the card: the person ends the turn the handoff waits for
 async function stopLanding($) {
   if (!landing()) return
   try {
-    await $.turn.abort({ turnId: H.notTurn })
+    await $.turn.abort({ turnId: S.turnId })
   } catch (err) {
     $.ui.toast('Could not stop this turn: ' + errText(err), { timeoutMs: 8000 })
+  }
+}
+
+// ---- the card's buttons -----------------------------------------------------
+
+// Opens a saved file with the system's own app; the path goes in a toast too
+async function openFile($, path) {
+  if (!path) return
+  const argv = windows ? ['explorer', path.replace(/\//g, '\\')] : /^\/Users\//.test(home) ? ['open', path] : ['xdg-open', path]
+  try {
+    // explorer answers 1 even when it opened the file: only a throw counts
+    await $.process.run(argv, { timeoutMs: 10000 })
+    $.ui.toast('Opened ' + path, { timeoutMs: 6000 })
+  } catch {
+    $.ui.toast('Could not open it. The file is at ' + path, { timeoutMs: 10000 })
+  }
+}
+
+// The offer's threshold, persisted where /config shows it (userConfig), else in
+// the store. The config write reloads the module with the new value.
+async function setOfferAt($, choice) {
+  if (offerTokens(choice) === null) return false
+  offerChoice = choice
+  snoozeTo = 0
+  $.ui.invalidate('ui.render')
+  let key = ''
+  try {
+    const row = (await $.config.list()).find((r) => (r.key.startsWith('cache-keeper.') || r.key.startsWith('cache-keeper@')) && r.key.endsWith('.handoffOfferAt'))
+    key = row ? row.key : ''
+  } catch {
+    key = ''
+  }
+  if (key) {
+    try {
+      // Gone before the set: the set reloads this module, and a stale store
+      // value would win over the new setting
+      await $.store.delete('offerAt')
+      const r = await $.config.set({ key, value: choice })
+      if (!(r && r.deny)) return true
+    } catch {
+      // refused: the store keeps it
+    }
+  }
+  await $.store.set('offerAt', choice)
+  return true
+}
+
+const CARD_KEYS = ['ck-ho-start', 'ck-ho-retry', 'ck-ho-hide', 'ck-ho-at', 'ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close', 'ck-ho-stop']
+
+// What one card button does
+async function cardAction($, key) {
+  switch (key) {
+    // A press runs after its hook returned: the card it was made on may be gone
+    case 'ck-ho-start':
+      return P.phase === '' ? runPipeline($, 'ask') : undefined
+    case 'ck-ho-retry':
+      return P.phase === 'failed' ? runPipeline($, P.after === 'clear' ? 'clear' : 'ask') : undefined
+    case 'ck-ho-hide':
+      snoozeTo = S.ctx + SNOOZE
+      $.ui.toast(`Handoff offer hidden until the context reaches ${tokens(snoozeTo)}. /${names.handoff} runs it any time.`, { timeoutMs: 8000 })
+      return
+    case 'ck-ho-at':
+      return setOfferAt($, OFFER_CHOICES[(OFFER_CHOICES.indexOf(offerChoice) + 1) % OFFER_CHOICES.length])
+    case 'ck-ho-clear':
+      return clearAndContinue($)
+    case 'ck-ho-keep':
+      P.phase = ''
+      H.kept = true
+      snoozeTo = S.ctx + SNOOZE
+      $.ui.toast(`Handoff kept. /${names.handoff} continue clears this chat and continues with it later.`, { timeoutMs: 10000 })
+      return
+    case 'ck-ho-open':
+      return openFile($, P.phase === 'failed' ? P.draft : P.file)
+    case 'ck-ho-close':
+      if (P.phase === 'ready') snoozeTo = S.ctx + SNOOZE
+      P.phase = ''
+      return
+    case 'ck-ho-stop':
+      return stopLanding($)
+  }
+}
+
+// The presses that write a handoff, clear the chat or open a file: the hook
+// starts them and returns. The desktop app drops a ui.press hook 10 s after it
+// began ("ran past its 10s budget"), and writing a handoff takes longer.
+const SLOW_KEYS = new Set(['ck-ho-start', 'ck-ho-retry', 'ck-ho-clear', 'ck-ho-open'])
+
+// Runs `work` once the calling hook has returned, `ms` later. Never throws.
+function offHook($, work, ms = 0) {
+  $.clock.after(ms, () => void Promise.resolve().then(work).catch((err) => $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })))
+}
+
+async function cardPress($, key) {
+  try {
+    now = await $.clock.now()
+    await cardAction($, key)
+  } catch (err) {
+    $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })
+  }
+  $.ui.invalidate('ui.render')
+}
+
+// ---- pruning ------------------------------------------------------------------
+
+// Dated handoffs older than PRUNE_DAYS go, except the newest of each chat still
+// open (a heartbeat in the store). Never throws.
+async function pruneHandoffs($) {
+  try {
+    const dir = handoffFile('').replace(/\/$/, '')
+    const [entries, keys] = await Promise.all([$.fs.list(dir), $.store.keys()]) // no folder: list throws
+    const live = [S.id, ...keys.filter((k) => k.startsWith('hb:')).map((k) => k.slice(3))]
+    const doomed = pruneNames(entries, now, live).map((n) => `${dir}/${n}`)
+    for (let i = 0; i < doomed.length; i += 40) {
+      const batch = doomed.slice(i, i + 40)
+      await $.process.run(windows ? ['cmd', '/d', '/c', 'del', '/f', '/q', ...batch.map((p) => p.replace(/\//g, '\\'))] : ['rm', '-f', '--', ...batch], { timeoutMs: 20000 })
+    }
+    return doomed.length
+  } catch {
+    return 0
   }
 }
 
@@ -819,9 +984,6 @@ function cacheMenuRow($, { Box, Text, Button }) {
   return Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, children: items })
 }
 
-// What the band's handoff button does after the handoff: 'clear' or 'none'
-let handoffAfter = 'clear'
-
 // What a tag turns on in the fresh chat when this one never ran it; a tag
 // turned off keeps its last run here for when it is turned on again
 const REVIVE_DEFAULT = { caveman: { command: 'caveman', args: 'ultra' }, jev: { command: 'jev:on', args: '' }, lsp: { command: 'navigating-code-with-lsp', args: '' } }
@@ -849,8 +1011,23 @@ function ctxFigure({ Box, Text }, Svg) {
   return figure(Box, Text(ctxTone(S.ctx, { children: [`ctx ${tokens(S.ctx)}`] })), Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8]))
 }
 
+// The band's handoff button: starts the pipeline, the card shows the rest
+function handoffLabel() {
+  return P.pending ? 'handoff queued' : P.phase === 'working' ? 'handoff running' : 'handoff'
+}
+
+// The band's "clear and continue": a handoff loaded from an earlier chat, or
+// this chat's once its card is closed (the ready card has its own button).
+// After "Keep chat" it is gone: the person chose to stay, and /handoff continue
+// still clears with that handoff.
+function continueButton($, Button, extra = {}) {
+  if (!H.continuing && (!H.text || H.kept || P.phase === 'ready')) return null
+  // A press while it clears does nothing: clearAndContinue lets one run in
+  return Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, ...extra, onPress: () => clearAndContinueLater($, 0) })
+}
+
 // The band on a surface with Select (desktop, editor): row one is the cache and
-// the limits, row two the rewrite cost and the handoff with what follows a clear
+// the limits, row two the rewrite cost, the tags and the handoff
 function deskBand($, e, els, { st, ttl, big }) {
   const { Box, Text, Button, Select, Svg } = els
   const narrow = ((e.viewport && e.viewport.columns) || 200) < NARROW_COLUMNS
@@ -900,43 +1077,118 @@ function deskBand($, e, els, { st, ttl, big }) {
       Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
     ], 0)
   })
-  // This chat's written handoff takes the split button's place, so the row keeps
-  // its width and never wraps into a third line; the next message makes it stale
-  // anyway. One loaded from an earlier chat stays for hours: it goes beside the
-  // pair, which this chat still needs for a handoff of its own.
-  const cont = (H.text || H.continuing) && Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, onPress: () => clearAndContinue($) })
-  const own = cont && !H.fromDisk && !handoffInFlight()
-  let handoff
-  if (own) handoff = cont
-  else {
-    const live = handoffInFlight()
-    // No gap and stretched: the button and its Select read as one split button
-    handoff = Box({ key: 'handoff-group', flexDirection: 'row', alignItems: 'stretch', columnGap: 0, children: [
-      Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: live, onPress: () => runHandoff($, handoffAfter) }),
-      Select({
-        key: 'handoff-after',
-        // An armed handoff shows what follows it, whoever started it (/handoff, Claude)
-        value: live ? (H.after === 'clear' ? 'clear' : 'none') : handoffAfter,
-        options: [{ value: 'clear', label: 'then clear' }, { value: 'none', label: 'keep chat' }],
-        onSelect: (v) => {
-          handoffAfter = v === 'none' ? 'none' : 'clear'
-          // A handoff already queued or running follows the new pick, as a second press would
-          if (handoffInFlight()) H.after = handoffAfter
-          $.ui.invalidate('ui.render')
-        },
-      }),
-    ] })
-  }
   const actions = row('actions', [
     row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
-    landingOverdue() && Button({ key: 'stop', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }),
-    !own && cont,
-    handoff,
+    continueButton($, Button),
+    Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
   ])
   return [
     line('state', row('cache-group', [cache, keepWarm], 2), row('figures', figures)),
     line('handoff-line', row('costs', [rewrite, restarts]), actions),
   ]
+}
+
+// ---- the handoff card -----------------------------------------------------
+
+const ACCENT = '#d97757'
+const BAR_CELLS = 16
+const SPIN = ['◐', '◓', '◑', '◒']
+
+// How full a step's bar is: the writing step nears full with its seconds,
+// any other running step shows half; no step is held back to look busy
+function stepProgress(i, s) {
+  if (s.status === 'done') return 1
+  if (s.status !== 'run') return s.status === 'fail' ? 1 : 0
+  if (i === 3) return Math.min(0.95, 1 - Math.exp(-(now - P.stepAt) / WRITE_SCALE))
+  return 0.5
+}
+
+function stepBar(els, Svg, frac, status) {
+  const color = status === 'fail' ? HUE.red : status === 'done' ? HUE.green : ACCENT
+  if (Svg) return gaugeSvg(Svg, frac, color, `${Math.round(frac * 100)}%`)
+  const on = Math.round(frac * BAR_CELLS)
+  return els.Text({ children: [els.Text({ color, children: ['━'.repeat(on)] }), els.Text({ dimColor: true, children: ['━'.repeat(BAR_CELLS - on)] })] })
+}
+
+// The live detail of a running step: its seconds
+function stepDetail(s) {
+  return s.status === 'run' ? `${Math.max(0, Math.round((now - P.stepAt) / 1000))} s` : s.detail
+}
+
+// A card button: the press goes to its ui.press hook (the card redraws twice a
+// second while it works, so a closure may be gone by the time a click lands)
+function cardButton(Button, key, label, extra = {}) {
+  return Button({ key, label, plain: true, ...extra, onPress: () => {} })
+}
+
+// A card button in a colour: a desktop draws a Button's label natively, so the
+// colour goes on a Text inside it
+function colourButton({ Button, Text }, key, label, color, extra = {}) {
+  return Button({ key, plain: true, ...extra, onPress: () => {}, children: [Text({ color, children: [label] })] })
+}
+
+// The card above the band: the offer, the five steps while they run, the
+// ready handoff or the failure. null when there is nothing to show.
+function handoffCard($, e, els, Svg) {
+  const { Box, Text, Button } = els
+  const desk = e.surface !== 'terminal' && !!els.Select
+  const rowOf = (key, children, gap = 2) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
+  const hot = (k) => (desk ? {} : { hotkey: k })
+  if (offerShown()) {
+    const at = desk
+      ? els.Select({
+          key: 'ck-ho-at-pick',
+          label: 'offer at',
+          value: offerChoice,
+          options: OFFER_CHOICES.map((v) => ({ value: v, label: v })),
+          onSelect: (v) => void setOfferAt($, v).catch(() => {}),
+        })
+      : cardButton(Button, 'ck-ho-at', `offer at ${offerChoice}`, { dimColor: true })
+    return rowOf('ck-ho-offer', [
+      Text({ color: ACCENT, children: ['◆'] }),
+      Text({ children: [`Context ${tokens(S.ctx)}: hand this chat off to a fresh one?`] }),
+      cardButton(Button, 'ck-ho-start', 'Start handoff', hot('h')),
+      cardButton(Button, 'ck-ho-hide', 'Hide', { dimColor: true }),
+      at,
+    ])
+  }
+  if (!P.pending && !P.phase) return null
+  const waiting = !!P.pending && P.phase !== 'working'
+  let title
+  if (waiting) title = Text({ color: ACCENT, bold: true, children: [`Handoff queued: it starts when this turn ends · ${minutes(now - L.at)} · +${tokens(landingGrowth())}`] })
+  else if (P.phase === 'working') title = Text({ color: ACCENT, bold: true, children: [`Writing the handoff${P.after === 'clear' ? ', then clearing this chat' : ''}`] })
+  else if (P.phase === 'ready') title = Text({ color: HUE.green, bold: true, children: [`Handoff ready: ${P.words} words${H.continuing && H.phase ? ' · ' + H.phase : ''}`] })
+  else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
+  const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
+    const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
+    return Box({ key: 'ck-ho-step-' + i, flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [
+      Box({ width: 2, children: [icon] }),
+      Box({ width: 32, children: [Text({ dimColor: s.status === 'wait', children: [`${i + 1}. ${STEP_LABELS[i]}`] })] }),
+      stepBar(els, Svg, stepProgress(i, s), s.status),
+      Text({ dimColor: true, children: [stepDetail(s) || ''] }),
+    ] })
+  })
+  const rows = [title, ...steps]
+  if (waiting && landingOverdue()) rows.push(rowOf('ck-ho-buttons', [colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))]))
+  if (P.phase === 'ready') {
+    rows.push(Text({ dimColor: true, children: [`Saved to ${P.file}`] }))
+    if (!H.continuing) rows.push(rowOf('ck-ho-buttons', [
+      cardButton(Button, 'ck-ho-clear', 'Clear and continue', hot('c')),
+      cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
+      cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
+      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+    ]))
+  }
+  if (P.phase === 'failed') {
+    rows.push(Text({ color: HUE.red, children: [P.error || 'unknown error'] }))
+    if (P.draft) rows.push(Text({ dimColor: true, children: [`Draft saved to ${P.draft}`] }))
+    rows.push(rowOf('ck-ho-buttons', [
+      cardButton(Button, 'ck-ho-retry', 'Try again', hot('r')),
+      P.draft && cardButton(Button, 'ck-ho-open', 'Open draft', hot('o')),
+      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+    ]))
+  }
+  return Box({ key: 'ck-ho-card', flexDirection: 'column', children: rows })
 }
 
 // Dollars shown as plan-limit percent. The API reports only how full each limit
@@ -1184,6 +1436,8 @@ function warnStep($) {
 
 async function tick($) {
   now = await $.clock.now()
+  // A compaction brings the context below the offer: a hidden offer starts over
+  if (snoozeTo && S.ctx < offerAt()) snoozeTo = 0
   // A handoff loaded from a previous chat ages out of the band too
   if (H.text && H.fromDisk && now - H.at > LATEST_MAX_AGE) {
     H.text = ''
@@ -1207,6 +1461,10 @@ async function loadSettings($) {
   if (saved && typeof saved === 'object') Object.assign(settings, saved)
   const rates = await $.store.get(CAL_KEY)
   if (rates && typeof rates === 'object') cal = { ...rates }
+  // The offer's threshold: /config's value, unless the mod's own control had to
+  // keep its pick in the store
+  const local = await $.store.get('offerAt')
+  if (offerTokens(local) !== null) offerChoice = local
 }
 
 function statusText() {
@@ -1222,7 +1480,8 @@ function statusText() {
   lines.push(`Session cost so far: ${money(S.costUsd)}. Cold restarts this session: ${S.coldRestarts.length} (${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0))}).`)
   lines.push(calText())
   lines.push(`Cold-send guard: ${settings.guard ? 'on' : 'off'} for contexts over ${tokens(settings.bigTokens)} tokens. Alerts: ${settings.alerts ? 'on' : 'off'}.`)
-  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off. Board: /${names.board}.`)
+  lines.push(`Handoff offer: ${offerAt() ? `at ${tokens(offerAt())} tokens of context` : 'off'}${snoozeTo > offerAt() ? ` (hidden in this chat until ${tokens(snoozeTo)})` : ''}.`)
+  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}. Board: /${names.board}.`)
   return lines.join('\n')
 }
 
@@ -1232,12 +1491,16 @@ function parseTokens(text) {
   return Math.round(Number(m[1]) * (m[2] === 'm' ? 1e6 : m[2] === 'k' ? 1e3 : 1))
 }
 
-export function register(on) {
+export function register(on, options) {
+  // The offer's threshold as /config (userConfig) holds it
+  if (options && offerTokens(options.handoffOfferAt) !== null) offerChoice = options.handoffOfferAt
+
   on('session.start', async ($, e, next) => {
     now = await $.clock.now()
     home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
     S.id = await $.session.id()
     S.cwd = await $.session.cwd()
+    windows = /^[A-Za-z]:/.test(home) || /^[A-Za-z]:/.test(S.cwd)
     S.label = basename(S.cwd)
     S.model = await $.session.model()
     // A handoff saved before a restart shows up on the band and in /handoff continue
@@ -1245,12 +1508,14 @@ export function register(on) {
     await loadSettings($)
     await loadRevive($)
     await readRecording($)
-    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off]')) || names.cache
+    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
     names.board = (await registerCommand($, 'board', 'Every local Claude Code session: state, context, cache, cost', '', true)) || names.board
-    names.handoff = (await registerCommand($, 'handoff', 'Session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
+    names.handoff = (await registerCommand($, 'handoff', 'Write a session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
     $.clock.every(HEARTBEAT_EVERY, () => tick($).catch(() => {}))
     await heartbeat($, true)
+    // Old handoffs go once the session is up, off its start
+    $.clock.after(15000, () => void pruneHandoffs($))
     return next(e)
   })
 
@@ -1259,11 +1524,17 @@ export function register(on) {
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     S.lastActivity = 0
     S.keepWarm = false
-    H.armed = false
+    // A new chat: a hidden offer and a closed card start over; a handoff being
+    // written for the old chat goes on and shows when it is in
+    snoozeTo = 0
+    if (P.phase !== 'working') P.phase = ''
+    // "Keep chat" was about the old chat
+    H.kept = false
     // A new chat: only what runs in it counts. Clear and continue notes its own
     // revived skills, so it keeps them.
     if (!H.continuing) {
       // Cleared another way: nothing is due, and what was held goes to this chat
+      P.pending = ''
       H.clearDue = false
       H.refreshed = false
       if (held.length) $.clock.after(300, () => settleHold($))
@@ -1317,6 +1588,7 @@ export function register(on) {
       H.text = ''
       H.path = ''
       H.fid = ''
+      if (P.phase === 'ready') P.phase = ''
       await dropLatestHandoff($, fid)
       $.ui.invalidate('ui.render')
     }
@@ -1354,20 +1626,18 @@ export function register(on) {
     now = await $.clock.now()
     S.working = true
     S.turnId = e.turnId || ''
-    // A turn other than a handoff's own, before the due clear: what it does is
-    // not in the handoff the chat would clear with
-    if (H.clearDue && !isHandoffTurn(S.turnId)) H.clearDue = 'stale'
+    // A turn before the due clear: what it does is not in the handoff the chat
+    // would clear with
+    if (H.clearDue) H.clearDue = 'stale'
     await heartbeat($, true)
     return next(e)
   })
 
-  // Each main-loop request: is its response the handoff (one turn.step hook per
-  // module), and did it read the cache, or rewrite it?
+  // Each main-loop request: did it read the cache, or rewrite it?
   on('turn.step', async function* ($, e, next) {
     const startedAt = await $.clock.now()
     const result = yield* next(e)
     if (e.agentId || !result) return result
-    noteHandoffStep(e, result)
     if (L.noted && landing()) L.steps++
     if (!result.usage) return landed($, result)
     now = await $.clock.now()
@@ -1421,7 +1691,9 @@ export function register(on) {
     } catch {
       // usage unavailable: keep the per-request figures
     }
-    if (isHandoffTurn(e.turnId)) await captureHandoff($, e)
+    // A handoff queued behind this turn starts now, off this hook (the fork
+    // needs the turn's end). An interrupted turn starts it too: "stop now".
+    if (!overlapped && P.pending) offHook($, () => runPipeline($, P.pending || 'ask'), 50)
     else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
@@ -1467,11 +1739,11 @@ export function register(on) {
     if (!e.agentId) S.tool = e.tool
     if (!e.agentId && e.tool === 'Skill') {
       const args = e.args || (e.input && e.input.args)
-      // Claude calling the handoff skill itself: this turn's answer is the
-      // handoff. The chat then clears and continues, as with the band's button,
-      // unless the args say "keep". Without args it joins a handoff already
-      // armed for this turn as that one chose (/handoff keep stays a keep).
-      if (HANDOFF_SKILL.test(String(e.skill || ''))) armHandoff(true, afterFromArgs(args, null))
+      // Claude calling the handoff skill itself: the handoff is written once
+      // this turn ends (a fork while a tool call is open would send a tool use
+      // with no result). The chat then clears and continues unless the args say
+      // "keep"; one queued already keeps its own choice.
+      if (HANDOFF_SKILL.test(String(e.skill || '')) && !isContinueArg(args)) await queueSkillHandoff($, args)
       await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
@@ -1489,16 +1761,15 @@ export function register(on) {
     }
   })
 
-  // /session-handoff from anywhere (typed, the band, /handoff): watch for its answer
+  // /session-handoff typed: the pipeline writes the handoff, the skill's text
+  // never reaches Claude. Inside a turn (Claude's own call) the skill loads and
+  // tool.call above queued the handoff.
   on('command.run', async ($, e, next) => {
     if (HANDOFF_SKILL.test(String(e.command || ''))) {
       // /session-handoff continue: no new handoff, clear and continue with the last one
       if (isContinueArg(e.args)) return continueRequest($)
-      // runHandoff armed this run itself; a re-entry here while it issues the
-      // run must not override that arm (one taken over by Claude's skill call,
-      // or changed by the band meanwhile). A later one reads the keep from args,
-      // as issued: a band choice made after the issue does not survive it.
-      if (!handoffPending) armHandoff(false, afterFromArgs(e.args))
+      if (!S.working) return handoffRequest($, afterFromArgs(e.args))
+      if (!e.agent_id && !e.agentId) await queueSkillHandoff($, e.args) // typed, but it reached a running turn
     }
     await noteAndSave($, e.command, e.args)
     return next(e)
@@ -1512,9 +1783,7 @@ export function register(on) {
   on('command.run', { command: ['handoff', 'ck-handoff'] }, async ($, e) => {
     now = await $.clock.now()
     if (isContinueArg(e.args)) return continueRequest($)
-    const after = afterFromArgs(e.args)
-    $.clock.after(50, () => runHandoff($, after).catch(() => {}))
-    return { text: after === 'none' ? 'Running the session handoff. This chat stays as it is.' : 'Running the session handoff. When it finishes, this chat clears and continues with it.' }
+    return handoffRequest($, afterFromArgs(e.args))
   })
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {
@@ -1527,6 +1796,9 @@ export function register(on) {
     } else if (key === 'big') {
       const n = parseTokens(value)
       if (n) settings.bigTokens = n
+    } else if (key === 'handoff') {
+      if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}.` }
+      return { text: statusText() }
     }
     if (key) {
       await $.store.set('settings', settings)
@@ -1569,17 +1841,21 @@ export function register(on) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props && e.props.hasSurvey) return below
-    if (!S.lastActivity && !S.keepWarm) return below
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     // The terminal has no Svg: there the figures go without gauges
     const Svg = e.surface !== 'terminal' ? els.Svg : null
+    // The handoff card stands above the band, also before the band has figures;
+    // its running step counts seconds from now
+    if (P.phase === 'working' || P.pending) now = await $.clock.now()
+    const card = handoffCard($, e, els, Svg)
+    if (!S.lastActivity && !S.keepWarm) return card ? Box({ flexDirection: 'column', children: [card, below].filter(Boolean) }) : below
     const hb = myHeartbeat()
     const st = cacheState(hb)
     const ttl = ttlMin()
     const big = S.ctx >= settings.bigTokens
     // A desktop or editor band: two fixed rows, native Selects, no hotkeys
-    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 1, children: [...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
+    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 1, children: [card, ...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
     let cache
     if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] })
     else if (st.kind === 'warm') cache = Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] })
@@ -1605,23 +1881,30 @@ export function register(on) {
       parts.push(Button({ key: 'keepwarm', label: 'keep warm', hotkey: '1', plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) }))
     }
     const left = Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, flexShrink: 1, children: parts.map((x, i) => Box({ key: 'p' + i, flexShrink: 0, children: [x] })) })
-    // Right edge: one click runs /session-handoff (h while the band has the focus;
-    // a letter never fires from the prompt box, unlike a digit), then clears this
-    // chat and sends the handoff as the fresh chat's first prompt. c does that
-    // last step for a handoff made another way.
-    const handoff = Button({ key: 'handoff', label: handoffLabel(), hotkey: 'h', plain: true, dimColor: handoffInFlight(), onPress: () => runHandoff($, 'clear') })
-    const buttons = [
-      landingOverdue() && Button({ key: 'stop', hotkey: 's', plain: true, onPress: () => stopLanding($), children: [Text({ color: 'yellow', children: ['stop now'] })] }),
-      (H.text || H.continuing) && Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', hotkey: 'c', plain: true, onPress: () => clearAndContinue($) }),
-      handoff,
-    ].filter(Boolean)
-    const right = buttons.length > 1 ? Box({ flexDirection: 'row', columnGap: 2, children: buttons }) : handoff
+    // Right edge: one click starts the handoff (h while the band has the focus;
+    // a letter never fires from the prompt box, unlike a digit); the card above
+    // shows its steps and what follows. c clears and continues with a handoff
+    // the card no longer shows. The offer's own Start takes h while it is up.
+    const handoff = Button({ key: 'handoff', label: handoffLabel(), ...(offerShown() ? {} : { hotkey: 'h' }), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) })
+    const cont = continueButton($, Button, { hotkey: 'c' })
+    const right = cont ? Box({ flexDirection: 'row', columnGap: 2, children: [cont, handoff] }) : handoff
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
-    const rows = [mine]
+    const rows = card ? [card, mine] : [mine]
     if (cacheMenu) rows.push(cacheMenuRow($, els))
     if (below) rows.push(below)
     return Box({ flexDirection: 'column', children: rows })
   })
+
+  // The card's buttons: their presses land here, not in a closure of a drawing
+  // that may be gone (the card redraws twice a second while it works)
+  for (const key of CARD_KEYS) {
+    on('ui.press', { element: key }, async ($, e, next) => {
+      if (e.plugin && !/^cache-keeper(@|$)/.test(e.plugin)) return next(e)
+      if (SLOW_KEYS.has(key)) offHook($, () => cardPress($, key))
+      else await cardPress($, key)
+      return { element: e.element }
+    })
+  }
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
