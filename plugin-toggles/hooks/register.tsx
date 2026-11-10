@@ -892,6 +892,10 @@ async function modsNow($: any) {
   if (modsCache && at >= modsCache.at && at - modsCache.at < 10_000) return modsCache.list
   const list = scanMods($)
   modsCache = { at, list }
+  // A scan that failed is not kept.
+  list.catch(() => {
+    if (modsCache?.list === list) modsCache = undefined
+  })
   return list
 }
 
