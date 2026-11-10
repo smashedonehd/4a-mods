@@ -53,7 +53,9 @@ const S = {
   rateLimits: [],
 }
 
-const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4 }
+// autoClear: a handoff the card would ask about clears and continues on its
+// own after a short countdown the person can stop
+const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: false }
 const names = { cache: 'cache', keepwarm: 'keepwarm', board: 'board', handoff: 'handoff' }
 
 let now = 0
@@ -175,7 +177,10 @@ const P = {
   draft: '', // the model-free draft
   words: 0,
   error: '',
+  autoAt: 0, // auto clear: when the ready card's countdown ends (0: none runs)
+  autoStale: false, // a turn started during the countdown
 }
+const AUTO_CLEAR_MS = 5000
 let ticker = null
 let offerChoice = OFFER_DEFAULT // the offer's threshold as picked ('300k', 'off')
 let snoozeTo = 0 // a hidden offer stays away below this context size
@@ -497,7 +502,7 @@ async function runPipeline($, after = 'ask') {
     return
   }
   // Claimed before the first await: two presses must not both get past the check
-  Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
+  Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '', autoAt: 0, autoStale: false })
   H.clearDue = false
   startTicker($)
   try {
@@ -540,6 +545,8 @@ async function runPipeline($, after = 'ask') {
       clearAndContinueLater($, 300, true)
     } else {
       if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
+      // 'none' (keep) was an explicit choice: only a card that asks counts down
+      if (P.after === 'ask' && settings.autoClear) startAutoClear($)
       await settleHold($)
     }
   } catch (err) {
@@ -548,7 +555,8 @@ async function runPipeline($, after = 'ask') {
     Object.assign(P, { phase: 'failed', error: errText(err, 160) })
     await settleHold($)
   } finally {
-    stopTicker()
+    // The countdown keeps the ticker for its seconds
+    if (!P.autoAt) stopTicker()
     $.ui.invalidate('ui.render')
   }
 }
@@ -746,6 +754,50 @@ function clearAndContinueLater($, ms, due = false) {
   })
 }
 
+// Auto clear: the ready card counts down, then the chat clears and continues
+// the way a due clear does (it waits for a running turn, and a turn that ran
+// meanwhile gets one fresh handoff first). Keep chat, Close, a typed message
+// or the toggle turned off stop it.
+function startAutoClear($) {
+  const at = now + AUTO_CLEAR_MS
+  P.autoAt = at
+  P.autoStale = false
+  startTicker($)
+  $.clock.after(AUTO_CLEAR_MS, () => autoClearDue($, at))
+}
+
+function cancelAutoClear() {
+  if (!P.autoAt) return
+  P.autoAt = 0
+  P.autoStale = false
+  stopTicker()
+}
+
+function autoClearDue($, at) {
+  // Stopped, or a newer countdown owns the clear
+  if (P.autoAt !== at) return
+  const stale = P.autoStale || S.working
+  cancelAutoClear()
+  // A safety net: what closes the card stops the countdown first, and the
+  // clear itself refuses without a handoff
+  if (P.phase !== 'ready' || H.continuing) return
+  H.clearDue = stale ? 'stale' : true
+  clearAndContinueLater($, 0, true)
+  $.ui.invalidate('ui.render')
+}
+
+// Seconds left on the ready card's countdown
+function autoClearLeft() {
+  return Math.max(1, Math.ceil((P.autoAt - now) / 1000))
+}
+
+async function setAutoClear($, on) {
+  settings.autoClear = !!on
+  if (!on) cancelAutoClear()
+  await $.store.set('settings', settings)
+  $.ui.invalidate('ui.render')
+}
+
 // The due clear, once a turn ran since its handoff: sent now, that handoff
 // would leave out what the turn did. One fresh handoff is written for the
 // clear, never a second: overtaken again, the chat stays as it is.
@@ -852,8 +904,10 @@ async function cardAction($, key) {
     case 'ck-ho-at':
       return setOfferAt($, OFFER_CHOICES[(OFFER_CHOICES.indexOf(offerChoice) + 1) % OFFER_CHOICES.length])
     case 'ck-ho-clear':
+      cancelAutoClear()
       return clearAndContinue($)
     case 'ck-ho-keep':
+      cancelAutoClear()
       P.phase = ''
       H.kept = true
       snoozeTo = S.ctx + SNOOZE
@@ -862,6 +916,7 @@ async function cardAction($, key) {
     case 'ck-ho-open':
       return openFile($, P.phase === 'failed' ? P.draft : P.file)
     case 'ck-ho-close':
+      cancelAutoClear()
       if (P.phase === 'ready') snoozeTo = S.ctx + SNOOZE
       P.phase = ''
       return
@@ -996,6 +1051,18 @@ async function toggleRevive($, k) {
   } else revive.set(k, parked.get(k) || REVIVE_DEFAULT[k])
   await saveRevive($)
   $.ui.invalidate('ui.render')
+}
+
+// Whether a handoff the card asks about clears on its own, drawn like the
+// revive tags: a dot and a label, a click flips it. It sits by the handoff
+// button, whose ending it decides.
+const AUTO_CLEAR_LABEL = 'auto clear'
+function autoClearTag({ Box, Text, Button }, $, extra = {}) {
+  const on = settings.autoClear
+  return Box({ key: 'tag-group-autoclear', flexDirection: 'row', alignItems: 'center', children: [
+    Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
+    Button({ key: 'tag-autoclear', label: AUTO_CLEAR_LABEL, plain: true, dimColor: !on, ...extra, onPress: () => setAutoClear($, !settings.autoClear) }),
+  ] })
 }
 
 // Below this many columns the desktop band shortens its labels
@@ -1166,8 +1233,9 @@ function deskBand($, e, els, { st, ttl, big }) {
   card('card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
     Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
     cont,
+    autoClearTag(els, $),
     Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ], [tagCells, cont ? 'clear and continue'.length + BUTTON_CHROME : 0, handoffLabel().length + BUTTON_CHROME])
+  ], [tagCells, cont ? 'clear and continue'.length + BUTTON_CHROME : 0, 1 + AUTO_CLEAR_LABEL.length + BUTTON_CHROME, handoffLabel().length + BUTTON_CHROME])
 
   const figure = tokens(S.ctx)
   // The other cards and the gap after each of them
@@ -1253,6 +1321,8 @@ function handoffCard($, e, els, Svg) {
   else if (P.phase === 'working') title = Text({ color: ACCENT, bold: true, children: [`Writing the handoff${P.after === 'clear' ? ', then clearing this chat' : ''}`] })
   else if (P.phase === 'ready') title = Text({ color: HUE.green, bold: true, children: [`Handoff ready: ${P.words} words${H.continuing && H.phase ? ' · ' + H.phase : ''}`] })
   else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
+  // Auto clear: the seconds before the chat clears, ahead of the buttons
+  const countdown = P.phase === 'ready' && !!P.autoAt && !H.continuing && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [`Clearing in ${autoClearLeft()} s`] })
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
     const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
@@ -1268,8 +1338,10 @@ function handoffCard($, e, els, Svg) {
     ] })
   })
   const stop = waiting && landingOverdue() && colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))
+  const clearLabel = countdown ? 'Clear now' : 'Clear and continue'
   const ready = P.phase === 'ready' && !H.continuing && [
-    desk ? Button({ key: 'ck-ho-clear', label: 'Clear and continue', variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', 'Clear and continue', hot('c')),
+    countdown,
+    desk ? Button({ key: 'ck-ho-clear', label: clearLabel, variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', clearLabel, hot('c')),
     cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
     cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
     cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
@@ -1596,7 +1668,8 @@ function statusText() {
   lines.push(calText())
   lines.push(`Cold-send guard: ${settings.guard ? 'on' : 'off'} for contexts over ${tokens(settings.bigTokens)} tokens. Alerts: ${settings.alerts ? 'on' : 'off'}.`)
   lines.push(`Handoff offer: ${offerAt() ? `at ${tokens(offerAt())} tokens of context` : 'off'}${snoozeTo > offerAt() ? ` (hidden in this chat until ${tokens(snoozeTo)})` : ''}.`)
-  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}. Board: /${names.board}.`)
+  lines.push(`Auto clear: ${settings.autoClear ? `on (a handoff from the band or the offer clears this chat ${AUTO_CLEAR_MS / 1000} s after it is in, unless you press Keep chat)` : 'off (the ready card waits for Clear and continue)'}.`)
+  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}, /${names.cache} autoclear on|off. Board: /${names.board}.`)
   return lines.join('\n')
 }
 
@@ -1642,6 +1715,7 @@ export function register(on, options) {
     // A new chat: a hidden offer and a closed card start over; a handoff being
     // written for the old chat goes on and shows when it is in
     snoozeTo = 0
+    cancelAutoClear()
     if (P.phase !== 'working') P.phase = ''
     // "Keep chat" was about the old chat
     H.kept = false
@@ -1703,6 +1777,7 @@ export function register(on, options) {
       H.text = ''
       H.path = ''
       H.fid = ''
+      cancelAutoClear()
       if (P.phase === 'ready') P.phase = ''
       await dropLatestHandoff($, fid)
       $.ui.invalidate('ui.render')
@@ -1744,6 +1819,8 @@ export function register(on, options) {
     // A turn before the due clear: what it does is not in the handoff the chat
     // would clear with
     if (H.clearDue) H.clearDue = 'stale'
+    // Likewise for a turn during the auto clear's countdown
+    if (P.autoAt) P.autoStale = true
     await heartbeat($, true)
     return next(e)
   })
@@ -1914,6 +1991,10 @@ export function register(on, options) {
     } else if (key === 'handoff') {
       if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}.` }
       return { text: statusText() }
+    } else if (key === 'autoclear') {
+      if (value !== 'on' && value !== 'off') return { text: 'Pick one of: on, off.' }
+      await setAutoClear($, value === 'on')
+      return { text: statusText() }
     }
     if (key) {
       await $.store.set('settings', settings)
@@ -1962,7 +2043,7 @@ export function register(on, options) {
     const Svg = e.surface !== 'terminal' ? els.Svg : null
     // The handoff card stands above the band, also before the band has figures;
     // its running step counts seconds from now
-    if (P.phase === 'working' || P.pending) now = await $.clock.now()
+    if (P.phase === 'working' || P.pending || P.autoAt) now = await $.clock.now()
     const card = handoffCard($, e, els, Svg)
     if (!S.lastActivity && !S.keepWarm) return card ? Box({ flexDirection: 'column', children: [card, below].filter(Boolean) }) : below
     const hb = myHeartbeat()
@@ -2002,7 +2083,7 @@ export function register(on, options) {
     // the card no longer shows. The offer's own Start takes h while it is up.
     const handoff = Button({ key: 'handoff', label: handoffLabel(), ...(offerShown() ? {} : { hotkey: 'h' }), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) })
     const cont = continueButton($, Button, { hotkey: 'c' })
-    const right = cont ? Box({ flexDirection: 'row', columnGap: 2, children: [cont, handoff] }) : handoff
+    const right = Box({ flexDirection: 'row', alignItems: 'center', columnGap: 2, children: [cont, autoClearTag(els, $), handoff].filter(Boolean) })
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
     const rows = card ? [card, mine] : [mine]
     if (cacheMenu) rows.push(cacheMenuRow($, els))

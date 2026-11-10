@@ -361,7 +361,7 @@ test('desktop band: a row that would not fit narrows the context gauge alone, ne
   await sized($, on, 320000)
   await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
   const wide = await ctxGauge($, 200)
-  const mid = await ctxGauge($, 140)
+  const mid = await ctxGauge($, 155)
   const tight = await ctxGauge($, 100)
   expect(wide).toBe(200)
   expect(mid).toBeLessThan(200)
