@@ -92,7 +92,7 @@ Not checked in a running app: the tests drive the module against a fake host, an
 
 ## Savvy Progress
 
-By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied unchanged from [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress) (version 1.2.1). Details in [savvy-progress/README.md](savvy-progress/README.md).
+By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied from [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress) (version 1.2.1), plus one 4A-Mods change in 1.3.0: the progress bar draws by itself once two or more subagents run, even when nothing reported a plan. Details in [savvy-progress/README.md](savvy-progress/README.md).
 
 - **Agents panel** (`/agents-info`): running, finished and planned subagents with model, effort, task progress, context fill, estimated cost and time.
 - **Progress bar** above the prompt, for the [savvy-flow](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-flow) skill. That skill and its `savvy-*` agents are not part of 4A-Mods.
