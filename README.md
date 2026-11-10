@@ -8,6 +8,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | [Toggles](#toggles) | `/toggles` | Switches plugins, skills, MCP servers and mods on and off from one pane, shows what each costs in context, and saves the set as a profile |
 | [Prompt Translate](#prompt-translate) | `/translate` | Translates the draft in the prompt box into English with one button, without sending it |
 | [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
+| [Savvy Progress](#savvy-progress) | `/agents-info` | A live panel of every subagent: model, effort, progress, context, estimated cost and time. By johnnyvizz |
 
 ## Requirements
 
@@ -25,6 +26,7 @@ claude plugin install cache-keeper@4a-mods
 claude plugin install plugin-toggles@4a-mods
 claude plugin install plan-keeper@4a-mods
 claude plugin install prompt-translate@4a-mods
+claude plugin install savvy-progress@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
@@ -77,10 +79,19 @@ A plan is written once and then left. Ticking its checkboxes is Claude's job, an
 - **Ticks** come at the Desktop app's wrap-up, at a turn's end, before a `/clear`, and after a `gh pr merge` that succeeds (not `--auto`, which only queues it). A step that is completed on the task list (the Desktop app's task list, `TodoWrite`, or `TaskCreate` and `TaskUpdate`; a subagent's own list does not count) ticks the item with the same text, ignoring case, spacing, `**bold**`, `` `code` `` and a closing period. A step named like a task's heading (`### Task 2: Matcher`, by its whole text or by `Matcher`) ticks every item under it; other headings tick nothing. A step that matches two items, or none, ticks nothing, so a plan with `Step 1: Write the failing test` in every task is never ticked by that step. The wrap-up checks the running step off, unless it stops on a question. Each completed step is held against a plan once: an item you untick by hand stays unticked, and steps finished before a plan became active tick nothing in it. Only `[ ]` turns into `[x]`: nothing else in the file moves, and a file with nothing to tick is not written.
 - **A fresh or cleared chat** gets a note with the plan's open items (one by one when there are up to 8, else one row per heading with its open count) and a toast. The note asks Claude to name task-list steps after the plan's items or task headings, so they tick.
 
+## Savvy Progress
+
+By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied unchanged from [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress) (version 1.2.1). Details in [savvy-progress/README.md](savvy-progress/README.md).
+
+- **Agents panel** (`/agents-info`): running, finished and planned subagents with model, effort, task progress, context fill, estimated cost and time.
+- **Progress bar** above the prompt, for the [savvy-flow](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-flow) skill. That skill and its `savvy-*` agents are not part of 4A-Mods.
+- Without savvy-flow, set `autoOpen` to `any` so the panel opens by itself, once per session, when the first subagent starts: `claude plugin install savvy-progress@4a-mods --config autoOpen=any`.
+- The cost is an estimate from token counts and a built-in price table, not your bill.
+
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress writes no files of its own; it reads only Claude Code's settings and environment variables. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Savvy Progress is MIT by johnnyvizz, with its own [LICENSE](savvy-progress/LICENSE).
