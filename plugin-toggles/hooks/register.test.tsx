@@ -992,8 +992,8 @@ const modFiles = (): Record<string, string> => ({
   'C:/p/toggles/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
   'C:/p/toggles/hooks/register.tsx': 'switches.json',
   'C:/Users/x/.claude/mods/dev/.claude-plugin/plugin.json': JSON.stringify({ name: 'dev' }),
-  'C:/Users/x/.claude/mods/dev/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
-  'C:/Users/x/.claude/mods/dev/hooks/register.tsx': 'switches.json',
+  'C:/Users/x/.claude/mods/dev/hooks/hooks.json': JSON.stringify({ modules: ['./register.mts'] }),
+  'C:/Users/x/.claude/mods/dev/hooks/register.mts': 'switches.json',
 })
 
 // fs.list over the files: the entries directly inside a folder.
