@@ -11,8 +11,8 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
-// When the current wave of subagents began: the band without a reported plan counts the runs started since
-const wave = atom({ plugin: 'savvy-progress', key: 'wave' } as const, 0)
+// The wave whose band was dismissed: the band without a reported plan stays away until the next wave
+const dismissed = atom({ plugin: 'savvy-progress', key: 'dismissed' } as const, 0)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -32,8 +32,9 @@ const MAX_AFTER = 20
 const MAX_TITLE = 120
 // Subagents in one wave before the band draws without a reported plan
 const AUTO_MIN = 2
-// A dismissed wave: no run starts this late, so the band stays away until the next wave
-const WAVE_DISMISSED = Number.MAX_SAFE_INTEGER
+// A run with no model request for this long no longer holds its wave open: one
+// that was interrupted never reports its end, and would keep every later run in its wave
+const STALE_MS = 30 * 60_000
 const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
 
@@ -486,10 +487,22 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
-// The band when nobody reported a plan: the runs of the current wave as a flow,
-// finished ones out of all of them. null below AUTO_MIN runs.
-const autoFlow = (list: AgentRun[], since: number): Flow | null => {
-  const crew = list.filter(a => a.startedAt >= since)
+const isLive = (a: AgentRun, at: number): boolean => a.status === 'running' && at - (a.seenAt ?? a.startedAt) < STALE_MS
+
+// The wave of a run started at `at`: the newest run's while any run is live, else a
+// new one. Worked out inside the one update that adds the run, so runs started
+// together cannot each begin a wave.
+const waveOf = (list: AgentRun[], at: number): number => {
+  const last = list[list.length - 1]?.wave ?? 0
+  return last && list.some(a => isLive(a, at)) ? last : Math.max(at, last + 1)
+}
+
+// The band when nobody reported a plan: the runs of the newest wave as a flow,
+// finished ones out of all of them. null below AUTO_MIN runs or once dismissed.
+const autoFlow = (list: AgentRun[], hidden: number): Flow | null => {
+  const wave = list[list.length - 1]?.wave
+  if (!wave || wave === hidden) return null
+  const crew = list.filter(a => a.wave === wave)
   if (crew.length < AUTO_MIN) return null
   const running = crew.filter(a => a.status === 'running').length
   return { ...blank(), title: tr().auto, total: crew.length, done: crew.length - running, running, phase: 'delegate', isFinished: running === 0 }
@@ -951,8 +964,6 @@ export const register: Register = (on, options) => {
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
-    // A spawn while nothing runs begins a new wave
-    if (!(await read($, agents)).some(a => a.status === 'running')) await update($, wave, () => at)
     await update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
       const run: AgentRun = {
@@ -969,6 +980,8 @@ export const register: Register = (on, options) => {
         costUsd: 0,
         steps: 0,
         round,
+        wave: waveOf(list, at),
+        seenAt: at,
       }
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
@@ -990,6 +1003,7 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
+    const at = await $.clock.now()
     await update($, agents, list =>
       list.map((a): AgentRun =>
         a.agentId !== agentId
@@ -1000,6 +1014,7 @@ export const register: Register = (on, options) => {
               effort: typeof e.effort === 'string' ? e.effort : a.effort,
               status: 'running',
               endedAt: undefined,
+              seenAt: at,
               contextTokens:
                 (usage.input_tokens || 0) +
                 (usage.cache_read_input_tokens || 0) +
@@ -1229,7 +1244,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, agents)
-    const f = bandFlow(await read($, flow), autoFlow(list, await read($, wave)))
+    const f = bandFlow(await read($, flow), autoFlow(list, await read($, dismissed)))
     if (f === null || e.props.hasSurvey) return next(e)
     // Draw this row with the other mods' bands beneath it. Claude Code's own placeholder ({ type: 'engine' }) is
     // never nested: the desktop drops a band that nests it.
@@ -1252,7 +1267,7 @@ export const register: Register = (on, options) => {
         role="dismiss"
         onPress={async () => {
           await update($, flow, () => null)
-          await update($, wave, () => WAVE_DISMISSED)
+          await update($, dismissed, () => list[list.length - 1]?.wave ?? 0)
         }}
       />
     )

@@ -100,6 +100,32 @@ test('auto band: dismissed, it stays away for the rest of the wave and returns w
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
 })
 
+// A run that was interrupted never reports its end: it must not hold later runs in its wave
+test('auto band: a run silent for 30 minutes no longer holds its wave open', async ($, on) => {
+  const clock = session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await finish($, 'a')
+  clock.now += 29 * 60_000
+  await spawn($, 'c')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
+  await finish($, 'c')
+  clock.now += 31 * 60_000
+  await spawn($, 'd')
+  expect(await shown($)).toBeNull()
+  await spawn($, 'e')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+})
+
+test('auto band: dismissing a reported plan clears it', async ($, on) => {
+  session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 5, done: 1, phase: 'delegate' } as never)
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+  await ui.press({ key: 'savvy-dismiss' } as never)
+  await ui.unmount()
+  expect(await shown($)).toBeNull()
+})
+
 test('auto band: a reported plan wins while it is open', async ($, on) => {
   session(on)
   await spawn($, 'a')

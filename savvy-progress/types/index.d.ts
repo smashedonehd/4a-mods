@@ -34,6 +34,10 @@ export type AgentRun = {
   costUsd: number
   steps: number
   round: number
+  /** The wave of subagents this run started in: the time its first run started. */
+  wave?: number
+  /** When the run started or last finished a model request. */
+  seenAt?: number
   /** Self-reported by the worker through the `step` tool. */
   stepDone?: number
   stepTotal?: number
@@ -53,7 +57,7 @@ declare module 'claude-code' {
       agents: AgentRun[]
       panel: Panel
       now: number
-      wave: number
+      dismissed: number
     }
   }
 }
