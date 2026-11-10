@@ -947,8 +947,8 @@ function ctxHue(n) {
 function limitHue(p) {
   return p >= 95 ? HUE.red : p >= 80 ? HUE.yellow : p >= 50 ? HUE.cyan : HUE.green
 }
-function gaugeSvg(Svg, frac, fill, alt, ticks = []) {
-  const w = 64, h = 8
+function gaugeSvg(Svg, frac, fill, alt, ticks = [], w = 64) {
+  const h = 8
   const f = Math.max(0, Math.min(1, frac))
   const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
   if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(6, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
@@ -1026,20 +1026,54 @@ function continueButton($, Button, extra = {}) {
   return Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, ...extra, onPress: () => clearAndContinueLater($, 0) })
 }
 
-// The band on a surface with Select (desktop, editor): row one is the cache and
-// the limits, row two the rewrite cost, the tags and the handoff
+// A card of the desktop band: a caption over one row of what it holds. Its
+// border takes a colour only while the card needs the person
+function bandCard({ Box, Text }, key, caption, children, { tone, grow } = {}) {
+  return Box({
+    key,
+    flexDirection: 'column',
+    borderStyle: 'round',
+    ...(tone ? { borderColor: tone } : { borderDimColor: true }),
+    paddingX: 1,
+    ...(grow ? { flexGrow: 1 } : {}),
+    children: [
+      Text({ dimColor: true, size: 'caption', children: [caption] }),
+      Box({ key: key + '-value', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 2, children: children.filter(Boolean) }),
+    ],
+  })
+}
+
+const LIMIT_CAPTION = { five_hour: '5h limit', seven_day: 'Week limit', spend_limit: 'Spend limit' }
+// From here the context card and the handoff button ask for attention
+const CTX_URGENT = 600000
+const LIMIT_URGENT = 80
+
+// The band on a surface with Select (desktop, editor): one row of captioned
+// cards (cache, rewrite cost, context, each limit, the next chat) that wraps
+// in a narrow window
 function deskBand($, e, els, { st, ttl, big }) {
   const { Box, Text, Button, Select, Svg } = els
   const narrow = ((e.viewport && e.viewport.columns) || 200) < NARROW_COLUMNS
-  const row = (key, children, gap = 3) => Box({ key, flexDirection: 'row', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
-  const line = (key, left, right) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 3, rowGap: 1, children: [left, right] })
+  const value = (text, extra = {}) => Text({ weight: 'semibold', tabular: true, ...extra, children: [text] })
+  const coldBig = st.kind === 'cold' && big
 
-  let cache
-  if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [narrow ? `◆ until ${clock(S.keepWarmUntil)}` : `◆ kept warm until ${clock(S.keepWarmUntil)}`] })
-  else if (st.kind === 'warm') cache = Text({ color: 'green', children: [narrow ? `● ${minutes(st.left)}` : `● cache warm ${minutes(st.left)}`] })
-  else if (st.kind === 'cooling') cache = Text({ color: 'yellow', bold: true, children: [narrow ? `◐ ${minutes(st.left)}` : `◐ cache cools in ${minutes(st.left)}`] })
-  else if (st.kind === 'cold') cache = Text({ ...(big ? { color: 'red', bold: true } : { dimColor: true }), children: [narrow ? `○ ${minutes(-st.left)}` : `○ cache cold ${minutes(-st.left)}`] })
-  else cache = Text({ dimColor: true, children: ['○ cache'] })
+  let cache, cacheNote, cacheTone
+  if (st.kind === 'kept') {
+    cache = value(`until ${clock(S.keepWarmUntil)}`, { color: 'cyan' })
+    cacheNote = `kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd, true)}`
+    cacheTone = HUE.cyan
+  } else if (st.kind === 'warm') {
+    cache = value(`${minutes(st.left)} left`, { color: 'green' })
+    cacheNote = 'warm'
+  } else if (st.kind === 'cooling') {
+    cache = value(`${minutes(st.left)} left`, { color: 'yellow' })
+    cacheNote = 'cools soon'
+    cacheTone = HUE.yellow
+  } else if (st.kind === 'cold') {
+    cache = value(`cold ${minutes(-st.left)}`, big ? { color: 'red' } : { dimColor: true })
+    cacheNote = 'cold'
+    if (big) cacheTone = HUE.red
+  } else cache = value('—', { dimColor: true })
   // A run started elsewhere (the board, settings) may last hours the picks lack
   const picks = S.keepWarm && !KEEP_WARM_PICKS.includes(S.keepWarmHours) ? [...KEEP_WARM_PICKS, S.keepWarmHours].sort((a, b) => a - b) : KEEP_WARM_PICKS
   const keepWarm = Select({
@@ -1053,17 +1087,28 @@ function deskBand($, e, els, { st, ttl, big }) {
       if (v === 'off' || (Number.isFinite(hours) && hours > 0)) keepWarmPress($, () => (v === 'off' ? stopKeepWarm($, 'turned off') : startKeepWarm($, hours)))()
     },
   })
-  const figures = [ctxFigure(els, Svg)]
+  // One press while the cache cools on a big context
+  const quick = st.kind === 'cooling' && big && Button({ key: 'keepwarm', label: `${settings.keepWarmHours} h`, plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) })
+  const cards = [bandCard(els, 'card-cache', narrow || !cacheNote ? 'Cache' : `Cache · ${cacheNote}`, [cache, keepWarm, quick], { tone: cacheTone })]
+
+  const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
+  const rewrite = coldBig ? Text({ color: 'red', weight: 'semibold', children: [`next send rewrites ≈ ${cost}`] }) : Text({ dimColor: true, children: [`if cold ≈ ${cost}`] })
+  const restarts = S.coldRestarts.length && Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}`] })
+  cards.push(bandCard(els, 'card-cost', narrow ? 'Rewrite' : 'Rewrite cost', [rewrite, restarts], { tone: coldBig && HUE.red }))
+
+  cards.push(bandCard(els, 'card-ctx', narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`, [
+    value(tokens(S.ctx), ctxTone(S.ctx)),
+    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8], narrow ? 96 : 200),
+  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true }))
+
   for (const l of S.rateLimits) {
     const p = l.percentUsed || 0
     const name = LIMIT_LABEL[l.kind] || l.kind
-    const shown = narrow && name === 'week' ? 'wk' : name
-    figures.push(figure(Box, Text(limitTone([l], { children: [`${shown} ${Math.round(p)}%`] })), Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
+    cards.push(bandCard(els, 'card-limit-' + l.kind, LIMIT_CAPTION[l.kind] || `${name} limit`, [
+      value(`${Math.round(p)}%`, p >= LIMIT_URGENT ? { color: limitHue(p) } : {}),
+      Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`),
+    ], { tone: p >= LIMIT_URGENT && limitHue(p) }))
   }
-
-  const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
-  const rewrite = st.kind === 'cold' && big ? Text({ color: 'red', children: [`next send rewrites ≈ ${cost}`] }) : Text({ dimColor: true, children: [`rewrite ≈ ${cost}`] })
-  const restarts = S.coldRestarts.length && Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}`] })
 
   // Each tag says whether the fresh chat turns it on again; a click flips that.
   // A desktop draws a Button natively and drops its children's colors, so the
@@ -1072,20 +1117,20 @@ function deskBand($, e, els, { st, ttl, big }) {
     const on = revive.has(k)
     const level = k === 'caveman' && on && revive.get(k).args
     const name = k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
-    return row('tag-group-' + k, [
+    return Box({ key: 'tag-group-' + k, flexDirection: 'row', alignItems: 'center', children: [
       Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
       Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
-    ], 0)
+    ] })
   })
-  const actions = row('actions', [
-    row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
+  // The handoff is the main action once the context is large or a send would
+  // rewrite it; a plain Button would draw the same either way
+  const urgent = !handoffInFlight() && (S.ctx >= CTX_URGENT || coldBig)
+  cards.push(bandCard(els, 'card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
+    Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
     continueButton($, Button),
-    Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ])
-  return [
-    line('state', row('cache-group', [cache, keepWarm], 2), row('figures', figures)),
-    line('handoff-line', row('costs', [rewrite, restarts]), actions),
-  ]
+    Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
+  ]))
+  return [Box({ key: 'cards', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', width: '100%', columnGap: 1, rowGap: 'xs', children: cards })]
 }
 
 // ---- the handoff card -----------------------------------------------------
@@ -1134,6 +1179,8 @@ function handoffCard($, e, els, Svg) {
   const desk = e.surface !== 'terminal' && !!els.Select
   const rowOf = (key, children, gap = 2) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
   const hot = (k) => (desk ? {} : { hotkey: k })
+  // The desktop card: a frame in the colour of what it says
+  const framed = (key, tone, children) => Box({ key, flexDirection: 'column', borderStyle: 'round', borderColor: tone, paddingX: 1, children })
   if (offerShown()) {
     const at = desk
       ? els.Select({
@@ -1144,13 +1191,14 @@ function handoffCard($, e, els, Svg) {
           onSelect: (v) => void setOfferAt($, v).catch(() => {}),
         })
       : cardButton(Button, 'ck-ho-at', `offer at ${offerChoice}`, { dimColor: true })
-    return rowOf('ck-ho-offer', [
+    const offer = rowOf('ck-ho-offer', [
       Text({ color: ACCENT, children: ['◆'] }),
       Text({ children: [`Context ${tokens(S.ctx)}: hand this chat off to a fresh one?`] }),
       cardButton(Button, 'ck-ho-start', 'Start handoff', hot('h')),
       cardButton(Button, 'ck-ho-hide', 'Hide', { dimColor: true }),
       at,
     ])
+    return desk ? framed('ck-ho-offer-card', ACCENT, [offer]) : offer
   }
   if (!P.pending && !P.phase) return null
   const waiting = !!P.pending && P.phase !== 'working'
@@ -1161,33 +1209,51 @@ function handoffCard($, e, els, Svg) {
   else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
+    const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
+    const bar = stepBar(els, Svg, stepProgress(i, s), s.status)
+    const detail = Text({ dimColor: true, ...(desk ? { size: 'caption' } : {}), children: [stepDetail(s) || ''] })
+    // Desktop: the five steps stand side by side, each a small column
+    if (desk) return Box({ key: 'ck-ho-step-' + i, flexDirection: 'column', children: [rowOf('ck-ho-step-head-' + i, [icon, label], 1), bar, detail] })
     return Box({ key: 'ck-ho-step-' + i, flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [
       Box({ width: 2, children: [icon] }),
-      Box({ width: 32, children: [Text({ dimColor: s.status === 'wait', children: [`${i + 1}. ${STEP_LABELS[i]}`] })] }),
-      stepBar(els, Svg, stepProgress(i, s), s.status),
-      Text({ dimColor: true, children: [stepDetail(s) || ''] }),
+      Box({ width: 32, children: [label] }),
+      bar,
+      detail,
     ] })
   })
+  const stop = waiting && landingOverdue() && colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))
+  const ready = P.phase === 'ready' && !H.continuing && [
+    desk ? Button({ key: 'ck-ho-clear', label: 'Clear and continue', variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', 'Clear and continue', hot('c')),
+    cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
+    cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
+    cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+  ]
+  const failed = P.phase === 'failed' && [
+    cardButton(Button, 'ck-ho-retry', 'Try again', hot('r')),
+    P.draft && cardButton(Button, 'ck-ho-open', 'Open draft', hot('o')),
+    cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+  ]
+  const failure = failed && [
+    Text({ color: HUE.red, children: [P.error || 'unknown error'] }),
+    P.draft && Text({ dimColor: true, children: [`Draft saved to ${P.draft}`] }),
+    rowOf('ck-ho-buttons', failed),
+  ].filter(Boolean)
+  if (desk) {
+    // Ready, the steps have nothing left to say: one line, the title and its buttons
+    if (P.phase === 'ready') return framed('ck-ho-card', HUE.green, [rowOf('ck-ho-buttons', [title, Text({ dimColor: true, size: 'caption', children: [`Saved to ${P.file}`] }), ...(ready || [])])])
+    return framed('ck-ho-card', failed ? HUE.red : ACCENT, [
+      rowOf('ck-ho-head', [title, stop]),
+      Box({ key: 'ck-ho-steps', flexDirection: 'row', flexWrap: 'wrap', columnGap: 3, rowGap: 'xs', children: steps }),
+      ...(failure || []),
+    ])
+  }
   const rows = [title, ...steps]
-  if (waiting && landingOverdue()) rows.push(rowOf('ck-ho-buttons', [colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))]))
+  if (stop) rows.push(rowOf('ck-ho-buttons', [stop]))
   if (P.phase === 'ready') {
     rows.push(Text({ dimColor: true, children: [`Saved to ${P.file}`] }))
-    if (!H.continuing) rows.push(rowOf('ck-ho-buttons', [
-      cardButton(Button, 'ck-ho-clear', 'Clear and continue', hot('c')),
-      cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
-      cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
-      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
-    ]))
+    if (ready) rows.push(rowOf('ck-ho-buttons', ready))
   }
-  if (P.phase === 'failed') {
-    rows.push(Text({ color: HUE.red, children: [P.error || 'unknown error'] }))
-    if (P.draft) rows.push(Text({ dimColor: true, children: [`Draft saved to ${P.draft}`] }))
-    rows.push(rowOf('ck-ho-buttons', [
-      cardButton(Button, 'ck-ho-retry', 'Try again', hot('r')),
-      P.draft && cardButton(Button, 'ck-ho-open', 'Open draft', hot('o')),
-      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
-    ]))
-  }
+  if (failure) rows.push(...failure)
   return Box({ key: 'ck-ho-card', flexDirection: 'column', children: rows })
 }
 
@@ -1854,8 +1920,8 @@ export function register(on, options) {
     const st = cacheState(hb)
     const ttl = ttlMin()
     const big = S.ctx >= settings.bigTokens
-    // A desktop or editor band: two fixed rows, native Selects, no hotkeys
-    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 1, children: [card, ...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
+    // A desktop or editor band: a row of cards, native Selects, no hotkeys
+    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 'xs', children: [card, ...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
     let cache
     if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] })
     else if (st.kind === 'warm') cache = Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] })

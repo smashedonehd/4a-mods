@@ -8,7 +8,7 @@ import type { On } from 'claude-code'
 
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120 } as never } as const
 
-async function session($: Engine, on: On) {
+async function session($: Engine, on: On, ctx = 320000) {
   const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
   mock.env(on, { HOME: '/home/t' })
   mock.store(on)
@@ -27,7 +27,7 @@ async function session($: Engine, on: On) {
   on('agent.list', () => ({ value: [] }) as never)
   on('session.start', async () => ({ cwd: '/repo' }) as never)
   on('turn.step', async function* () {
-    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 320000, cache_creation_input_tokens: 0 } } as never
+    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 10, cache_read_input_tokens: ctx, cache_creation_input_tokens: 0 } } as never
   })
   // What the module sends out: the commands it runs and the prompts it submits
   const ran: string[] = []
@@ -38,7 +38,7 @@ async function session($: Engine, on: On) {
   on('classic.SessionStart', () => ({}) as never)
   await $.session.start({ source: 'startup', cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
   // A context big enough for the handoff offer
-  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  await $.session.measure({ context: { tokens: ctx, window: 1000000 } } as never)
   return { clock, ran, sent }
 }
 
@@ -82,7 +82,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'ck-ho-start' } as never)
     await clock.advance(0) // the press starts the pipeline and returns
     expect((await ui.find({ type: 'Text', text: /^Handoff ready/ }))?.text).toMatch(/Handoff ready: \d+ words/)
-    expect((await ui.findAll({ type: 'Text', text: /messages?$|files?$/ })).map((x: { text: string }) => x.text)).toEqual(['2 messages', '1 file'])
+    // The terminal keeps the five steps under the title; the desktop card is one line once ready
+    expect((await ui.findAll({ type: 'Text', text: /messages?$|files?$/ })).map((x: { text: string }) => x.text)).toEqual(surface === 'terminal' ? ['2 messages', '1 file'] : [])
+    expect(!!(await ui.find({ key: 'ck-ho-step-0' } as never))).toBe(surface === 'terminal')
     for (const key of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close']) expect(await ui.find({ key } as never)).toBeTruthy()
     await ui.press({ key: 'ck-ho-close' } as never)
     expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeFalsy()
@@ -213,4 +215,112 @@ test('a plain /clear after Keep chat brings "clear and continue" back: the choic
   const fresh = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   expect((await fresh.find({ key: 'continue' } as never))?.text).toBe('clear and continue')
   await fresh.unmount()
+})
+
+// ---- the desktop band: a row of captioned cards ---------------------------
+
+// A session whose main loop reads `ctx` tokens from the cache each request
+async function sized($: Engine, on: On, ctx: number) {
+  const s = await session($, on, ctx)
+  await step($)
+  return s
+}
+
+const captions = async (ui: { findAll: (m: never) => Promise<{ text: string }[]> }) =>
+  (await ui.findAll({ type: 'Text', text: /^(Cache|Rewrite|Context|Next chat)( ·|$| cost$)/ } as never)).map((x) => x.text)
+
+test('desktop band: one row of captioned cards, each control inside its card', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect(await captions(ui)).toEqual(['Cache · warm', 'Rewrite cost', 'Context · of 1M', 'Next chat · turn on after clear'])
+  const row = await ui.find({ key: 'cards' } as never)
+  expect(row?.props.flexWrap).toBe('wrap')
+  for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-next']) expect((await ui.find({ key } as never))?.props.borderStyle).toBe('round')
+  // The context card holds the figure and takes the room that is left
+  expect((await ui.find({ key: 'card-ctx' } as never))?.props.flexGrow).toBe(1)
+  expect(await ui.find({ type: 'Text', text: '320k' } as never)).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^if cold ≈ / } as never)).toBeTruthy()
+  for (const key of ['keep-warm', 'tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) expect(await ui.find({ key } as never)).toBeTruthy()
+  await ui.unmount()
+})
+
+test('desktop band: a calm card has a dim border and the handoff is a plain button', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-next']) {
+    const card = await ui.find({ key } as never)
+    expect(card?.props.borderDimColor).toBe(true)
+    expect(card?.props.borderColor).toBeUndefined()
+  }
+  const handoff = await ui.find({ key: 'handoff' } as never)
+  expect(handoff?.props.plain).toBe(true)
+  expect(handoff?.props.variant).toBeUndefined()
+  await ui.unmount()
+})
+
+test('desktop band: past 600k the context card is coloured and the handoff is the primary button', async ($: Engine, on: On) => {
+  await sized($, on, 650000)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  const ctx = await ui.find({ key: 'card-ctx' } as never)
+  expect(ctx?.props.borderColor).toBe('#f85149')
+  expect(ctx?.props.borderDimColor).toBeUndefined()
+  // The other cards stay calm
+  expect((await ui.find({ key: 'card-cache' } as never))?.props.borderDimColor).toBe(true)
+  const handoff = await ui.find({ key: 'handoff' } as never)
+  expect(handoff?.props.variant).toBe('primary')
+  expect(handoff?.props.plain).toBeUndefined()
+  await ui.unmount()
+})
+
+test('desktop band: a cache gone cold on a big context colours the cache and cost cards and says what the next send costs', async ($: Engine, on: On) => {
+  const { clock } = await sized($, on, 320000)
+  await clock.advance(2 * 60 * 60 * 1000)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect(await captions(ui)).toContain('Cache · cold')
+  expect((await ui.find({ key: 'card-cache' } as never))?.props.borderColor).toBe('#f85149')
+  expect((await ui.find({ key: 'card-cost' } as never))?.props.borderColor).toBe('#f85149')
+  expect(await ui.find({ type: 'Text', text: /^next send rewrites ≈ / } as never)).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^if cold ≈ / } as never)).toBeFalsy()
+  expect((await ui.find({ key: 'handoff' } as never))?.props.variant).toBe('primary')
+  await ui.unmount()
+})
+
+test('desktop band: a narrow window shortens the captions and the tags', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns: 80, rows: 40 } } as never)
+  expect(await captions(ui)).toEqual(['Cache', 'Rewrite', 'Context', 'Next chat'])
+  expect((await ui.find({ key: 'tag-caveman' } as never))?.text).toBe('cave')
+  await ui.unmount()
+})
+
+test('desktop card: the offer and the failed steps stand in a frame, the terminal has none', async ($: Engine, on: On) => {
+  pipeline(on, { isAnswered: false, reason: 'api-error', status: 529, usage: {} })
+  const { clock } = await session($, on)
+  const term = await $.ui.mount({ plugin: 'cache-keeper', surface: 'terminal', ...BAND })
+  expect(await term.find({ key: 'ck-ho-offer' } as never)).toBeTruthy()
+  expect(await term.find({ key: 'ck-ho-offer-card' } as never)).toBeFalsy()
+  await term.unmount()
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect((await ui.find({ key: 'ck-ho-offer-card' } as never))?.props.borderColor).toBe('#d97757')
+  await ui.press({ key: 'ck-ho-start' } as never)
+  await clock.advance(0)
+  // Failed: the frame turns red and the five steps stand side by side in one wrapping row
+  expect((await ui.find({ key: 'ck-ho-card' } as never))?.props.borderColor).toBe('#f85149')
+  const steps = await ui.find({ key: 'ck-ho-steps' } as never)
+  expect(steps?.props.flexDirection).toBe('row')
+  expect(steps?.props.flexWrap).toBe('wrap')
+  for (let i = 0; i < 5; i++) expect((await ui.find({ key: 'ck-ho-step-' + i } as never))?.props.flexDirection).toBe('column')
+  await ui.unmount()
+})
+
+test('desktop card: ready, Clear and continue is the primary button of a green frame', async ($: Engine, on: On) => {
+  pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
+  const { clock } = await session($, on)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  await ui.press({ key: 'ck-ho-start' } as never)
+  await clock.advance(0)
+  expect((await ui.find({ key: 'ck-ho-card' } as never))?.props.borderColor).toBe('#3fb950')
+  expect((await ui.find({ key: 'ck-ho-clear' } as never))?.props.variant).toBe('primary')
+  expect(await ui.find({ type: 'Text', text: /^Saved to / } as never)).toBeTruthy()
+  await ui.unmount()
 })
