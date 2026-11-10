@@ -493,6 +493,50 @@ const resumedLast = (list: AgentRun[], agentId: string): AgentRun[] => {
   return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1), list[i]]
 }
 
+// Which run of its task a new one is: one more than the runs that share its description.
+const roundOf = (list: AgentRun[], description: string): number =>
+  1 + list.filter(a => norm(a.description) === norm(description) && description).length
+
+type Listed = Awaited<ReturnType<EngineInterface['agent']['list']>>[number]
+
+// Adds to `agents` a run for an agent the engine lists and this session never saw
+// start, unless it has one. Its time and tokens count from now.
+const addUnseen = async ($: EngineInterface, info: Listed, model: string): Promise<void> => {
+  const at = await $.clock.now()
+  await update($, agents, list => {
+    if (list.some(a => a.agentId === info.id)) return list
+    const run: AgentRun = {
+      id: info.id,
+      agentId: info.id,
+      type: info.type,
+      description: info.description,
+      model,
+      status: 'running',
+      startedAt: at,
+      contextTokens: 0,
+      contextMax: windowOf(model),
+      tokens: 0,
+      costUsd: 0,
+      steps: 0,
+      round: roundOf(list, info.description),
+    }
+    return [...list, run].slice(-200)
+  })
+}
+
+// The engine's own list of agents, empty when it cannot be read.
+const listedAgents = ($: EngineInterface): Promise<Listed[]> => $.agent.list().catch(() => [])
+
+// An agent at work that has no run (a follow-up woke one from before a /clear, or
+// a skill runs in a fork, which starts with no `agent.spawn`) gets one, from what
+// `$.agent.list()` says of it. An id that list does not name is a workflow's
+// agent or a fork of the engine's own: no run.
+const foundRun = async ($: EngineInterface, agentId: string, model: string): Promise<void> => {
+  if ((await read($, agents)).some(a => a.agentId === agentId)) return
+  const info = (await listedAgents($)).find(a => a.id === agentId)
+  if (info) await addUnseen($, info, model)
+}
+
 // The current wave: the runs since the last moment none was running. A run begins
 // a wave when every run before it had ended by its start; one still running never
 // has. Worked out from the list at each draw, so nothing is kept per run.
@@ -965,6 +1009,18 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // /clear starts a new session in the same process: the runs are gone, the agents
+  // are not, and no `session.start` fires. The ones still at work get a run at
+  // once, not at their next model request. Their model shows with that request.
+  on('classic.SessionStart', { source: ['clear'] }, async ($, e, next) => {
+    // A teammate in a pane of its own runs no loop here, and a dead pane leaves it
+    // "running": it waits for an event of its own.
+    for (const info of await listedAgents($)) {
+      if (!info.teammateId && (info.status === 'running' || info.status === 'waiting' || info.status === 'pending')) await addUnseen($, info, '')
+    }
+    return next(e)
+  })
+
   on('agent.spawn', async ($, e, next) => {
     const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
     const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
@@ -972,7 +1028,7 @@ export const register: Register = (on, options) => {
 
     const at = await $.clock.now()
     await update($, agents, list => {
-      const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
+      const round = roundOf(list, e.description)
       const run: AgentRun = {
         id: started.agentId ?? e.tool_use_id,
         agentId: started.agentId,
@@ -1008,6 +1064,7 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
+    await foundRun($, agentId, model)
     await update($, agents, list =>
       resumedLast(list, agentId).map((a): AgentRun =>
         a.agentId !== agentId
@@ -1041,6 +1098,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
     if (agentId) {
+      await foundRun($, agentId, e.usage?.model || '')
       const at = await $.clock.now()
       await update($, agents, list =>
         list.map((a): AgentRun => {
