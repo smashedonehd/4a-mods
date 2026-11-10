@@ -154,6 +154,7 @@ const H = {
   clearDue: false,
   refreshed: false, // the due clear already wrote one fresh handoff of its own
   phase: '', // what clear and continue is doing now, shown on the card
+  kept: false, // "Keep chat" was pressed: the band stops offering to clear for this handoff
 }
 
 // The pipeline and its card. after: what follows a written handoff: 'clear'
@@ -381,6 +382,7 @@ async function loadLatestHandoff($) {
   H.fid = saved.fid || ''
   H.at = saved.at
   H.fromDisk = true
+  H.kept = false
   return ''
 }
 
@@ -526,7 +528,7 @@ async function runPipeline($, after = 'ask') {
       if (back !== text) throw new Error('the saved file does not read back the same')
       return { ...out, text, secrets: red.count }
     }, (s) => plural(wordCount(s.text), 'word') + (s.secrets ? `, ${plural(s.secrets, 'secret')} removed` : ''))
-    Object.assign(H, { text: saved.text, path: saved.path, fid: saved.fid, at: now, fromDisk: false })
+    Object.assign(H, { text: saved.text, path: saved.path, fid: saved.fid, at: now, fromDisk: false, kept: false })
     Object.assign(P, { phase: 'ready', file: saved.path, words: wordCount(saved.text) })
     const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
     if (P.after === 'clear') {
@@ -850,6 +852,7 @@ async function cardAction($, key) {
       return clearAndContinue($)
     case 'ck-ho-keep':
       P.phase = ''
+      H.kept = true
       snoozeTo = S.ctx + SNOOZE
       $.ui.toast(`Handoff kept. /${names.handoff} continue clears this chat and continues with it later.`, { timeoutMs: 10000 })
       return
@@ -862,6 +865,15 @@ async function cardAction($, key) {
     case 'ck-ho-stop':
       return stopLanding($)
   }
+}
+
+// The presses that write a handoff, clear the chat or open a file: they outlast
+// the time a ui.press hook may run, so the hook starts them and returns
+const SLOW_KEYS = new Set(['ck-ho-start', 'ck-ho-retry', 'ck-ho-clear', 'ck-ho-open'])
+
+// Runs `work` once the calling hook has returned. Never throws.
+function offHook($, work) {
+  $.clock.after(0, () => void Promise.resolve().then(work).catch((err) => $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })))
 }
 
 async function cardPress($, key) {
@@ -1001,10 +1013,13 @@ function handoffLabel() {
 }
 
 // The band's "clear and continue": a handoff loaded from an earlier chat, or
-// this chat's once its card is closed (the ready card has its own button)
+// this chat's once its card is closed (the ready card has its own button).
+// After "Keep chat" it is gone: the person chose to stay, and /handoff continue
+// still clears with that handoff.
 function continueButton($, Button, extra = {}) {
-  if (!(H.text || H.continuing) || P.phase === 'ready') return null
-  return Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, ...extra, onPress: () => clearAndContinue($) })
+  if (H.continuing) return Button({ key: 'continue', label: 'clearing', plain: true, ...extra, onPress: () => {} })
+  if (!H.text || H.kept || P.phase === 'ready') return null
+  return Button({ key: 'continue', label: 'clear and continue', plain: true, ...extra, onPress: () => offHook($, () => clearAndContinue($)) })
 }
 
 // The band on a surface with Select (desktop, editor): row one is the cache and
@@ -1061,7 +1076,7 @@ function deskBand($, e, els, { st, ttl, big }) {
   const actions = row('actions', [
     row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
     continueButton($, Button),
-    Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: handoffInFlight(), onPress: () => runPipeline($, 'ask') }),
+    Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
   ])
   return [
     line('state', row('cache-group', [cache, keepWarm], 2), row('figures', figures)),
@@ -1864,7 +1879,7 @@ export function register(on, options) {
     // a letter never fires from the prompt box, unlike a digit); the card above
     // shows its steps and what follows. c clears and continues with a handoff
     // the card no longer shows. The offer's own Start takes h while it is up.
-    const handoff = Button({ key: 'handoff', label: handoffLabel(), ...(offerShown() ? {} : { hotkey: 'h' }), plain: true, dimColor: handoffInFlight(), onPress: () => runPipeline($, 'ask') })
+    const handoff = Button({ key: 'handoff', label: handoffLabel(), ...(offerShown() ? {} : { hotkey: 'h' }), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) })
     const cont = continueButton($, Button, { hotkey: 'c' })
     const right = cont ? Box({ flexDirection: 'row', columnGap: 2, children: [cont, handoff] }) : handoff
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
@@ -1879,7 +1894,8 @@ export function register(on, options) {
   for (const key of CARD_KEYS) {
     on('ui.press', { element: key }, async ($, e, next) => {
       if (e.plugin && !/^cache-keeper(@|$)/.test(e.plugin)) return next(e)
-      await cardPress($, key)
+      if (SLOW_KEYS.has(key)) offHook($, () => cardPress($, key))
+      else await cardPress($, key)
       return { element: e.element }
     })
   }
