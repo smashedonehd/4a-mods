@@ -8,14 +8,24 @@ export class Exact {
   constructor(readonly raw: string) {}
 }
 
+// Thrown when a result's time budget runs out: the caller passes the result
+// whole. Every catch on the way up lets it through.
+export class TooSlow extends Error {
+  constructor() {
+    super('took too long')
+  }
+}
+
 export type Json = Record<string, unknown>
 export const isObject = (v: unknown): v is Json =>
   v !== null && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Exact)
-export const isScalar = (v: unknown) => v === null || v instanceof Exact || ['string', 'number', 'boolean'].includes(typeof v)
+export const isScalar = (v: unknown) =>
+  v === null || v instanceof Exact || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
 
 // An own property, `__proto__` included.
 export function put(o: Json, k: string, v: unknown) {
-  Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true })
+  if (k === '__proto__') Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true })
+  else o[k] = v
 }
 
 // The object or list a string stands in, and where that container stands: the
@@ -30,13 +40,17 @@ export type Visit = (start: number, end: number, value: string, key: string | un
 
 const NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 const WS = /[ \t\n\r]*/y
+// A string's text that JSON.parse would change or refuse: an escape or a
+// control character.
+const NOT_PLAIN = /[\\\u0000-\u001f]/
 
 // Thrown for text that is not JSON: one object, since building an error and
 // its stack for each of many small strings costs more than reading them.
 const NOT_JSON = new SyntaxError('not JSON')
 
 // The value of `text`, which must be one JSON value; throws when it is not.
-export function readJson(text: string, visit?: Visit): unknown {
+// `tick` is called once per value, so a caller can stop a long read.
+export function readJson(text: string, visit?: Visit, tick?: () => void): unknown {
   let i = 0
   let frame: Frame | undefined
   const fail = (): never => {
@@ -60,9 +74,11 @@ export function readJson(text: string, visit?: Visit): unknown {
       j++
     }
     i = j + 1
-    return [JSON.parse(text.slice(start, i)) as string, start]
+    const inner = text.slice(start + 1, j)
+    return [NOT_PLAIN.test(inner) ? (JSON.parse(text.slice(start, i)) as string) : inner, start]
   }
   const value = (key: string | undefined): unknown => {
+    tick?.()
     ws()
     const c = text[i]
     if (c === '{') {
@@ -106,8 +122,9 @@ export function readJson(text: string, visit?: Visit): unknown {
       visit?.(start, i, s, key, frame)
       return s
     }
-    for (const [word, v] of [['true', true], ['false', false], ['null', null]] as const)
-      if (text.startsWith(word, i)) return ((i += word.length), v)
+    if (text.startsWith('true', i)) return ((i += 4), true)
+    if (text.startsWith('false', i)) return ((i += 5), false)
+    if (text.startsWith('null', i)) return ((i += 4), null)
     NUM.lastIndex = i
     const m = NUM.exec(text)
     if (!m) fail()
@@ -122,20 +139,43 @@ export function readJson(text: string, visit?: Visit): unknown {
   return v
 }
 
-// The object or array a text holds, or undefined for anything else.
-export function parseJson(text: string): unknown {
+// The object or array a text holds, or undefined for anything else. A
+// TooSlow from `tick` goes through.
+export function parseJson(text: string, tick?: () => void): unknown {
   if (!/^\s*[[{]/.test(text)) return undefined
   try {
-    return readJson(text)
-  } catch {
+    return readJson(text, undefined, tick)
+  } catch (e) {
+    if (e instanceof TooSlow) throw e
     return undefined
   }
 }
 
-// Compact JSON, exact numbers written as they came.
+// Compact JSON, exact numbers written as they came. Written into one list of
+// parts and joined once, so a deep chain is not copied once per level.
 export function ser(v: unknown): string {
-  if (v instanceof Exact) return v.raw
-  if (Array.isArray(v)) return `[${v.map(ser).join(',')}]`
-  if (isObject(v)) return `{${Object.keys(v).map(k => `${JSON.stringify(k)}:${ser(v[k])}`).join(',')}}`
-  return JSON.stringify(v) ?? 'null'
+  const out: string[] = []
+  const write = (x: unknown) => {
+    if (x instanceof Exact) out.push(x.raw)
+    else if (Array.isArray(x)) {
+      out.push('[')
+      for (let i = 0; i < x.length; i++) {
+        if (i > 0) out.push(',')
+        write(x[i])
+      }
+      out.push(']')
+    } else if (isObject(x)) {
+      out.push('{')
+      let first = true
+      for (const k of Object.keys(x)) {
+        if (!first) out.push(',')
+        first = false
+        out.push(JSON.stringify(k), ':')
+        write(x[k])
+      }
+      out.push('}')
+    } else out.push(JSON.stringify(x) ?? 'null')
+  }
+  write(v)
+  return out.join('')
 }

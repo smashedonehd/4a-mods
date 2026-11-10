@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { CLEARED as CLEARED_TEXT } from './trim.ts'
 
 const NOW = Date.UTC(2026, 10, 10, 12, 0, 0)
 const DAY = 86_400_000
@@ -472,7 +473,7 @@ test('a note no shorter than the result sends the result', { options: { min_char
   const { files } = world(on, { result: block(text) })
   expect(await call($)).toEqual(block(text))
   expect(ledger(files)).toEqual([])
-  expect(files[LOG]).toMatch(/was not shorter than the result/)
+  expect(files[LOG]).toMatch(/passed whole, the trimmed JSON would be longer than the result/)
 })
 
 test('options below their minimum are raised to it', { options: { max_saved_mb: 5, min_chars: 500 } }, async ($, on) => {
@@ -565,7 +566,7 @@ test('a JSON result that is no object or list passes whole, and the log says why
   const text = JSON.stringify('x'.repeat(20_000))
   const { files } = world(on, { result: block(text) })
   expect(await call($)).toEqual(block(text))
-  expect(files[LOG]).toMatch(/passed whole, the JSON is not an object or a list, or nests too deep to trim/)
+  expect(files[LOG]).toMatch(/passed whole, the JSON is not an object or a list$/m)
 })
 
 test('an emoji at a cut reaches Claude whole, never half', { options: { min_chars: 1000 } }, async ($, on) => {
@@ -654,3 +655,52 @@ for (const [where, extra, rows] of [
     world(on, { result: block(BIG), reply, rows })
     expect(String(await call($, extra))).toContain('html: ‹data>1')
   })
+
+// ---------- fourth review: what passes whole saves and sends nothing ----------
+
+test('past the time budget the result passes whole: nothing saved, nothing sent, the stage logged', { options: { time_budget_ms: 0 } }, async ($, on) => {
+  const { files, asked } = world(on, { result: block(BIG) })
+  expect(await call($)).toEqual(block(BIG))
+  expect(Object.keys(files).filter(p => p.includes('/mods-data/'))).toEqual([])
+  expect(saved(files)).toEqual([])
+  expect(asked).toEqual([])
+  expect(files[LOG]).toMatch(/passed whole, took too long \(redaction, over 0 ms\)$/m)
+})
+
+const DEEP = `{"rows":${'['.repeat(205)}"x"${']'.repeat(205)},"pad":"${'p'.repeat(20_000)}"}`
+for (const [why, result, log, options] of [
+  ['an image', [{ type: 'image', data: 'x' }, ...block(BIG)], undefined, {}],
+  ['a block of another kind', [{ type: 'resource_link', uri: 'x' }, ...block(BIG)], /the result is a resource_link block/, {}],
+  ['text that is not JSON', block(`password=hunter22 ${'prose '.repeat(5000)}`), /not JSON \(condense_text is off\)/, {}],
+  ['JSON that is no object or list', block(JSON.stringify(`password=hunter22 ${'x'.repeat(20_000)}`)), /the JSON is not an object or a list$/m, {}],
+  ['JSON nested too deep', block(DEEP), /the JSON nests deeper than 200 levels/, {}],
+  ['over 4 MB', block(JSON.stringify({ rows: ['č'.repeat(2_100_000)] })), /bytes is more than one saved file holds/, {}],
+  ['a trim no shorter', block(`[${Array.from({ length: 300 }, (_, i) => `{"i":${i}}`).join(',')}]`), /would be longer than the result/, { min_chars: 1000 }],
+] as const)
+  test(`${why} passes whole: as the tool returned it, nothing saved, nothing sent`, { options }, async ($, on) => {
+    const { files, asked } = world(on, { result })
+    expect(await call($)).toEqual(result)
+    expect(saved(files)).toEqual([])
+    expect(asked).toEqual([])
+    if (log) expect(files[LOG]).toMatch(log)
+  })
+
+test('an error result passes whole: nothing saved, nothing sent', async ($, on) => {
+  const { files, asked } = world(on, { isError: true, result: block(BIG) })
+  expect((await $.tool.call({ tool: TOOL })).result).toEqual(block(BIG))
+  expect(saved(files)).toEqual([])
+  expect(asked).toEqual([])
+})
+
+test('a failure after saving passes the result whole and clears the saved copy', async ($, on) => {
+  const { files } = world(on, {
+    result: block(BIG),
+    reply: () => {
+      throw new Error('helper exploded')
+    },
+  })
+  expect(await call($)).toEqual(block(BIG))
+  const [path] = saved(files)
+  expect(files[path!]).toBe(CLEARED_TEXT)
+  expect(files[LOG]).toMatch(/failed, the plain result was sent/)
+})

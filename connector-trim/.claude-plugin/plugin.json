@@ -26,6 +26,12 @@
       "description": "Off: only JSON results are shortened, and text (files, documents, logs) reaches Claude whole. On: big text results are condensed too",
       "default": false
     },
+    "time_budget_ms": {
+      "type": "number",
+      "title": "Time budget (ms)",
+      "description": "The most time code may spend on one result before it passes the result whole, as the tool returned it (0 passes every result whole)",
+      "default": 1500
+    },
     "skip": {
       "type": "string",
       "multiple": true,

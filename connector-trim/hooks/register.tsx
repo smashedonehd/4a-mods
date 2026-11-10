@@ -3,6 +3,7 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { Totals } from '../types'
 import {
   CLEARED,
+  Deadline,
   MARK,
   NL,
   chunks,
@@ -17,13 +18,15 @@ import {
   redactText,
   reshaped,
   restore,
+  Run,
   safe,
   stamp,
   taskOf,
   textsOf,
   toClear,
+  TooSlow,
   tokens,
-  trimJson,
+  trimJsonWhy,
   trimPlain,
   wordsOf,
 } from './trim.ts'
@@ -70,6 +73,7 @@ type Config = {
   minChars: number
   targetChars: number
   condenseText: boolean
+  budgetMs: number
   skip: readonly string[]
   only: readonly string[]
   keepDays: number
@@ -96,6 +100,7 @@ function configOf(o: PluginOptions): Config {
     minChars: num(o.min_chars, 16000, 1000),
     targetChars: num(o.trim_target_chars, 8000, 500),
     condenseText: o.condense_text === true,
+    budgetMs: num(o.time_budget_ms, 1500, 0),
     skip: strs(o.skip, DEFAULT_SKIP),
     only: strs(o.only, []),
     keepDays: num(o.keep_days, 7, 1),
@@ -341,29 +346,27 @@ async function takeFull($: EngineInterface) {
   return took
 }
 
-// The texts as the tool returned them (secrets redacted), never re-written
-// from a parse: one JSON block as .json, anything else as .txt.
-// A name taken in the same second by another result gets `-2`, `-3`, ...
-async function save($: EngineInterface, e: Call, tool: string, text: string, ext: 'json' | 'txt') {
+// A free name for the saved result: one taken in the same second by another
+// result gets `-2`, `-3`, ...
+async function freePath($: EngineInterface, e: Call, tool: string, ext: 'json' | 'txt') {
   const { results } = await dirsOf($)
   const { server, name } = partsOf(tool)
   const base = `${results}/${stamp(await $.clock.now())}-${safe(server)}-${safe(name)}-${safe(String(e.tool_use_id ?? '').slice(-8))}`
-  try {
-    let path = `${base}.${ext}`
-    for (let n = 2; await $.fs.exists(path); n++) {
-      if (n > 1000) throw new Error('a thousand results in one second share this name')
-      path = `${base}-${n}.${ext}`
-    }
-    await $.fs.write(path, text)
-    return path
-  } catch (err) {
-    await log($, `${tool}: passed whole, the full result could not be saved: ${message(err)}`)
-    return undefined
+  let path = `${base}.${ext}`
+  for (let n = 2; await $.fs.exists(path); n++) {
+    if (n > 1000) throw new Error('a thousand results in one second share this name')
+    path = `${base}-${n}.${ext}`
   }
+  return path
 }
 
 // The note Claude reads in place of the result, or undefined to send the
-// result as it came.
+// result exactly as it came. Every reason to send it as it came is settled
+// before anything is saved or sent to the helper, so a result passed whole
+// leaves no file behind and reaches no model: the mod then exposes nothing
+// that running without it would not. Code gets `budgetMs` from the moment
+// the result arrives; past that the result is passed whole, and the log
+// names the stage that ran out of time.
 async function shorten(
   $: EngineInterface,
   cfg: Config,
@@ -372,93 +375,114 @@ async function shorten(
   ran: { result?: unknown; text?: string },
   signal: AbortSignal | undefined,
 ) {
-  let got = textsOf(ran.result)
-  if ('skip' in got && got.skip === 'not text' && typeof ran.text === 'string') got = { texts: [ran.text] }
-  if ('skip' in got) {
-    if (got.skip !== 'image') await log($, `${tool}: passed whole, the result is ${got.skip}`)
+  const run = new Run(new Deadline(Date.now() + cfg.budgetMs))
+  let stage = 'reading the result'
+  let saved: string | undefined
+  const whole = async (why: string) => {
+    await log($, `${tool}: passed whole, ${why}`)
     return undefined
   }
-  const raw = got.texts.join(`${NL}${NL}`)
-  if (raw.length < cfg.minChars) return undefined
-  if (bytes(raw) > SAVE_MAX_BYTES) {
-    await log($, `${tool}: passed whole, ${fmt(bytes(raw))} bytes is more than one saved file holds`)
-    return undefined
-  }
-  // JSON is redacted where it stands, so it stays valid JSON; other text is
-  // trimmed only with condense_text on: a file or a document is no answer to cut.
-  const asJson = got.texts.map(redactJson)
-  const isJson = asJson.every(r => r !== undefined)
-  if (!isJson && !cfg.condenseText) {
-    await log($, `${tool}: passed whole, the result is not JSON (condense_text is off)`)
-    return undefined
-  }
-  if (await takeFull($)) {
-    await log($, `${tool}: passed whole by /connector-trim full`)
-    await ledger($, e, tool, 'full', raw.length, raw.length, null)
-    return undefined
-  }
-  const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(t => redactText(t))
-  const texts = red.map(r => r.text)
-  const redacted = red.flatMap(r => r.found)
-  // What is saved is the redacted text, which can be longer than the result.
-  const saving = texts.join(`${NL}${NL}`)
-  if (bytes(saving) > SAVE_MAX_BYTES) {
-    await log($, `${tool}: passed whole, ${fmt(bytes(saving))} bytes once redacted is more than one saved file holds`)
-    return undefined
-  }
-  const task = await taskFor($, e)
-  const args = argsOf(e)
-  const words = wordsOf(`${task.user} ${task.assistant} ${args}`)
-  const trimmed = isJson ? trimJson(texts, words) : undefined
-  if (isJson && trimmed === undefined) {
-    await log($, `${tool}: passed whole, the JSON is not an object or a list, or nests too deep to trim`)
-    return undefined
-  }
-  const body = trimmed?.text ?? trimPlain(texts)
-  const file = await save($, e, tool, saving, isJson && texts.length === 1 ? 'json' : 'txt')
-  if (file === undefined) return undefined
-  const base = {
-    tool,
-    before: raw.length,
-    leftOut: trimmed ? leftOut(trimmed.stats) : '',
-    reshaped: trimmed ? reshaped(trimmed.stats) : '',
-    redacted,
-    paging: trimmed?.paging ?? '',
-    file,
-  }
+  try {
+    let got = textsOf(ran.result)
+    if ('skip' in got && got.skip === 'not text' && typeof ran.text === 'string') got = { texts: [ran.text] }
+    if ('skip' in got) return got.skip === 'image' ? undefined : await whole(`the result is ${got.skip}`)
+    const raw = got.texts.join(`${NL}${NL}`)
+    if (raw.length < cfg.minChars) return undefined
+    if (bytes(raw) > SAVE_MAX_BYTES) return await whole(`${fmt(bytes(raw))} bytes is more than one saved file holds`)
 
-  let reply: string
-  let action: string
-  let helper: Helper | null = null
-  if (body.length <= cfg.targetChars) {
-    reply = note({ ...base, how: trimmed ? 'trim' : 'text', body })
-    action = 'trim'
-  } else {
-    const asked = await condense($, cfg, tool, args, task, body, signal)
-    helper = asked.helper
-    if ('text' in asked) {
-      reply = note({ ...base, how: 'helper', model: cfg.model, body: asked.text })
-      action = 'haiku'
-    } else {
-      await log($, `${tool}: sent trimmed, ${asked.error}`)
-      reply = note({ ...base, how: 'fallback', why: asked.error, body })
-      action = `trim (${asked.error})`
+    // JSON is redacted where it stands, so it stays valid JSON; other text is
+    // trimmed only with condense_text on: a file or a document is no answer to cut.
+    stage = 'redaction'
+    const asJson = got.texts.map(t => redactJson(t, run))
+    const isJson = asJson.every(r => r !== undefined)
+    if (!isJson && !cfg.condenseText) return await whole('the result is not JSON (condense_text is off)')
+    if (await takeFull($)) {
+      await ledger($, e, tool, 'full', raw.length, raw.length, null)
+      return await whole('by /connector-trim full')
     }
+    const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(t => redactText(t, false, run))
+    const texts = red.map(r => r.text)
+    const redacted: string[] = []
+    for (const r of red) for (const f of r.found) redacted.push(f)
+    // What is saved is the redacted text, which can be longer than the result.
+    const saving = texts.join(`${NL}${NL}`)
+    if (bytes(saving) > SAVE_MAX_BYTES)
+      return await whole(`${fmt(bytes(saving))} bytes once redacted is more than one saved file holds`)
+
+    stage = 'reading the task'
+    const task = await taskFor($, e)
+    const args = argsOf(e)
+    const words = wordsOf(`${task.user} ${task.assistant} ${args}`)
+    run.deadline?.checkNow()
+
+    stage = 'trimming'
+    const trimmed = isJson ? trimJsonWhy(texts, words, { run, maxChars: raw.length }) : undefined
+    if (typeof trimmed === 'string') return await whole(trimmed)
+    const body = trimmed?.text ?? trimPlain(texts)
+
+    stage = 'naming the saved file'
+    run.deadline?.checkNow()
+    const file = await freePath($, e, tool, isJson && texts.length === 1 ? 'json' : 'txt')
+    const base = {
+      tool,
+      before: raw.length,
+      leftOut: trimmed ? leftOut(trimmed.stats) : '',
+      reshaped: trimmed ? reshaped(trimmed.stats) : '',
+      redacted,
+      paging: trimmed?.paging ?? '',
+      file,
+    }
+    // With no helper call to come, the note by code is the reply: when it is
+    // not shorter, nothing is saved and nothing is sent. With one, a failed
+    // helper leaves the note by code, saved and redacted, even if not shorter.
+    const byCode = note({ ...base, how: trimmed ? 'trim' : 'text', body })
+    if (body.length <= cfg.targetChars && byCode.length >= raw.length)
+      return await whole(`the note (${fmt(byCode.length)}) was not shorter than the result (${fmt(raw.length)})`)
+    run.deadline?.checkNow()
+
+    stage = 'saving'
+    try {
+      await $.fs.write(file, saving)
+    } catch (err) {
+      return await whole(`the full result could not be saved: ${message(err)}`)
+    }
+    saved = file
+
+    // Saved: from here the result is always replaced by a note.
+    let reply = byCode
+    let action = 'trim'
+    let helper: Helper | null = null
+    if (body.length > cfg.targetChars) {
+      const asked = await condense($, cfg, tool, args, task, body, signal)
+      helper = asked.helper
+      if ('text' in asked) {
+        const condensed = note({ ...base, how: 'helper', model: cfg.model, body: asked.text })
+        if (condensed.length < byCode.length) {
+          reply = condensed
+          action = 'haiku'
+        }
+      } else {
+        await log($, `${tool}: sent trimmed, ${asked.error}`)
+        reply = note({ ...base, how: 'fallback', why: asked.error, body })
+        action = `trim (${asked.error})`
+      }
+    }
+    await ledger($, e, tool, action, raw.length, reply.length, helper)
+    await update($, totals, t => ({
+      results: t.results + 1,
+      before: t.before + tokens(raw.length),
+      after: t.after + tokens(reply.length),
+      helperCalls: t.helperCalls + (helper?.calls ?? 0),
+      helperIn: t.helperIn + (helper?.in ?? 0),
+      helperOut: t.helperOut + (helper?.out ?? 0),
+    }))
+    return reply
+  } catch (err) {
+    if (err instanceof TooSlow) return await whole(`took too long (${stage}, over ${fmt(cfg.budgetMs)} ms)`)
+    // A failure after saving passes the result whole: the saved copy goes too.
+    if (saved !== undefined) await $.fs.write(saved, CLEARED).catch(() => undefined)
+    throw err
   }
-  if (reply.length >= raw.length) {
-    await log($, `${tool}: passed whole, the note (${fmt(reply.length)}) was not shorter than the result (${fmt(raw.length)})`)
-    return undefined
-  }
-  await ledger($, e, tool, action, raw.length, reply.length, helper)
-  await update($, totals, t => ({
-    results: t.results + 1,
-    before: t.before + tokens(raw.length),
-    after: t.after + tokens(reply.length),
-    helperCalls: t.helperCalls + (helper?.calls ?? 0),
-    helperIn: t.helperIn + (helper?.in ?? 0),
-    helperOut: t.helperOut + (helper?.out ?? 0),
-  }))
-  return reply
 }
 
 // ---------- the command ----------

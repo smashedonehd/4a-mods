@@ -2,7 +2,18 @@ import { expect, test } from 'claude-code/testing'
 import type { KeyClass } from './trim.ts'
 import {
   CLEARED,
+  Deadline,
+  NOT_RECORDS,
+  NOT_SHORTER,
+  Run,
+  TOO_DEEP,
+  TooSlow,
   chunks,
+  clean,
+  globMatch,
+  isPagingShaped,
+  layout,
+  trimJsonWhy,
   clip,
   clipEnd,
   isFiller,
@@ -498,6 +509,8 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'x_api_key', 'api_secret', 'access_key', 'accessKey', 'secret_key', 'secretKey', 'private_key', 'privateKey',
     'access_token', 'refresh_token', 'refreshToken', 'id_token', 'authorization', 'Authorization', 'Proxy-Authorization',
     'cookie', 'Cookie', 'set-cookie', 'Set-Cookie', 'set_cookie', 'connection_string', 'connectionString', 'dsn', 'pwd', 'PWD',
+    // A trailing digit run or version is no word; an acronym is one.
+    'password2', 'Password1', 'apikey2', 'apiKeyV2', 'APIKey', 'clientsecret', 'secretkey', 'xapikey', 'pwd2',
   ],
   weak: [
     'private_token', 'oauth_token', 'bot_token', 'csrf_token', 'x-auth-token', 'X-Auth-Token', 'personal_access_token',
@@ -505,39 +518,51 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'api_token', 'sessionToken', 'session_token', 'bearer_token', 'next_auth_token', 'auth', 'auth_header', 'basic_auth',
     'jwt', 'id_jwt', 'token', 'sig', 'credentials', 'client_credentials', 'X-Amz-Credential', 'X-Amz-Signature',
     'password_hash', 'my_password', 'secrets', 'AWS_SECRET_ACCESS_KEY', 'secretAccessKey', 'signing_key', 'encryption_key',
-    'ssh_key', 'app_key', 'Ocp-Apim-Subscription-Key',
+    'ssh_key', 'app_key', 'consumer_key', 'Ocp-Apim-Subscription-Key',
+    // `<word>_token` for any word that does not page.
+    'slack_token', 'vault_token', 'hf_token', 'user_token', 'sso_token', 'DISCORD_TOKEN', 'request_token',
+    'idempotency_token', 'upload_token', 'device_token', 'push_token', 'state_token', 'end_token', 'history_token',
+    'last_token', 'oauth2_token', 'OAuth2Token', 'OAuthToken',
+    // Glued words.
+    'dbpassword', 'userpassword', 'passwordhash', 'oauthtoken', 'slacktoken', 'topsecret',
     // Weak by name, yet their usual values are no token: see the value table.
-    'password_changed_at', 'has_password', 'password_policy', 'cookies', 'cookie_consent', 'cookies_enabled',
-    'cookie_policy_url', 'signature', 'email_signature', 'method_signature', 'signature_required', 'secret_santa',
-    'credentials_type', 'credential_type', 'jwt_enabled',
+    'password_changed_at', 'has_password', 'cookies', 'cookie_consent', 'signature', 'email_signature', 'method_signature',
+    'secret_santa',
   ],
   paging: [
     'next_page_token', 'pageToken', 'nextPageToken', 'page-token', 'continuationToken', 'ContinuationToken',
     'NextContinuationToken', 'sync_token', 'nextSyncToken', '$skiptoken', '$deltatoken', 'delta_token', 'cursor_token',
     'pagination_token', 'paging_token', 'previous_token', 'prev_token', 'prevPageToken', 'bookmark_token', 'marker_token',
-    'offset_token', 'after_token', 'resumeToken', 'start_token', 'scroll_token', 'last_token', '@odata.nextLink',
-    '@odata.deltaLink', '@odata.count', 'nextLink', 'next_link', 'next_url', 'nextRecordsUrl', 'next_page', 'next_page_key',
-    'NextMarker', 'Marker', 'KeyMarker', 'VersionIdMarker', 'marker', 'bookmark', 'pageBookmark', 'endCursor', 'startCursor',
-    'next_cursor', 'cursor', 'continuation', 'resumePoint', 'scroll', 'scroll_id', 'LastEvaluatedKey', 'ExclusiveStartKey',
-    'starting_after', 'ending_before', 'has_more', 'hasNextPage', 'IsTruncated', 'total', 'totalCount', 'page', 'per_page',
-    'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after', 'before', 'last_page', 'first_url', 'search_after',
-    'since_id',
+    'offset_token', 'after_token', 'before_token', 'resumeToken', 'start_token', 'scroll_token', '@odata.nextLink',
+    '@odata.deltaLink', '@odata.count', 'nextLink', 'nextlink', 'next_link', 'next_url', 'nexturl', 'nextRecordsUrl',
+    'next_page', 'next_page_key', 'nextpagetoken', 'NextMarker', 'Marker', 'KeyMarker', 'VersionIdMarker', 'marker',
+    'bookmark', 'pageBookmark', 'endCursor', 'startCursor', 'next_cursor', 'cursor', 'continuation', 'resumePoint', 'scroll',
+    'scroll_id', 'LastEvaluatedKey', 'ExclusiveStartKey', 'starting_after', 'ending_before', 'has_more', 'hasNextPage',
+    'IsTruncated', 'total', 'totalCount', 'page', 'per_page', 'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after',
+    'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2',
   ],
-  group: ['pageInfo', 'page_info', 'pagination', 'paging', 'links', '_links'],
+  group: ['pageInfo', 'page_info', 'pagination', 'paging', 'links', '_links', 'cursors'],
   none: [
     'tokens', 'token_type', 'token_count', 'token_usage', 'token_symbol', 'token_name', 'token_address', 'token_id', 'tokenId',
     'token_price', 'tokenizer', 'tokensUsed', 'num_tokens', 'max_tokens', 'total_tokens', 'input_tokens', 'output_tokens',
-    'prompt_tokens', 'completion_tokens', 'cache_read_input_tokens', 'stoken', 'broken', 'spoken_language',
-    'request_token', 'idempotency_token', 'upload_token', 'device_token', 'push_token', 'state_token', 'end_token',
-    'history_token', 'key', 'keys', 'session_id', 'authorization_status', 'authorization_url', 'authority', 'author',
-    'authors', 'authored_by', 'secretary', 'passwordless', 'next_steps', 'nextAction', 'next_of_kin', 'nextel',
-    'linkedin_link', 'permalink', 'hyperlink', 'html_link', 'download_link', 'blink', 'markers', 'meta',
-    'response_metadata', 'selfLink', '@odata.editLink', '@odata.context', 'first', 'last', 'pwd2',
+    'prompt_tokens', 'completion_tokens', 'cache_read_input_tokens', 'stoken', 'broken', 'spoken_language', 'key', 'keys',
+    'session_id', 'authorization_status', 'authorization_url', 'authority', 'author', 'authors', 'authored_by', 'secretary',
+    'passwordless', 'preauth', 'next_steps', 'nextAction', 'next_of_kin', 'nextel', 'linkedin_link', 'permalink',
+    'hyperlink', 'html_link', 'download_link', 'blink', 'markers', 'meta', 'response_metadata', 'selfLink',
+    '@odata.editLink', '@odata.context', 'first', 'last', 'monkey', 'xyzkey', 'firstname',
+    // A weak name and a word that describes it.
+    'password_policy', 'jwt_enabled', 'signature_required', 'cookie_policy_url', 'credentials_type', 'credential_type',
+    'cookies_enabled', 'auth_provider', 'auth_method', 'signature_algorithm', 'cookie_domain', 'secret_name', 'secret_id',
+    'auth_url', 'auth_status', 'auth_scheme', 'auth_realm', 'auth_mode', 'token_required',
+    // Longer than any name: never split, never a secret or paging.
+    `${'a'.repeat(200)}_password`,
   ],
 }
 
 test('the key rules, class by class', () => {
-  for (const [want, keys] of Object.entries(KEY_TABLE)) for (const k of keys) expect([k, keyClass(k)]).toEqual([k, want])
+  const wrong: string[] = []
+  for (const [want, keys] of Object.entries(KEY_TABLE)) for (const k of keys) if (keyClass(k) !== want) wrong.push(`${k}: ${keyClass(k)}, not ${want}`)
+  expect(wrong).toEqual([])
 })
 
 test('a strong key loses any text, a weak key only a token-shaped value', () => {
@@ -785,4 +810,168 @@ test('the JSON reader refuses a missing colon', () => {
 test('chunks fill a part to exactly its size', () => {
   expect(chunks('aaaa\nbbbb', 9)).toEqual(['aaaa\nbbbb'])
   expect(chunks('aaaa\nbbbbb', 9)).toEqual(['aaaa', 'bbbbb'])
+})
+
+// ---------- fourth review ----------
+
+// A clock that starts before the deadline and moves on one unit per read.
+const ticking = (at: number) => {
+  let now = 0
+  return new Deadline(at, () => now++)
+}
+
+test('a deadline in the past stops each entry point with TooSlow', () => {
+  const past = () => new Run(new Deadline(0, () => 1))
+  expect(() => redactJson('{"a":"b"}', past())).toThrow(TooSlow)
+  expect(() => redactText('password=hunter22', false, past())).toThrow(TooSlow)
+  expect(() => trimJsonWhy(['{"a":"b"}'], none, { run: past() })).toThrow(TooSlow)
+})
+
+test('the deadline is checked inside the long loops, not only between stages', () => {
+  const strings = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => `password=hunter${i}`))
+  const records = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => ({ id: i, name: `n${i}` })))
+  // The entry check reads the clock once (0 < 3); only the loops read it again.
+  expect(() => redactJson(strings, new Run(ticking(3)))).toThrow(TooSlow)
+  expect(() => trimJsonWhy([records], none, { run: new Run(ticking(3)) })).toThrow(TooSlow)
+  expect(() => redactJson(strings, new Run(ticking(1e9)))).not.toThrow()
+})
+
+test('a flag or a dotted name is read whole and judged by the key rule', () => {
+  const cases: [string, string][] = [
+    ['run --password=hunter22 now', 'run --password=[REDACTED] now'],
+    ['--pwd=hunter22', '--pwd=[REDACTED]'],
+    ['--api-key=abc123def456', '--api-key=[REDACTED]'],
+    ['--db-password=hunter22', '--db-password=[REDACTED]'],
+    ['--client-secret=abcdef123456', '--client-secret=[REDACTED]'],
+    ['--token=abcdefgh1234', '--token=[REDACTED]'],
+    ['-password: hunter22', '-password: [REDACTED]'],
+    ['.password=hunter22', '.password=[REDACTED]'],
+    ['cfg.db.password=hunter22', 'cfg.db.password=[REDACTED]'],
+  ]
+  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
+  for (const s of ['https://a/b?page-token=CAESBAgCEAE12&x_page_token=zzzz1234', '--pwd=/home/me', '--next-page-token=abc123def'])
+    expect(redactText(s).text).toBe(s)
+})
+
+test('under a paging group only a bare token is the page’s; other weak names are still secrets', () => {
+  const out = JSON.parse(
+    redactJson(
+      JSON.stringify({
+        paging: { auth_token: 'abc123DEF456', token: 'abc123DEF456', cursor: 'abc123DEF456' },
+        page: { session_token: 'abc123DEF456' },
+        links: { jwt: 'abc123DEF456' },
+        next: { api_token: 'abc123DEF456' },
+      }),
+    )!.text,
+  )
+  expect(out).toEqual({
+    paging: { auth_token: '[REDACTED]', token: 'abc123DEF456', cursor: 'abc123DEF456' },
+    page: { session_token: '[REDACTED]' },
+    links: { jwt: '[REDACTED]' },
+    next: { api_token: '[REDACTED]' },
+  })
+})
+
+test('a weak value needs a digit, a capital or a symbol; fields that describe a secret stay', () => {
+  const out = (o: unknown) => JSON.parse(redactJson(JSON.stringify(o))!.text)
+  expect(out({ token: 'required', auth: 'firebase', sig: 'disabled' })).toEqual({ token: 'required', auth: 'firebase', sig: 'disabled' })
+  expect(out({ token: 'Firebase', auth: 'abc-defgh', sig: 'abcdefg1' })).toEqual({ token: '[REDACTED]', auth: '[REDACTED]', sig: '[REDACTED]' })
+  expect(
+    out({ cookies: [{ name: 'sid', domain: '.example.com', path: '/app/v1', user: 'bob.smith', username: 'bob_smith1', scheme: 'Bearer1x', realm: 'realm-01x', type: 'session-1', expires: 'Thu,01-Jan', value: 's3cretValue' }] }),
+  ).toEqual({
+    cookies: [{ name: 'sid', domain: '.example.com', path: '/app/v1', user: 'bob.smith', username: 'bob_smith1', scheme: 'Bearer1x', realm: 'realm-01x', type: 'session-1', expires: 'Thu,01-Jan', value: '[REDACTED]' }],
+  })
+  expect(out({ pwd: './project' })).toEqual({ pwd: './project' })
+})
+
+test('only the exact markers the mod writes count as already redacted', () => {
+  const out = JSON.parse(redactJson('{"password":"[REDACTED by admin]","x":"[REDACTED]"}')!.text)
+  expect(out).toEqual({ password: '[REDACTED]', x: '[REDACTED]' })
+})
+
+test('redaction is idempotent on JSON written inside a secret-named object', () => {
+  const s = JSON.stringify({ credentials: { blob: JSON.stringify({ password: 'p w', n: 1 }) } })
+  const once = redactJson(s)!.text
+  expect(JSON.parse(JSON.parse(once).credentials.blob)).toEqual({ password: '[REDACTED]', n: 1 })
+  expect(redactJson(once)).toEqual({ text: once, found: [] })
+})
+
+test('empty paging containers stay; a HAL link counts as one value', () => {
+  const t = trimmed(JSON.stringify({ LastEvaluatedKey: {}, next: [], cursors: {}, Items: [{ a: 1 }] }))
+  expect(t.value).toEqual({ LastEvaluatedKey: {}, next: [], cursors: {}, Items: [{ a: 1 }] })
+  const link = (n: string) => ({ href: `https://x/items?page=${n}`, title: `Page ${n}`, type: 'application/hal+json', templated: false })
+  const hal = trimmed(JSON.stringify({ _links: { self: link('2'), first: link('1'), last: link('9'), next: link('3'), prev: link('1') }, rows: [] }))
+  for (const k of ['self', 'first', 'last', 'next', 'prev']) expect(hal.paging).toContain(`_links.${k}.href=`)
+})
+
+test('paging shape: 20 values hold, 21 do not; five levels hold, six do not', () => {
+  const list = (n: number) => Array.from({ length: n }, (_, i) => `c${i}`)
+  expect(isPagingShaped(list(20))).toBe(true)
+  expect(isPagingShaped(list(21))).toBe(false)
+  const nest = (n: number): unknown => (n === 0 ? 'x' : { a: nest(n - 1) })
+  expect(isPagingShaped(nest(5))).toBe(true)
+  expect(isPagingShaped(nest(6))).toBe(false)
+})
+
+test('inside a paging value: no quoted pairs, no JSON read; beside a header name: judged by it', () => {
+  const v = JSON.parse(
+    redactJson(
+      JSON.stringify({
+        next: 'q?password="hunter22"',
+        cursor: '{"password":"hunter22"}',
+        pagination: { auth: { v: 'abc123DEF456' } },
+        headers: [{ header: 'Authorization', value: 'Basic dXNlcjpwYXNz' }],
+      }),
+    )!.text,
+  )
+  expect(v.next).toBe('q?password="hunter22"')
+  expect(v.cursor).toBe('{"password":"hunter22"}')
+  expect(v.pagination.auth.v).toBe('abc123DEF456')
+  expect(v.headers[0].value).toBe('[REDACTED]')
+})
+
+test('bookkeeping fields under a paging group are kept', () => {
+  expect(trimmed(JSON.stringify({ pageInfo: { etag: [1], n: 2 }, rows: [] })).value.pageInfo).toEqual({ etag: [1], n: 2 })
+})
+
+test('a string after a closed object or list is read in its own place', () => {
+  for (const before of ['{}', '[]', '["a"]', '{"k":"v"}'])
+    expect(redactJson(`{"credentials":${before},"x":"abc123DEF456"}`)!.found).toEqual([])
+})
+
+test('hoisting compares single values only; a field holding an object or list is never hoisted', () => {
+  const rows = [1, 2, 3].map(i => ({ id: i, kind: 'A', nested: { x: 1 }, list: [1] }))
+  const t = trimmed(JSON.stringify({ rows }))
+  expect(t.value.rows['same in every record']).toEqual({ kind: 'A' })
+  expect(t.value.rows.records[0]).toEqual({ id: 1, nested: { x: 1 }, list: [1] })
+})
+
+test('the layout indents at most 12 levels and stops past its length limit', () => {
+  let v: unknown = { a: [{ b: 1 }, { b: 2 }] }
+  for (let i = 0; i < 20; i++) v = { a: v, b: 1 }
+  const text = layout(v)
+  const widest = Math.max(...text.split('\n').map(l => l.length - l.trimStart().length))
+  expect(widest).toBe(2 * 12)
+  expect(JSON.parse(text)).toEqual(v)
+  expect(trimJsonWhy([JSON.stringify(v)], none, { maxChars: 100 })).toBe(NOT_SHORTER)
+})
+
+test('depth: 200 levels are laid out, 201 are not', () => {
+  const at = (n: number) => '['.repeat(n) + '"x"' + ']'.repeat(n)
+  expect(typeof trimJsonWhy([at(200)], none)).toBe('object')
+  expect(trimJsonWhy([at(201)], none)).toBe(TOO_DEEP)
+  expect(trimJsonWhy(['"just text"'], none)).toBe(NOT_RECORDS)
+})
+
+test('the request is read up to 20,000 characters, reminders taken out in one scan', () => {
+  expect(clean(`a<system-reminder>x</system-reminder>b<system-reminder>y</system-reminder>c`)).toBe('abc')
+  expect(clean('</system-reminder>a<system-reminder>b')).toBe('</system-reminder>a<system-reminder>b')
+  expect(clean(`${'x'.repeat(30_000)}`)).toHaveLength(20_000)
+})
+
+test('globs match in linear passes, however many stars', () => {
+  expect([globMatch('ccd_*', 'ccd_session'), globMatch('*snap?hot*', 'navigate_and_snapshot'), globMatch('a*b', 'ab'), globMatch('a*b', 'ac')]).toEqual([true, true, true, false])
+  const start = Date.now()
+  expect(matches(`mcp__${'a'.repeat(100_000)}__b`, ['*a*a*a*a*a*a*b*c'])).toBe(false)
+  expect(Date.now() - start).toBeLessThan(1500)
 })
