@@ -1095,7 +1095,7 @@ function continueButton($, Button, extra = {}) {
 
 // A card of the desktop band: a caption over one row of what it holds. Its
 // border takes a colour only while the card needs the person
-function bandCard({ Box, Text }, key, caption, children, { tone } = {}) {
+function bandCard({ Box, Text }, key, caption, children, { tone, grow } = {}) {
   return Box({
     key,
     flexDirection: 'column',
@@ -1103,6 +1103,8 @@ function bandCard({ Box, Text }, key, caption, children, { tone } = {}) {
     ...(tone ? { borderColor: tone } : { borderDimColor: true }),
     paddingX: 1,
     flexShrink: 0,
+    // The context card takes what the row has left, so the row ends flush right
+    ...(grow ? { flexGrow: 1 } : {}),
     children: [
       Text({ dimColor: true, size: 'caption', children: [caption] }),
       Box({ key: key + '-value', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 2, children: children.filter(Boolean) }),
@@ -1115,14 +1117,15 @@ const LIMIT_CAPTION = { five_hour: '5h limit', seven_day: 'Week limit', spend_li
 const CTX_URGENT = 600000
 const LIMIT_URGENT = 80
 
-// The cards hug what they hold; when the row would not fit, only the context
-// gauge gives way, down to where its card is as wide as a limit card. The
-// engine measures nothing for a plugin, so widths are counted in character
-// cells: a card is its border and padding around the wider of its caption and
-// its row, a row its parts two cells apart, a gauge pixel an eighth of a cell.
+// Every card but the context one hugs what it holds. The context card takes
+// the rest of the row, and its gauge follows the window: long in a wide one,
+// short in a narrow one, never below where its card is as wide as a limit
+// card (a window narrower still wraps the row). The engine measures nothing
+// for a plugin, so widths are counted in character cells: a card is its
+// border and padding around the wider of its caption and its row, a row its
+// parts two cells apart, a gauge pixel an eighth of a cell.
 const CELL_PX = 8
 const GAUGE_PX = 64
-const CTX_GAUGE_PX = 200
 const CARD_CHROME = 4
 // A native control around its label: a Button's padding, a Select's label and arrow
 const BUTTON_CHROME = 2
@@ -1136,7 +1139,7 @@ function ctxGaugePx(columns, others, figure, limit) {
   const fixed = CARD_CHROME + figure.length + 2
   const floor = Math.max(1, (limit || fixed + GAUGE_PX / CELL_PX) - fixed)
   const room = columns - others - fixed
-  return Math.round(Math.min(CTX_GAUGE_PX / CELL_PX, Math.max(floor, room)) * CELL_PX)
+  return Math.round(Math.max(floor, room) * CELL_PX)
 }
 
 // The band on a surface with Select (desktop, editor): one row of captioned
@@ -1243,7 +1246,7 @@ function deskBand($, e, els, { st, ttl, big }) {
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`, [
     value(figure, ctxTone(S.ctx)),
     Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], ctxGaugePx(columns, others, figure, limitCells)),
-  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx) }))
+  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true }))
   return [Box({ key: 'cards', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', width: '100%', columnGap: 1, rowGap: 'xs', children: cards })]
 }
 

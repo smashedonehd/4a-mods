@@ -323,7 +323,7 @@ test('desktop card: ready, Clear and continue is the primary button of a green f
   await ui.unmount()
 })
 
-// ---- the cards hug what they hold; only the context gauge gives way --------
+// ---- the cards hug what they hold; the context card takes the rest --------
 
 // The cache window is 60 minutes; it cools for the last five
 const COOLING_AFTER = 56 * 60 * 1000
@@ -339,13 +339,14 @@ async function ctxGauge($: Engine, columns?: number) {
   return Number(gauge?.props.width)
 }
 
-test('desktop band: no card stretches or shrinks; with room the context gauge is drawn at its full width', async ($: Engine, on: On) => {
+test('desktop band: only the context card stretches; the others hug what they hold', async ($: Engine, on: On) => {
   await sized($, on, 320000)
   await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-limit-seven_day', 'card-next']) {
     const card = await ui.find({ key } as never)
-    expect(card?.props.flexGrow).toBeUndefined()
+    // The context card takes the rest of the row, so the row ends flush right
+    expect(card?.props.flexGrow).toBe(key === 'card-ctx' ? 1 : undefined)
     expect(card?.props.flexShrink).toBe(0)
     expect(card?.props.width).toBeUndefined()
   }
@@ -353,24 +354,26 @@ test('desktop band: no card stretches or shrinks; with room the context gauge is
   const drawn = (await ui.findAll({ type: 'Box' } as never)).map((b: { key?: string }) => String(b.key)).filter((k: string) => /^card-[a-z_-]+$/.test(k) && !k.endsWith('-value'))
   expect(drawn).toEqual(['card-cache', 'card-cost', 'card-ctx', 'card-limit-seven_day', 'card-next'])
   await ui.unmount()
-  expect(await ctxGauge($)).toBe(200)
-  expect(await ctxGauge($, 240)).toBe(200)
 })
 
-test('desktop band: a row that would not fit narrows the context gauge alone, never below a limit card', async ($: Engine, on: On) => {
+test('desktop band: the context gauge follows the window, with no cap, down to a limit card', async ($: Engine, on: On) => {
   await sized($, on, 320000)
   await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
-  const wide = await ctxGauge($, 200)
-  const mid = await ctxGauge($, 155)
+  const huge = await ctxGauge($, 400)
+  const wide = await ctxGauge($, 300)
+  const mid = await ctxGauge($, 200)
   const tight = await ctxGauge($, 100)
-  expect(wide).toBe(200)
-  expect(mid).toBeLessThan(200)
-  expect(mid).toBeGreaterThan(tight)
+  // Each column more is one cell (8 px) more gauge: no 200 px cap
+  expect(huge - wide).toBe(800)
+  expect(wide - mid).toBe(800)
+  expect(mid).toBeGreaterThan(200)
+  // The band without a viewport is counted as 200 columns
+  expect(await ctxGauge($)).toBe(mid)
   // The floor: "320k" and its gauge are as wide as "34%" and the limit gauge (64 px)
   expect(tight).toBe(56)
   expect(await ctxGauge($, 60)).toBe(56)
   // The limit gauges keep their width whatever the room
-  for (const columns of [200, 60]) {
+  for (const columns of [400, 60]) {
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns, rows: 40 } } as never)
     const svgs = await ui.findAll({ type: 'Svg' } as never)
     expect(svgs.filter((x: { props: { alt?: string } }) => /limit/.test(String(x.props.alt))).map((x: { props: { width: number } }) => x.props.width)).toEqual([64])
