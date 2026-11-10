@@ -4,7 +4,7 @@ A Claude Code mod: an IDE-style file tree in a pane beside the chat. It shows wh
 
 **Origin:** by [Kurt Buhler](https://github.com/data-goblin), MIT (see [LICENSE](LICENSE)), with the contributors named in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md). Copied unchanged from [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree/tree/a3d36b1a56c0d982b307a58ef88fd3e857c977e6) at commit `a3d36b1`, version 0.8.2. Only this README differs. Upstream changes reach 4A-Mods only after someone reads them and copies them here.
 
-**Copied:** `hooks/`, `types/`, `tests/`, `scripts/`, `tsconfig.json`, `.claude-plugin/plugin.json`, `LICENSE` and `ACKNOWLEDGEMENTS.md`. **Left out:** the recordings and screenshots (`media/`, `docs/media/`, 15 MB), the feature pages in `docs/` that show them, the upstream README, `AGENTS.md`, and the upstream repository's own CI and git hooks. The feature pages are in the [upstream docs](https://github.com/data-goblin/claude-code-filetree/tree/a3d36b1a56c0d982b307a58ef88fd3e857c977e6/docs).
+**Copied:** `hooks/`, `types/`, `tests/`, `scripts/`, `.claude-plugin/plugin.json`, `LICENSE` and `ACKNOWLEDGEMENTS.md`. **Left out:** the recordings and screenshots (`media/`, `docs/media/`, 15 MB), the feature pages in `docs/` that show them, the upstream README, `AGENTS.md`, `tsconfig.json` (this repository ignores it; Claude Code writes one when a mod loads from a folder), and the upstream repository's own CI and git hooks. The feature pages are in the [upstream docs](https://github.com/data-goblin/claude-code-filetree/tree/a3d36b1a56c0d982b307a58ef88fd3e857c977e6/docs).
 
 **Needs Claude Code 2.1.306 or later**, newer than the other 4A-Mods need.
 
