@@ -949,6 +949,37 @@ await check('auto clear on: armed, Clear now is gone, and its key press keeps th
   store.delete('settings')
 })
 
+await check('auto clear on: Clear now in a countdown during a turn arms it; one handled after that turn writes a fresh handoff', async () => {
+  store.set('settings', { autoClear: true })
+  let timers = []
+  let s = await boot('/w/ac8', 'ac000150-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await s.press('ck-ho-clear')
+  await timers.pop()() // the press, before the countdown ends
+  await settle()
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.prompts.length, 2)
+  // A click from a drawing made in the turn, handled once the turn has ended
+  timers = []
+  s = await boot('/w/ac8', 'ac000151-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await s.press('ck-ho-clear')
+  const press = timers.pop()
+  await s.end({ turnId: 't7' })
+  await press()
+  await settle()
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.prompts.length, 2, 'the turn made the first handoff out of date')
+  assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
+  store.delete('settings')
+})
+
 await check('auto clear on: armed, an overlapped turn end waits for the turn that follows', async () => {
   store.set('settings', { autoClear: true })
   const { s, timers } = await armed('ac000130-0')

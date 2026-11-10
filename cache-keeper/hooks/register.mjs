@@ -923,7 +923,14 @@ async function cardAction($, key) {
         $.ui.toast('The chat clears and continues when this turn ends.', { timeoutMs: 8000 })
         return
       }
-      cancelAutoClear()
+      // A clear already due goes its own way (a fresh handoff first when stale)
+      if (H.clearDue) return
+      {
+        // A turn ran during the countdown: its handoff is out of date
+        const stale = P.autoStale
+        cancelAutoClear()
+        if (stale) return autoClearGo($, true)
+      }
       return clearAndContinue($)
     case 'ck-ho-keep':
       cancelAutoClear()
