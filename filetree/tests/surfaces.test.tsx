@@ -408,7 +408,7 @@ test('desktop app: a pane refused with no-surface at start opens once the app at
   expect(opens.length).toBe(before + 1)
 })
 
-test('desktop app with start off: a refused open at start is not repeated when the app attaches', { timeoutMs: 20_000, options: { start: 'off' } }, async ($, on) => {
+test('desktop app with start off: the app attaching opens nothing', { timeoutMs: 20_000, options: { start: 'off' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/proj'
   let attached = false
@@ -425,6 +425,7 @@ test('desktop app with start off: a refused open at start is not repeated when t
   attached = true
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
   await clock.settle()
+  expect(refused).toBe(0)
   expect(opens.length).toBe(before)
 })
 
