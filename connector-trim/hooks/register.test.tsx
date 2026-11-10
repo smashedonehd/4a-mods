@@ -53,6 +53,7 @@ type World = {
   isError?: boolean
   reply?: unknown
   rows?: unknown
+  deny?: string
   files?: Record<string, string>
   stat?: Record<string, { size: number; mtimeMs: number }>
   store?: boolean
@@ -115,6 +116,7 @@ const world = (on: any, w: World) => {
   const runs = { n: 0 }
   on('tool.call', (): any => {
     runs.n += 1
+    if (w.deny !== undefined) return { deny: w.deny }
     return w.isError
       ? { isError: true, result: w.result ?? 'quota exceeded', text: 'quota exceeded' }
       : { result: w.result ?? [{ type: 'text', text: BIG }] }
@@ -703,4 +705,28 @@ test('a failure after saving passes the result whole and clears the saved copy',
   const [path] = saved(files)
   expect(files[path!]).toBe(CLEARED_TEXT)
   expect(files[LOG]).toMatch(/failed, the plain result was sent/)
+})
+
+test('a denied call passes as it came: nothing read, saved, sent or logged', async ($, on) => {
+  const { files, asked, read } = world(on, { deny: 'not allowed' })
+  const r = await $.tool.call({ tool: TOOL })
+  expect(r.deny).toBe('not allowed')
+  expect([saved(files), asked, read, files[LOG]]).toEqual([[], [], [], undefined])
+})
+
+test('one JSON block beside a text block is not JSON', async ($, on) => {
+  const result = [...block(BIG), ...block(`plain text ${'words '.repeat(3000)}`)]
+  const { files } = world(on, { result })
+  expect(await call($)).toEqual(result)
+  expect(files[LOG]).toMatch(/passed whole, the result is not JSON \(condense_text is off\)/)
+})
+
+test('a note whose header makes it no shorter passes whole, nothing saved', { options: { min_chars: 1000 } }, async ($, on) => {
+  // Laid out shorter than the result, but not with the note's header on top.
+  const text = JSON.stringify(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`f${i}`, i])), null, 2)
+  const { files, asked } = world(on, { result: block(text) })
+  expect(await call($)).toEqual(block(text))
+  expect(saved(files)).toEqual([])
+  expect(asked).toEqual([])
+  expect(files[LOG]).toMatch(/was not shorter than the result/)
 })

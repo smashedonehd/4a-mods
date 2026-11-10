@@ -27,8 +27,9 @@ export const fmt = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?
 
 // The time a result may take. `check` reads the clock on every 256th call, so
 // it can sit inside the tightest loop; `checkNow` reads it every time.
+// `calls` counts the checks, so tests can see which loops make them.
 export class Deadline {
-  private calls = 0
+  calls = 0
   constructor(
     readonly at: number,
     private readonly clock: () => number = Date.now,

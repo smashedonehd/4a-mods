@@ -508,7 +508,7 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
   strong: [
     'password', 'passwd', 'passphrase', 'secret', 'client_secret', 'api_key', 'apiKey', 'api-key', 'x-api-key', 'X-API-Key',
     'x_api_key', 'api_secret', 'access_key', 'accessKey', 'secret_key', 'secretKey', 'private_key', 'privateKey',
-    'access_token', 'refresh_token', 'refreshToken', 'id_token', 'authorization', 'Authorization', 'Proxy-Authorization',
+    'access_token', 'refresh_token', 'refreshToken', 'id_token', 'IDToken', 'authorization', 'Authorization', 'Proxy-Authorization',
     'cookie', 'Cookie', 'set-cookie', 'Set-Cookie', 'set_cookie', 'connection_string', 'connectionString', 'dsn', 'pwd', 'PWD',
     // A trailing digit run or version is no word; an acronym is one.
     'password2', 'Password1', 'apikey2', 'apiKeyV2', 'APIKey', 'clientsecret', 'secretkey', 'xapikey', 'pwd2',
@@ -519,7 +519,7 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'api_token', 'sessionToken', 'session_token', 'bearer_token', 'next_auth_token', 'auth', 'auth_header', 'basic_auth',
     'jwt', 'id_jwt', 'token', 'sig', 'credentials', 'client_credentials', 'X-Amz-Credential', 'X-Amz-Signature',
     'password_hash', 'my_password', 'secrets', 'AWS_SECRET_ACCESS_KEY', 'secretAccessKey', 'signing_key', 'encryption_key',
-    'ssh_key', 'app_key', 'consumer_key', 'Ocp-Apim-Subscription-Key',
+    'ssh_key', 'app_key', 'consumer_key', 'Ocp-Apim-Subscription-Key', 'CSRFCookie', 'JWTValue',
     // `<word>_token` for any word that does not page.
     'slack_token', 'vault_token', 'hf_token', 'user_token', 'sso_token', 'DISCORD_TOKEN', 'request_token',
     'idempotency_token', 'upload_token', 'device_token', 'push_token', 'state_token', 'end_token', 'history_token',
@@ -962,6 +962,9 @@ test('depth: 200 levels are laid out, 201 are not', () => {
   const at = (n: number) => '['.repeat(n) + '"x"' + ']'.repeat(n)
   expect(typeof trimJsonWhy([at(200)], none)).toBe('object')
   expect(trimJsonWhy([at(201)], none)).toBe(TOO_DEEP)
+  // The same limit when the redaction's reading is reused.
+  expect(typeof trimJsonWhy([at(200)], none, { read: [redactJson(at(200))] })).toBe('object')
+  expect(trimJsonWhy([at(201)], none, { read: [redactJson(at(201))] })).toBe(TOO_DEEP)
   expect(trimJsonWhy(['"just text"'], none)).toBe(NOT_RECORDS)
 })
 
@@ -976,4 +979,39 @@ test('globs match in linear passes, however many stars', () => {
   const start = Date.now()
   expect(matches(`mcp__${'a'.repeat(100_000)}__b`, ['*a*a*a*a*a*a*b*c'])).toBe(false)
   expect(Date.now() - start).toBeLessThan(1500)
+})
+
+test('a deadline reached exactly has passed', () => {
+  expect(() => new Deadline(5, () => 5).checkNow()).toThrow(TooSlow)
+  expect(() => new Deadline(5, () => 4).checkNow()).not.toThrow()
+})
+
+test('the reader, the redaction loop and the trim walk each check the deadline', () => {
+  const far = () => new Deadline(Number.MAX_SAFE_INTEGER)
+  // 20,000 strings: the reader checks once per value, the redaction once per string.
+  const strings = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => `v${i}`))
+  const a = far()
+  redactJson(strings, new Run(a))
+  expect(a.calls).toBeGreaterThanOrEqual(40_000)
+  // 20,000 numbers: only the reader sees them.
+  const b = far()
+  redactJson(JSON.stringify(Array.from({ length: 20_000 }, (_, i) => i)), new Run(b))
+  expect(b.calls).toBeGreaterThanOrEqual(20_000)
+  // 20,000 records of two fields, 60,001 values: read, trimmed and laid out.
+  const c = far()
+  trimJsonWhy([JSON.stringify(Array.from({ length: 20_000 }, (_, i) => ({ id: i, n: `n${i}` })))], none, { run: new Run(c) })
+  expect(c.calls).toBeGreaterThanOrEqual(2 * 60_001 + 20_000)
+})
+
+test('a run classifies each key once, in its own book', () => {
+  const run = new Run()
+  redactJson('[{"api_key":"x y","n":"1"},{"api_key":"x z","n":"2"}]', run)
+  expect([...run.keys.keys()].sort()).toEqual(['api_key', 'n'])
+  expect(run.keys.get('api_key')?.secret).toBe('strong')
+})
+
+test('the reading handed over is used only for the text it was read from', () => {
+  const other = redactJson('{"a":1}')
+  const t = trimJsonWhy(['{"b":2}'], none, { read: [other] })
+  expect(typeof t === 'object' && JSON.parse(t.text)).toEqual({ b: 2 })
 })
