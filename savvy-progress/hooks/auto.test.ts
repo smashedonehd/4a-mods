@@ -247,9 +247,12 @@ async function panelTexts($: Engine) {
   return texts.join(' | ')
 }
 
-// The engine's own list of agents: the ids it names, with a description each
+// The engine's own list of agents: the ids it names, with a description each.
+// An id written `x:completed` stands at that status; the others run.
 const listed = (on: On, ...ids: string[]) =>
-  on('agent.list', () => ({ value: ids.map(id => ({ id, description: `Old ${id}`, type: 'general-purpose', status: 'running' })) }) as never)
+  on('agent.list', () => ({ value: ids.map(s => s.split(':')).map(([id, status = 'running']) => ({ id, description: `Old ${id}`, type: 'general-purpose', status })) }) as never)
+
+const cleared = ($: Engine) => ($.classic.SessionStart as (e: unknown) => Promise<unknown>)({ source: 'clear' })
 
 test('unseen: a step of a listed subagent that never spawned here founds its run', async ($, on) => {
   session(on)
@@ -286,7 +289,7 @@ test('unseen: one that ends before any step was seen shows as finished', async (
   expect(await shown($)).toMatchObject({ label: 'Tasks 1/2' })
 })
 
-test('unseen: an id the engine does not list is a fork or a workflow agent, and gets no run', async ($, on) => {
+test('unseen: an id the engine does not list (its own fork, a workflow agent) gets no run', async ($, on) => {
   session(on)
   listed(on, 'x')
   await step($, 'fork-1')
@@ -312,5 +315,39 @@ test('unseen: a spawned subagent is not founded a second time', async ($, on) =>
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
   // A spawn answered with a founded run's id takes its place
   await spawn($, 'b')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+})
+
+test('unseen: a /clear gives the agents still at work a run at once, and the ended ones none', async ($, on) => {
+  session(on)
+  on('classic.SessionStart', () => ({}) as never)
+  listed(on, 'x', 'y:waiting', 'z:completed', 'w:idle')
+  await cleared($)
+  const texts = await panelTexts($)
+  expect(texts).toContain('Old x')
+  expect(texts).toContain('Old y')
+  expect(texts).not.toContain('Old z')
+  expect(texts).not.toContain('Old w')
+  expect(await shown($)).toMatchObject({ title: true, label: 'Tasks 0/2' })
+  // The first request of one names its model and founds nothing more
+  await step($, 'x')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+  expect(await panelTexts($)).toContain('Opus 5.5')
+})
+
+test('unseen: a /clear keeps the runs the list still has, and survives a list that fails', async ($, on) => {
+  session(on)
+  on('classic.SessionStart', () => ({}) as never)
+  let fails = false
+  on('agent.list', () => {
+    if (fails) throw new Error('no list')
+    return { value: [{ id: 'a', description: 'Task a', type: 'general-purpose', status: 'running' }] } as never
+  })
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await cleared($)
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+  fails = true
+  await cleared($)
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
 })
