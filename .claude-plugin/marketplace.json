@@ -1,6 +1,6 @@
 {
   "name": "4a-mods",
-  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list; Prompt Translate turns your draft into English with one button; Connector Trim shortens big MCP connector results by code and Haiku and saves the full result to a file.",
+  "description": "4A-Mods: Claude Code mods by 4AM. Cache Keeper shows costs as plan-limit percent instead of dollars; Toggles switches plugins, skills and MCP servers and shows what each costs in context; Plan Keeper ticks plan files from the task list; Prompt Translate turns your draft into English with one button; Connector Trim shortens big JSON results of MCP connectors by code and Haiku and saves the full result to a file.",
   "owner": {
     "name": "4AM"
   },
@@ -28,7 +28,7 @@
     {
       "name": "connector-trim",
       "source": "./connector-trim",
-      "description": "Trims big MCP (connector) results by code, has Haiku condense what is still big for the task, and saves the full result to a file (/connector-trim)"
+      "description": "Trims big JSON results of MCP connectors by code, has Haiku condense what is still big for the task, and saves the full result to a file (/connector-trim)"
     }
   ]
 }
