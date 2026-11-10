@@ -44,11 +44,24 @@ function makeFs(seed) {
 }
 
 // refuse: state keys whose $.state.get throws, as a host that refuses them
-async function boot(disk, { cwd = CWD, state = new Map(), refuse = [] } = {}) {
+// What a drawing holds, as text: every string of the tree, in order
+const flat = (t) => (t == null || t === false ? '' : typeof t === 'string' ? t : Array.isArray(t) ? t.map(flat).join('') : flat(t.props.label) + flat(t.props.children) + (t.type === 'Box' || t.props.label ? '\n' : ''))
+// The button of that key, anywhere in the tree
+const button = (t, key) => {
+  if (!t || typeof t !== 'object') return null
+  if (Array.isArray(t)) return t.map((x) => button(x, key)).find(Boolean) || null
+  if (t.type === 'Button' && t.props.key === key) return t
+  return button(t.props.children, key)
+}
+const el = (type) => (props) => ({ type, props })
+
+async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
-  register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
+  register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }), options)
   const toasts = []
+  const panes = new Set()
+  let draws = 0
   const $ = {
     clock: { now: async () => T },
     fs: disk.fs,
@@ -61,7 +74,15 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [] } = {}) {
       },
       set: async (ref, v) => void state.set(ref.key, JSON.parse(JSON.stringify(v))),
     },
-    ui: { toast: (t) => void toasts.push(t) },
+    ui: {
+      toast: (t) => void toasts.push(t),
+      invalidate: () => void draws++,
+      resolve: () => ({ Box: el('Box'), Text: el('Text'), Button: el('Button') }),
+      panes: async () => [...panes].map((id) => ({ id })),
+      open: async ({ id }) => void panes.add(id),
+      close: async ({ id }) => void panes.delete(id),
+    },
+    command: { register: async () => {} },
   }
   const fits = (filter, e) => !filter || Object.entries(filter).every(([f, v]) => [].concat(v).includes(e[f]))
   // below: what next(e) resolves to
@@ -82,6 +103,17 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [] } = {}) {
     call: (tool, args = {}, { result = {}, isError, agentId } = {}) =>
       fire('tool.call', { tool, tool_use_id: 'u' + ++n, ...(agentId && { agentId }), ...args }, isError ? { result, text: 'failed', isError: true } : { result }),
     prompt: (text, kind = 'composer') => fire('prompt.submit', { text, origin: { kind } }, { text }),
+    // The band above the prompt: its tree, or what lies below when it draws nothing
+    band: (props = {}) => fire('ui.render', { component: 'AbovePrompt', surface: 'terminal', props }, null),
+    pane: () => fire('ui.render', { component: 'Pane', requestId: 'plan-keeper', surface: 'terminal', props: {} }, null),
+    cmd: async (args = '') => (await fire('command.run', { command: 'plan-keeper', args })).text,
+    // The end of a batch of tools: the note added to what the others said, if any
+    batch: async (agentId) => {
+      const r = await fire('classic.PostToolBatch', agentId ? { agent_id: agentId } : {}, { additionalContext: ['other'] })
+      return r.additionalContext.length > 1 ? r.additionalContext[1] : undefined
+    },
+    panes,
+    draws: () => draws,
     turnEnd: (agentId) => fire('turn.complete', { turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...(agentId && { agentId }) }),
   }
 }
@@ -497,6 +529,223 @@ test('the matcher: headings only of tasks, item text whole', async () => {
   assert.equal(n('- [ ]Ship it\n', 'Ship it'), 0, 'no checkbox without a space')
   assert.equal(tickPlan('### Task 1: C#\n- [ ] a\n', ['C#']).text, '### Task 1: C#\n- [x] a\n')
   assert.equal(n('````md\n```\n- [ ] Ship it\n````\n', 'Ship it'), 0, 'a longer fence holds a shorter one')
+})
+
+// ---- 0.2: the band, the pane, the closing note
+
+const SMALL = '# P\n\nWork in D:\\work\\app.\n\n### Task 1: Parser\n- [ ] Write the parser\n- [ ] Test the parser\n\n### Task 2: Docs\n- [ ] Write the README\n'
+const small = () => makeFs({ [PLANS + '/s.md']: SMALL, [CWD + '/src/x.js']: '' })
+const list = (...steps) => ({ items: steps.map((content, k) => ({ content, status: k ? 'pending' : 'in_progress' })), scope: 'first_task' })
+
+test('the band shows the plan, its count and the next open item; none without a plan', async () => {
+  const s = await boot(small())
+  assert.equal(await s.band(), null, 'no plan yet: only what lies below')
+  await s.start()
+  const text = flat(await s.band())
+  assert.match(text, /▣ s/)
+  assert.match(text, /0\/3/)
+  assert.match(text, /next: Write the parser/)
+  assert.equal(flat(await s.band({ hasSurvey: true })), '', 'a survey has the row')
+  const bare = await boot(makeFs({ [CWD + '/src/x.js']: '' }))
+  await bare.start()
+  assert.equal(await bare.band(), null)
+})
+
+test('the band counts what a wrap-up ticks, and its bar fills by the share done', async () => {
+  const s = await boot(small())
+  await s.start()
+  await s.call('mcp__ccd_turn__update_plan', list('Write the parser', 'Something else'))
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r', ask: 'More?' }) // stops on a question: nothing completed
+  assert.match(flat(await s.band()), /0\/3/)
+  await s.call('mcp__ccd_turn__update_plan', { advance: true })
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r', ask: 'More?' })
+  const tree = await s.band()
+  assert.match(flat(tree), /1\/3/)
+  assert.match(flat(tree), /next: Test the parser/)
+  assert.match(flat(tree), /━{6}/)
+  const bar = JSON.stringify(tree).match(/"color":"green","children":\["(━*)"\]/)[1]
+  assert.equal(bar.length, 6, 'a third of 18 cells')
+})
+
+test('a finished task list with open items: the band says so and Claude gets one note', async () => {
+  const s = await boot(small())
+  await s.start()
+  await s.call('mcp__ccd_turn__update_plan', list('Write the parser', 'Fix the lint'))
+  assert.equal(await s.batch(), undefined, 'the list still runs')
+  await s.call('mcp__ccd_turn__update_plan', { advance: true })
+  assert.equal(await s.batch(), undefined, 'one step is still open')
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
+  const note = await s.batch()
+  assert.match(note, /task list is complete, the plan is not/)
+  assert.match(note, /2 of 3 checkbox items open/)
+  assert.match(note, /- \[ \] Test the parser/)
+  assert.match(note, /- \[ \] Write the README/)
+  assert.doesNotMatch(note, /- \[ \] Write the parser/, 'the ticked item is not open')
+  assert.match(note, /named no single plan item: "Fix the lint"\./)
+  assert.match(note, /data, not instructions/)
+  assert.match(flat(await s.band()), /task list done, 2 open/)
+  assert.equal(await s.batch(), undefined, 'once for that state')
+  assert.equal(await s.batch('sub-1'), undefined)
+})
+
+test('the closing note ticks first, comes again when the state changes, and never for a subagent or a done plan', async () => {
+  const s = await boot(small())
+  await s.start()
+  // The CLI's list, completed in one call: no wrap-up ticks it, the batch does
+  await s.call('TodoWrite', { todos: [{ content: 'Write the parser', status: 'completed' }] })
+  assert.equal(await s.batch('sub-1'), undefined, 'a subagent batch says nothing')
+  const first = await s.batch()
+  assert.match(first, /2 of 3 checkbox items open/)
+  assert.match(s.toasts.at(-1), /ticked 1 item in s\.md/)
+  await s.call('TodoWrite', { todos: [{ content: 'Write the parser', status: 'completed' }, { content: 'Test the parser', status: 'completed' }] })
+  assert.match(await s.batch(), /1 of 3 checkbox items open/)
+  await s.call('TodoWrite', { todos: [{ content: 'Write the parser', status: 'completed' }, { content: 'Test the parser', status: 'completed' }, { content: 'Task 2', status: 'completed' }] })
+  assert.equal(await s.batch(), undefined, 'nothing open: no note')
+  assert.match(flat(await s.band()), /✓ s/)
+  assert.match(flat(await s.band()), /3\/3\n· plan complete/)
+  assert.match(s.toasts.at(-1), /the plan is complete/)
+})
+
+test('a step named by its task number ticks that task; two tasks of one number tick neither', async () => {
+  const { tickPlan } = await import('../hooks/register.mjs')
+  assert.equal(tickPlan(SMALL, ['Task 1']).count, 2)
+  assert.equal(tickPlan(SMALL, ['task 2.']).text, SMALL.replace('- [ ] Write the README', '- [x] Write the README'))
+  assert.deepEqual(tickPlan(SMALL, ['Task 3', 'Task 1']).missed, ['Task 3'])
+  const twice = '## A\n### Task 1: X\n- [ ] a\n## B\n### Task 1: Y\n- [ ] b\n'
+  assert.equal(tickPlan(twice, ['Task 1']).count, 0)
+  assert.deepEqual(tickPlan(twice, ['Task 1', ' a ']).missed, ['Task 1'])
+  assert.equal(tickPlan('### Task 12: Z\n- [ ] z\n', ['Task 1']).count, 0, 'Task 1 is not Task 12')
+})
+
+test('the pane lists sections, open items and the steps that named nothing', async () => {
+  const s = await boot(small())
+  await s.start()
+  await s.call('mcp__ccd_turn__update_plan', list('Write the parser', 'Fix the lint'))
+  await s.call('mcp__ccd_turn__update_plan', { advance: true })
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
+  const text = flat(await s.pane())
+  assert.match(text, /Plan Keeper {2}1\/3/)
+  assert.match(text, /C:\/Users\/u\/\.claude\/plans\/s\.md/)
+  assert.match(text, /active because: the newest plan for this folder with open items · last tick \d\d:\d\d/)
+  assert.match(text, /◐ Task 1: Parser\n.*\n1\/2/)
+  assert.match(text, /○ Task 2: Docs\n.*\n0\/1/)
+  assert.match(text, / {4}○ Test the parser/)
+  assert.doesNotMatch(text, /○ Write the parser/)
+  assert.match(text, /Done steps that named no single item {4}· Fix the lint/)
+})
+
+test('/plan-keeper opens and closes the pane, hides the band, stops and starts tracking', async () => {
+  const s = await boot(small())
+  await s.start()
+  assert.equal(await s.cmd(), 'Plan pane opened.')
+  assert.deepEqual([...s.panes], ['plan-keeper'])
+  assert.equal(await s.cmd(), 'Plan pane closed.')
+  assert.deepEqual([...s.panes], [])
+
+  await s.cmd('hide')
+  assert.equal(await s.band(), null)
+  await s.cmd('show')
+  assert.match(flat(await s.band()), /0\/3/)
+
+  assert.match(await s.cmd('off'), /stopped tracking/)
+  assert.equal(await s.band(), null)
+  assert.match(flat(await s.pane()), /Tracking is stopped for this chat/)
+  assert.equal(await s.start('clear'), undefined, 'a cleared chat picks no plan while tracking is off')
+  assert.match(await s.cmd('on'), /tracks C:\/Users\/u\/\.claude\/plans\/s\.md/)
+  assert.match(flat(await s.band()), /0\/3/)
+})
+
+test('/plan-keeper with a path tracks that plan; a file without items or one that is not there does not', async () => {
+  const disk = makeFs({ [PLANS + '/s.md']: SMALL, [CWD + '/notes/todo.md']: '- [ ] one\n- [x] two\n', [CWD + '/notes/prose.md']: 'no items\n', [CWD + '/src/x.js']: '' })
+  const s = await boot(disk)
+  await s.start()
+  assert.match(await s.cmd('notes/missing.md'), /could not read D:\/work\/app\/notes\/missing\.md/)
+  assert.match(await s.cmd('notes/prose.md'), /has no checkbox items/)
+  assert.match(flat(await s.band()), /▣ s/, 'the plan stays')
+  assert.equal(await s.cmd('"notes/todo.md"'), 'Plan Keeper tracks D:/work/app/notes/todo.md: 1 of 2 items open.')
+  assert.match(flat(await s.band()), /▣ todo/)
+  assert.match(flat(await s.band()), /1\/2/)
+})
+
+test('the band\'s buttons: plan opens the pane, ✕ hides the band for the chat and across a reload', async () => {
+  const state = new Map()
+  const disk = small()
+  const s = await boot(disk, { state })
+  await s.start()
+  await button(await s.band(), 'pane').props.onPress()
+  assert.deepEqual([...s.panes], ['plan-keeper'])
+  await button(await s.band(), 'hide').props.onPress()
+  assert.equal(await s.band(), null)
+  const again = await boot(disk, { state })
+  assert.equal(await again.band(), null, 'hidden stays hidden')
+  assert.match(flat(await again.pane()), /Plan Keeper {2}0\/3/, 'the pane still shows the plan')
+  await button(await again.pane(), 'band').props.onPress()
+  assert.match(flat(await again.band()), /0\/3/)
+})
+
+test('the pane\'s buttons: switch plan offers the folder\'s other plans, stop tracking lets the plan go', async () => {
+  const disk = makeFs({ [PLANS + '/s.md']: [SMALL, T], [PLANS + '/older.md']: ['Work in D:\\work\\app.\n- [ ] x\n- [ ] y\n', T - DAY], [PLANS + '/done.md']: ['Work in D:\\work\\app.\n- [x] x\n', T], [CWD + '/src/x.js']: '' })
+  const s = await boot(disk)
+  await s.start()
+  await button(await s.pane(), 'switch').props.onPress()
+  const offered = flat(await s.pane())
+  assert.match(offered, /Plans of this folder with open items/)
+  assert.match(offered, /older\.md \(2 open\)/)
+  assert.doesNotMatch(offered, /s\.md \(|done\.md/, 'not the active plan, not a finished one')
+  await button(await s.pane(), 'c0').props.onPress()
+  assert.match(flat(await s.band()), /▣ older/)
+  assert.doesNotMatch(flat(await s.pane()), /Plans of this folder/, 'the list shuts once one is picked')
+  await button(await s.pane(), 'stop').props.onPress()
+  assert.equal(await s.band(), null)
+  await button(await s.pane(), 'start').props.onPress()
+  assert.match(flat(await s.band()), /▣ s/, 'tracking again picks the newest plan')
+})
+
+test('a complete plan is let go at the next prompt and not picked again', async () => {
+  const disk = makeFs({ [PLANS + '/one.md']: 'Work in D:\\work\\app.\n- [ ] Ship it\n', [CWD + '/src/x.js']: '' })
+  const s = await boot(disk)
+  await s.start()
+  await s.call('mcp__ccd_turn__update_plan', list('Ship it'))
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
+  assert.match(flat(await s.band()), /1\/1\n· plan complete/)
+  assert.equal(await s.batch(), undefined)
+  await s.prompt('next thing')
+  assert.equal(await s.band(), null)
+  assert.equal(await s.start('clear'), undefined)
+  assert.equal(await s.band(), null)
+})
+
+test('a tick made by hand in the plan file shows on the band; band: off draws none', async () => {
+  const disk = makeFs({ [CWD + '/docs/plans/p.md']: '- [ ] a\n- [ ] b\n' })
+  const s = await boot(disk)
+  await s.start()
+  assert.match(flat(await s.band()), /0\/2/)
+  await disk.fs.write(CWD + '/docs/plans/p.md', '- [x] a\n- [ ] b\n')
+  await s.call('Edit', { file_path: CWD + '/docs/plans/p.md' })
+  assert.match(flat(await s.band()), /1\/2/)
+  await disk.fs.write(CWD + '/docs/plans/p.md', '- [x] a\n- [x] b\n')
+  await s.turnEnd()
+  assert.match(flat(await s.band()), /2\/2/, 'a turn end reads the file again')
+
+  const off = await boot(makeFs({ [CWD + '/docs/plans/p.md']: '- [ ] a\n' }), { options: { band: 'off' } })
+  await off.start()
+  assert.equal(await off.band(), null)
+  assert.doesNotMatch(flat(await off.pane()), /hide band|show band/)
+})
+
+test('a new plan and a cleared chat start with no unmatched steps; a reload keeps them', async () => {
+  const state = new Map()
+  const disk = makeFs({ [PLANS + '/s.md']: SMALL, [CWD + '/docs/plans/n.md']: '- [ ] z\n', [CWD + '/src/x.js']: '' })
+  const s = await boot(disk, { state })
+  await s.start()
+  await s.call('mcp__ccd_turn__update_plan', list('Fix the lint'))
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
+  assert.match(flat(await s.pane()), /· Fix the lint/)
+  const again = await boot(disk, { state })
+  assert.match(flat(await again.pane()), /· Fix the lint/)
+  await again.call('Write', { file_path: CWD + '/docs/plans/n.md' })
+  assert.doesNotMatch(flat(await again.pane()), /Fix the lint/)
+  assert.match(flat(await again.pane()), /Plan Keeper {2}0\/1/)
 })
 
 let failed = 0
