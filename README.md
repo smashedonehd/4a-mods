@@ -8,6 +8,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | [Toggles](#toggles) | `/toggles` | Switches plugins, skills and MCP servers on and off from one pane, shows what each costs in context, and saves the set as a profile |
 | [Prompt Translate](#prompt-translate) | `/translate` | Translates the draft in the prompt box into English with one button, without sending it |
 | [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
+| [Connector Trim](#connector-trim) | `/connector-trim` | Shortens big MCP (connector) results before Claude reads them: code trims first, Haiku condenses what is still big for the task, and the full result is saved to a file |
 
 ## Requirements
 
@@ -25,13 +26,14 @@ claude plugin install cache-keeper@4a-mods
 claude plugin install plugin-toggles@4a-mods
 claude plugin install plan-keeper@4a-mods
 claude plugin install prompt-translate@4a-mods
+claude plugin install connector-trim@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
 
-**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update cache-keeper@4a-mods` (and `plugin-toggles@4a-mods`), then open a new chat.
+**Update:** run `claude plugin marketplace update 4a-mods`, then `claude plugin update <mod>@4a-mods` for each mod you have (`cache-keeper`, `plugin-toggles`, `plan-keeper`, `prompt-translate`, `connector-trim`), then open a new chat.
 
-**Remove:** `claude plugin uninstall cache-keeper@4a-mods` (or `plugin-toggles@4a-mods`).
+**Remove:** `claude plugin uninstall <mod>@4a-mods`, for example `claude plugin uninstall connector-trim@4a-mods`.
 
 ## Cache Keeper
 
@@ -76,9 +78,20 @@ A plan is written once and then left. Ticking its checkboxes is Claude's job, an
 - **Ticks** come at the Desktop app's wrap-up, at a turn's end, before a `/clear`, and after a `gh pr merge` that succeeds (not `--auto`, which only queues it). A step that is completed on the task list (the Desktop app's task list, `TodoWrite`, or `TaskCreate` and `TaskUpdate`; a subagent's own list does not count) ticks the item with the same text, ignoring case, spacing, `**bold**`, `` `code` `` and a closing period. A step named like a task's heading (`### Task 2: Matcher`, by its whole text or by `Matcher`) ticks every item under it; other headings tick nothing. A step that matches two items, or none, ticks nothing, so a plan with `Step 1: Write the failing test` in every task is never ticked by that step. The wrap-up checks the running step off, unless it stops on a question. Each completed step is held against a plan once: an item you untick by hand stays unticked, and steps finished before a plan became active tick nothing in it. Only `[ ]` turns into `[x]`: nothing else in the file moves, and a file with nothing to tick is not written.
 - **A fresh or cleared chat** gets a note with the plan's open items (one by one when there are up to 8, else one row per heading with its open count) and a toast. The note asks Claude to name task-list steps after the plan's items or task headings, so they tick.
 
+## Connector Trim
+
+MCP connectors (Google Ads, Search Console, GA4 and the like) often answer with tens of thousands of tokens, most of them fields nobody reads, and every later request in the chat reads them again. Connector Trim shortens a big connector result before Claude reads it. The tool always runs once, as it would without the mod; only its result changes.
+
+- **Code first:** a result over 16,000 characters is trimmed without a model. Empty values, base64 data and API bookkeeping fields (`etag` and the like) go, text values over 1,000 characters are cut with a marker, JSON written inside a text field is unpacked, and a field with one value in every record is written once. A field whose name appears in your request is never dropped. Paging and count fields (`page`, `per_page`, `total`, `next_page_token`, `has_more`, ...) are copied into the note's header exactly as the server wrote them.
+- **Haiku second:** when the trimmed result is still over 8,000 characters, Haiku condenses it for the task: your last real request (short approvals such as "jo", "ok" or "pokračuj" are skipped), what Claude said before the call, and the call itself. It copies ids, names, numbers, dates and URLs exactly, writes one line per record, computes nothing, and ends by naming what it left out. If Haiku fails, times out, or its note is not shorter, Claude gets the trimmed result.
+- **The full result is saved** in `~/.claude/mods-data/connector-trim/results/`. The note Claude reads starts with a `[Connector Trim]` header: the size before and after, what was left out, the paging fields, the saved file's path, and a line telling Claude to use the note and open the file only for a field the note does not have. Obvious secrets (API keys, bearer tokens, private keys, `password=` values) are redacted before the result is saved and before Haiku sees it.
+- **Left whole:** results under 16,000 characters, errors, results with images, and browser and desktop-control tools where the exact content matters (Claude in Chrome, the built-in browser, camofox, computer use, screenshots, page reads). Subagents' connector calls are shortened too.
+- **`/connector-trim`** shows whether it is on and this chat's totals. `/connector-trim off` and `on` switch it, kept across chats; `/connector-trim full` lets the next big result in this chat through whole, once.
+- **Settings** (`/config`, or Configure in `/plugin`): both thresholds, the never-trim list and an only-trim list (servers or tools, `*` as a wildcard), the helper model, and how long saved results are kept: 7 days and 200 MB by default. A mod can't delete files, so a cleared result is written over with a one-line note.
+
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Connector Trim keeps full connector results in `~/.claude/mods-data/connector-trim/results/` (7 days, 200 MB at most), its errors in `~/.claude/mods-logs/connector-trim.log`, and one line per shortened result in `~/.claude/mods-logs/savings.jsonl`; it sends a result to Haiku through Claude Code's own client only when trimming by code is not enough. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
