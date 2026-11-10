@@ -37,13 +37,14 @@ let tasks = []
 let used = new Set()
 // Completed steps that named no item of the plan, or more than one
 let unmatched = []
-// What the person chose for this chat: the band hidden, tracking stopped, and
-// when the plan was last ticked
-let ui = { hidden: false, off: false, tickedAt: 0 }
-// Not kept: the plan as last read (planView), the task list's state the closing
-// note last went out for, the plans offered by "switch plan", the band option
+// What the person chose for this chat: the band hidden, tracking stopped; when
+// the plan was last ticked, and the finished task list the closing note last
+// went out for
+let ui = { hidden: false, off: false, tickedAt: 0, noted: '' }
+// Not kept: the plan as last read (planView; false once the file could not be
+// read, so a draw does not read it again), the plans offered by "switch plan",
+// the band option
 let view = null
-let noted = ''
 let choices = null
 let bandOn = true
 
@@ -176,7 +177,7 @@ export function openItems(text) {
 
 const slash = (p) => String(p || '').replace(/\\/g, '/')
 const key = (p) => slash(p).replace(/\/+$/, '').toLowerCase()
-const join = (dir, name) => slash(dir).replace(/\/+$/, '') + '/' + name
+const join = (dir, name) => slash(dir).replace(/\/+$/, '') + '/' + slash(name)
 const basename = (p) => slash(p).split('/').pop()
 const isAbs = (p) => /^([A-Za-z]:)?[\\/]/.test(p)
 const NAME_CHAR = /[\p{L}\p{N}_-]/u
@@ -297,13 +298,13 @@ async function setPlan($, path, why) {
     await saveUsed($)
     unmatched = []
     await saveUnmatched($)
-    noted = ''
   }
   plan = { path: slash(path), why }
   await savePlan($)
-  // A plan written or named is wanted: tracking stopped by hand starts again
-  if (ui.off) {
-    ui = { ...ui, off: false }
+  // A plan written or named is wanted: tracking stopped by hand starts again.
+  // Another plan was never ticked, and its task list has had no note.
+  if (ui.off || !same) {
+    ui = same ? { ...ui, off: false } : { ...ui, off: false, tickedAt: 0, noted: '' }
     await saveUi($)
   }
   choices = null
@@ -317,7 +318,7 @@ async function dropPlan($, off) {
   await savePlan($)
   unmatched = []
   await saveUnmatched($)
-  ui = { ...ui, off }
+  ui = { ...ui, off, tickedAt: 0, noted: '' }
   await saveUi($)
   choices = null
   await refresh($)
@@ -325,8 +326,17 @@ async function dropPlan($, off) {
 
 // Reads the plan again for the band and the pane, and has them drawn
 async function refresh($, text) {
+  await load($, text)
+  redraw($)
+}
+
+// The plan as the band and the pane draw it; false when its file cannot be read
+async function load($, text) {
   const t = !plan ? null : text !== undefined ? text : await readOr($, plan.path)
-  view = t === null ? null : planView(t)
+  view = !plan ? null : t === null ? false : planView(t)
+}
+
+function redraw($) {
   try {
     $.ui.invalidate('ui.render')
   } catch {
@@ -348,10 +358,13 @@ async function forgetTasks($) {
   tasks = []
   used = new Set()
   unmatched = []
-  noted = ''
   await saveTasks($)
   await saveUsed($)
   await saveUnmatched($)
+  if (ui.noted) {
+    ui = { ...ui, noted: '' }
+    await saveUi($)
+  }
 }
 
 function ready($) {
@@ -382,7 +395,7 @@ async function init($) {
   if (Array.isArray(t)) tasks = t
   if (Array.isArray(u)) used = new Set(u)
   if (Array.isArray(m)) unmatched = m.map(String)
-  if (v && typeof v === 'object') ui = { hidden: !!v.hidden, off: !!v.off, tickedAt: Number(v.tickedAt) || 0 }
+  if (v && typeof v === 'object') ui = { hidden: !!v.hidden, off: !!v.off, tickedAt: Number(v.tickedAt) || 0, noted: String(v.noted || '') }
 }
 
 // ---- the task list and the ticks
@@ -458,8 +471,8 @@ async function tick($) {
   await saveUsed($)
   const out = tickPlan(text, steps)
   if (out.missed.length) {
-    const have = new Set(unmatched.map(norm))
-    unmatched = [...unmatched, ...out.missed.filter((s) => !have.has(norm(s)))].slice(-UNMATCHED_MAX)
+    // Each step comes here once (`used`), so none is listed twice
+    unmatched = [...unmatched, ...out.missed].slice(-UNMATCHED_MAX)
     await saveUnmatched($)
   }
   if (!out.count) return refresh($, text)
@@ -481,17 +494,19 @@ async function tick($) {
 const listDone = () => tasks.length > 0 && tasks.every((x) => x.status === 'completed')
 const stuck = () => !!plan && !!view && view.open > 0 && listDone()
 
-// The note Claude gets once per such state, with the results of the tool
-// batch that ended the list, or null
+// The note Claude gets once per finished task list (the plan and the steps it
+// completed: ticking an item afterwards brings no second note), with the
+// results of the tool batch that ended the list, or null
 async function closingNote($) {
   await ready($)
   if (!plan || !listDone()) return null
   await tick($)
-  if (!view) await refresh($)
+  if (!view) await load($)
   if (!stuck()) return null
-  const sign = `${key(plan.path)}|${view.open}|${tasks.length}`
-  if (noted === sign) return null
-  noted = sign
+  const sign = key(plan.path) + '|' + completed().map(norm).sort().join('|')
+  if (ui.noted === sign) return null
+  ui = { ...ui, noted: sign }
+  await saveUi($)
   const text = await readOr($, plan.path)
   const o = text !== null && openItems(text)
   if (!o) return null
@@ -585,7 +600,11 @@ function drawPane($, e) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const rows = []
   const line = (props, text) => rows.push(Text({ key: 'r' + rows.length, wrap: 'truncate-end', ...props, children: [text] }))
-  if (!plan || !view) {
+  if (plan && !view) {
+    line({ bold: true }, 'Plan Keeper')
+    line({ color: 'yellow' }, 'The plan file cannot be read (moved or deleted):')
+    line({ dimColor: true }, plan.path)
+  } else if (!plan) {
     line({ bold: true }, 'Plan Keeper')
     line({ dimColor: true }, ui.off ? 'Tracking is stopped for this chat.' : 'No plan is active in this chat.')
     line({ dimColor: true }, 'A plan becomes active when this session writes one into a plans folder, when you name one in a prompt, or with /plan-keeper <path>.')
@@ -641,7 +660,7 @@ async function setHidden($, hidden) {
 async function toggleChoices($) {
   const here = plan ? key(plan.path) : ''
   choices = choices ? null : (await folderPlans($, 8)).filter((c) => key(c.path) !== here)
-  $.ui.invalidate('ui.render')
+  redraw($)
 }
 
 // Tracking goes on: with this folder's newest plan, if it has one
@@ -671,7 +690,8 @@ async function command($, args) {
     return 'Plan Keeper stopped tracking a plan in this chat. /plan-keeper on, or a plan named in a prompt, starts it again.'
   }
   if (word === 'on') {
-    await trackAgain($)
+    // A plan already tracked stays: on only starts what off stopped
+    if (!plan) await trackAgain($)
     await setHidden($, false)
     return plan ? `Plan Keeper tracks ${plan.path}.` : 'Plan Keeper is on. No plan of this folder has open items: name one with /plan-keeper <path>.'
   }
@@ -714,7 +734,8 @@ export function register(on, options) {
     try {
       await ready($)
       if (!bandOn || ui.hidden || !plan || (e.props && e.props.hasSurvey)) return below
-      if (!view) await refresh($)
+      // Read here without asking for another draw: this is one
+      if (view === null) await load($)
       if (!view || !view.total) return below
       const mine = drawBand($, e)
       return below ? $.ui.resolve(e).Box({ flexDirection: 'column', children: [mine, below] }) : mine
@@ -725,9 +746,13 @@ export function register(on, options) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
-    await ready($)
-    if (plan && !view) await refresh($)
-    return drawPane($, e)
+    try {
+      await ready($)
+      if (plan && view === null) await load($)
+      return drawPane($, e)
+    } catch {
+      return next(e)
+    }
   })
 
   // The task list ended with plan items open: Claude reads that once, with the
@@ -764,6 +789,10 @@ export function register(on, options) {
       plan = null
       await savePlan($)
       await forgetTasks($)
+      ui = { hidden: false, off: false, tickedAt: 0, noted: '' }
+      await saveUi($)
+      choices = null
+      await refresh($)
     } catch {
       // kept as it was
     }
@@ -776,8 +805,13 @@ export function register(on, options) {
     if (kind === 'composer' || kind === 'bridge') {
       try {
         await ready($)
-        // A plan with nothing open is finished: let go, and not picked again
-        if (plan && view && view.total && !view.open) await dropPlan($, false)
+        // A plan with nothing open is finished: let go, and not picked again.
+        // Read now, since an item unticked by hand since the last turn keeps
+        // it; a slash command is no next prompt.
+        if (plan && !/^\s*\//.test(String(e.text || ''))) {
+          await load($)
+          if (view && view.total && !view.open) await dropPlan($, false)
+        }
         await noteNamed($, e.text)
       } catch {
         // the plan stays as it was
