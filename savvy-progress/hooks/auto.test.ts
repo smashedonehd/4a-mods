@@ -193,3 +193,19 @@ test('auto band: the desktop draws it as one Svg with the count in its alt', asy
   expect(svg.length).toBe(1)
   expect(String(svg[0]?.props.alt)).toBe('Subagents: Tasks 1/2, 50%')
 })
+
+// The press dismisses the wave that runs now, not the one the row was drawn for
+test('auto band: a dismiss pressed on an old drawing hides the wave that began since', async ($, on) => {
+  const clock = session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await finish($, 'a')
+  await finish($, 'b')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+  clock.now += 1000
+  await spawn($, 'c')
+  await spawn($, 'd')
+  await ui.press({ key: 'savvy-dismiss' } as never)
+  await ui.unmount()
+  expect(await shown($)).toBeNull()
+})
