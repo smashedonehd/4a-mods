@@ -45,20 +45,17 @@ export class Deadline {
 type KeyInfo = { paging: boolean; group: boolean }
 
 // What one result shares across its passes: the deadline, each distinct key
-// classified once, and which keys the task names.
+// classified once, and which keys each set of task words names.
 export class Run {
   readonly keys = new Map<string, KeyInfo>()
-  readonly named = new Map<string, boolean>()
-  namedFor: ReadonlySet<string> | undefined
+  readonly named = new WeakMap<ReadonlySet<string>, Map<string, boolean>>()
   constructor(readonly deadline?: Deadline) {}
 }
 
 let current: Run | undefined
 const tick = () => current?.deadline?.check()
-// `f` inside `run`: an entry point given no run joins the one in progress, or
-// starts its own.
+// `f` inside `run`, or inside a run of its own.
 function inRun<T>(run: Run | undefined, f: () => T): T {
-  if (current && (!run || run === current)) return f()
   const outer = current
   current = run ?? new Run()
   try {
@@ -360,7 +357,8 @@ export function wordsOf(text: string) {
 // (`costMicros`, `cost_micros`: `cost`). A key past MAX_KEY is never named.
 export function isNamed(key: string, words: ReadonlySet<string>) {
   if (key.length > MAX_KEY || words.size === 0) return false
-  const book = current?.namedFor === words ? current.named : undefined
+  let book = current?.named.get(words)
+  if (current && !book) current.named.set(words, (book = new Map()))
   const hit = book?.get(key)
   if (hit !== undefined) return hit
   const parts = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^\p{L}\p{N}]+/u)
@@ -445,22 +443,12 @@ const isEmpty = (v: unknown) =>
 const isRecord = (v: unknown) => isObject(v) && Object.keys(v).length >= 2
 const isUnpackable = (v: unknown) => isRecord(v) || (Array.isArray(v) && v.length > 0 && v.every(isRecord))
 
-// JSON written inside a text value, read to the same depth as the result:
-// deeper, it stays text.
-function innerJson(v: string) {
-  try {
-    return parseJson(v, tick, MAX_DEPTH)
-  } catch (e) {
-    if (e instanceof TooDeep) return undefined
-    throw e
-  }
-}
-
 // A text value: JSON in it is shown as JSON; inside a list, base64 is left out
 // and a long value is cut. Beside the records, a value is kept whole up to
 // HEAD_CAP characters, so a cursor or link under an unknown name survives.
 function trimString(v: string, words: ReadonlySet<string>, t: TrimStats, inList: boolean): unknown {
-  const inner = v.length > 1 && looksLikeJson(v) ? innerJson(v) : undefined
+  // Read to the same depth as the result: deeper, it stays text.
+  const inner = v.length > 1 && looksLikeJson(v) ? parseJson(v, tick, MAX_DEPTH) : undefined
   if (isUnpackable(inner)) {
     t.unpacked += 1
     return trimValue(inner, words, t, false, inList)
@@ -497,8 +485,9 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
     const named = isNamed(k, words)
     const info = infoOf(k)
     const paging = group || (info.paging && isPagingShaped(x))
-    // Paging, cursors and single values the task names travel as returned.
-    if ((paging || named) && isScalar(x)) {
+    // Single values the task names travel as returned (paging ones do in
+    // the paging group below).
+    if (named && isScalar(x)) {
       put(out, k, x)
       continue
     }
@@ -618,10 +607,6 @@ export function trimBlocks(
   opts: { run?: Run; maxChars?: number } = {},
 ): Trimmed | string {
   return inRun(opts.run, () => {
-    if (current) {
-      current.named.clear()
-      current.namedFor = words
-    }
     if (!data.every(d => isObject(d) || Array.isArray(d))) return NOT_RECORDS
     try {
       const t = newStats()

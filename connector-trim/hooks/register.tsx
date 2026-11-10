@@ -224,7 +224,7 @@ const NO_TASK: Task = { user: '', assistant: '' }
 async function taskFor($: EngineInterface, e: Call): Promise<Task> {
   try {
     const rows = e.agentId ? await $.session.messages({ agentId: e.agentId }) : await $.session.messages()
-    return Array.isArray(rows) ? taskOf(rows as readonly Row[], e.tool_use_id) : NO_TASK
+    return taskOf(rows as readonly Row[], e.tool_use_id)
   } catch {
     return NO_TASK
   }

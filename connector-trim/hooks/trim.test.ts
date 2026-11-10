@@ -415,6 +415,8 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'scroll_id', 'LastEvaluatedKey', 'ExclusiveStartKey', 'starting_after', 'ending_before', 'has_more', 'hasNextPage',
     'IsTruncated', 'total', 'totalCount', 'page', 'per_page', 'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after',
     'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2', 'next_offset', 'nextoffset',
+    // An acronym run before a word; `previous` read before `prev`.
+    'NEXTLink', 'previoustoken',
     // Paging by name whatever else is in it: kept as returned when paging-shaped.
     'next_auth_token', 'cursor_secret', 'last_token',
     // The longest key read as a name: 200 characters.
@@ -719,4 +721,23 @@ test('the JSON reader: no bare decimal point, no raw control character, CR is a 
   const proto = parseJson('{"__proto__":{"a":1},"b":2}') as Record<string, unknown>
   expect(Object.keys(proto)).toEqual(['__proto__', 'b'])
   expect(ser(proto)).toBe('{"__proto__":{"a":1},"b":2}')
+})
+
+test('JSON records nested past 200 levels inside a text value stay text', () => {
+  const deep = '{"b":1,"a":'.repeat(300) + '1' + '}'.repeat(300)
+  expect(trimmed(JSON.stringify({ a: deep, n: 1 })).value.a).toBe(deep)
+})
+
+test('blocks share one length limit', () => {
+  const block = JSON.stringify({ a: 'x'.repeat(100) })
+  const one = layout(JSON.parse(block)).length
+  expect(typeof trimJsonWhy([block], none, { maxChars: one + 10 })).toBe('object')
+  expect(trimJsonWhy([block, block], none, { maxChars: one + 10 })).toBe(NOT_SHORTER)
+})
+
+test('a run keeps which keys each set of words names apart', () => {
+  const run = new Run()
+  const rows = '[{"cost":1,"clicks":2,"etag":"x"}]'
+  expect(JSON.parse(trimJson([rows], new Set(['etag']), { run })!.text)).toEqual([{ cost: 1, clicks: 2, etag: 'x' }])
+  expect(JSON.parse(trimJson([rows], new Set(['cost']), { run })!.text)).toEqual([{ cost: 1, clicks: 2 }])
 })

@@ -181,11 +181,11 @@ test('the allow-list limits trimming to the tools it names', { options: { only: 
   expect(String(await call($, {}, 'mcp__ga4__run_report'))).toMatch(/^\[Connector Trim\]/)
 })
 
-test('a result with an image reaches Claude untouched', async ($, on) => {
+test('a result with an image reaches Claude untouched, and nothing is logged', async ($, on) => {
   const withImage = [{ type: 'text', text: BIG }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }]
   const { files } = world(on, { result: withImage })
   expect(await call($)).toEqual(withImage)
-  expect(saved(files)).toEqual([])
+  expect([saved(files), files[LOG]]).toEqual([[], undefined])
 })
 
 test('an error result reaches Claude untouched', async ($, on) => {
@@ -200,6 +200,7 @@ test('an error result reaches Claude untouched', async ($, on) => {
 test('/connector-trim off lets results through until on', async ($, on) => {
   world(on, { result: block(SMALL) })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect((await command($, '')).text).toContain('use_helper is off: no model is ever called')
   expect((await command($, 'off')).text).toMatch(/off/)
   expect(await call($)).toEqual(block(SMALL))
   await command($, 'on')
@@ -495,12 +496,13 @@ test('a note no shorter than the result sends the result', { options: { min_char
   expect(files[LOG]).toMatch(/passed whole, the trimmed JSON would be longer than the result/)
 })
 
-test('options below their minimum are raised to it', { options: { max_saved_mb: 5, min_chars: 500 } }, async ($, on) => {
+test('options below their minimum are raised to it', { options: { max_saved_mb: 5, min_chars: 500, trim_target_chars: 100, keep_days: 0, use_helper: true } }, async ($, on) => {
   world(on, { result: block(SMALL) })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const { text } = await command($, '')
   expect(text).toContain('over 1,000 characters')
-  expect(text).toContain('10 MB at most')
+  expect(text).toContain('still over 500 characters after trimming')
+  expect(text).toContain('for 1 days, 10 MB at most')
 })
 
 test('the header names the configured helper model', { options: { helper_model: 'sonnet', use_helper: true } }, async ($, on) => {
@@ -760,6 +762,7 @@ test('the default never-trim list names servers, not bare tool names', async ($,
 test('a never-trim list given as one comma-separated string', { options: { skip: 'ads, ga4' } }, async ($, on) => {
   world(on, { result: block(SMALL) })
   expect(await call($)).toEqual(block(SMALL))
+  expect(await call($, {}, 'mcp__ga4__x')).toEqual(block(SMALL))
   expect(String(await call($, {}, 'mcp__gsc__x')).slice(0, 16)).toBe('[Connector Trim]')
 })
 
