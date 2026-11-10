@@ -34,7 +34,7 @@ export type AgentRun = {
   costUsd: number
   steps: number
   round: number
-  /** The wave of subagents this run started in: the time its first run started. */
+  /** The wave of subagents this run started in: an id that only grows, as a rule the time the wave's first run started. */
   wave?: number
   /** When the run started or last finished a model request. */
   seenAt?: number

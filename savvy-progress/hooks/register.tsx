@@ -1267,7 +1267,9 @@ export const register: Register = (on, options) => {
         role="dismiss"
         onPress={async () => {
           await update($, flow, () => null)
-          await update($, dismissed, () => list[list.length - 1]?.wave ?? 0)
+          // Read at the press: a wave may have begun since this row was drawn
+          const runs = await read($, agents)
+          await update($, dismissed, () => runs[runs.length - 1]?.wave ?? 0)
         }}
       />
     )

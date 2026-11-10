@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 // The band without a reported plan: it draws itself from the subagents of the
@@ -17,7 +17,16 @@ function session(on: On) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('agent.spawn', (_$, e) => ({ model: 'claude-opus-5-5', agentId: (e as { tool_use_id: string }).tool_use_id }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
+  on('turn.step', async function* () {
+    return { turnId: 'turn', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
+  })
   return clock
+}
+
+// One model request of a subagent
+const step = async ($: Engine, id: string) => {
+  const stream = ($.turn.step as (e: unknown) => AsyncIterable<unknown>)({ turnId: 'turn', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: id })
+  for await (const _ of stream) void _
 }
 
 const spawn = ($: Engine, id: string, subagentType = 'general-purpose') =>
@@ -106,15 +115,41 @@ test('auto band: a run silent for 30 minutes no longer holds its wave open', asy
   await spawn($, 'a')
   await spawn($, 'b')
   await finish($, 'a')
-  clock.now += 29 * 60_000
+  // One second short of 30 minutes: b still holds the wave
+  clock.now = T0 + 30 * 60_000 - 1000
   await spawn($, 'c')
   expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
   await finish($, 'c')
-  clock.now += 31 * 60_000
+  // 30 minutes to the millisecond since b was last seen
+  clock.now = T0 + 30 * 60_000
   await spawn($, 'd')
   expect(await shown($)).toBeNull()
   await spawn($, 'e')
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+})
+
+// The silence counts from the run's last model request, not from its start
+test('auto band: a run that keeps working holds its wave past 30 minutes', async ($, on) => {
+  const clock = session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await finish($, 'a')
+  clock.now = T0 + 25 * 60_000
+  await step($, 'b')
+  clock.now = T0 + 40 * 60_000
+  await spawn($, 'c')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
+})
+
+// Two waves within one millisecond are still two waves
+test('auto band: a new wave on an unmoved clock does not join the finished one', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await finish($, 'a')
+  await finish($, 'b')
+  await spawn($, 'c')
+  expect(await shown($)).toBeNull()
 })
 
 test('auto band: dismissing a reported plan clears it', async ($, on) => {
