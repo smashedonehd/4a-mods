@@ -211,6 +211,20 @@ let watchTimer: Timer | null = null
 const watchQueue = new Set<string>()
 const WATCH_MS = 150
 let noDock = false
+// The pane an open at session start could not place: the desktop app attaches
+// its surface after session.start, and an open before that is refused with
+// no-surface. session.attach opens it again.
+let waitingPane: { title: string; focus: boolean } | null = null
+
+async function openPane($: EngineInterface, title: string, focus = false): Promise<void> {
+  try {
+    await $.ui.open(focus ? { id: PANE, title, focus: true } : { id: PANE, title })
+    waitingPane = null
+  } catch (err) {
+    if (!/no-surface/.test(String((err as Error)?.message ?? err))) throw err
+    waitingPane = { title, focus }
+  }
+}
 let home = ''
 let platform: Promise<'linux' | 'darwin' | 'win32'> | null = null
 let dirty: { root: string; files: Record<string, Change> } = { root: '', files: {} }
@@ -590,8 +604,7 @@ async function reset($: EngineInterface, root: string, focus = false, ready?: Pr
   const listed = loadDirs($, [root])
   const repo = detectRepo($)
   await ready
-  if (focus) await $.ui.open({ id: PANE, title, focus: true })
-  else if (!noDock) await $.ui.open({ id: PANE, title })
+  if (focus || !noDock) await openPane($, title, focus)
   await listed
   await repo
   await refreshGit($)
@@ -3268,7 +3281,7 @@ export const register: Register = (on, options) => {
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
       await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
       const cwd = await cwdOf($)
-      const shown = !t.root || t.nodes.length === 0 || (follow && t.root !== cwd) ? reset($, cwd, false, ready) : ready.then(() => (noDock ? undefined : $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })))
+      const shown = !t.root || t.nodes.length === 0 || (follow && t.root !== cwd) ? reset($, cwd, false, ready) : ready.then(() => (noDock ? undefined : openPane($, `Files: ${t.root.split('/').pop() || t.root}`)))
       await ready
       ageTick?.cancel()
       ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
@@ -3520,6 +3533,13 @@ export const register: Register = (on, options) => {
     if (e.element === 'treemap' && (await mapKey($, data.key))) return {}
     await navigate($, data.key, Boolean(data.shift), e.surface)
     return {}
+  })
+
+  on('session.attach', async ($, e, next) => {
+    const result = await next(e)
+    const pane = waitingPane
+    if (pane && (pane.focus || !noDock)) await openPane($, pane.title, pane.focus).catch(() => undefined)
+    return result
   })
 
   on('session.end', async ($, e, next) => {
