@@ -1,15 +1,15 @@
 // Connector Trim's pure helpers: reading a tool result, redacting secrets,
 // the deterministic trim, the task words, the note's header and retention.
 // Nothing here calls the engine, so the tests reach every rule directly.
+import { Exact, isObject, isScalar, parseJson, put, readJson, ser } from './json.ts'
+import type { Json } from './json.ts'
 
+export { isObject, parseJson, ser }
 export const NL = '\n'
 export const STRING_CAP = 1000
 // Approximate tokens, the way the savings ledger counts them.
 export const tokens = (chars: number) => Math.ceil(chars / 4)
 export const fmt = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-
-type Json = Record<string, unknown>
-export const isObject = (v: unknown): v is Json => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 // ---------- the result's text ----------
 
@@ -34,37 +34,115 @@ export function textsOf(result: unknown): { texts: string[] } | { skip: string }
   return { texts }
 }
 
+// ---------- keys ----------
+
+const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// Keys whose value is a credential. `token` alone is one; a paging token
+// (`next_token`, `sync_token`) is not.
+const SECRET_KEYS = new Set(
+  (
+    'password passwd passphrase secret clientsecret apikey xapikey apitoken accesstoken refreshtoken idtoken ' +
+    'authtoken bearertoken sessiontoken token authorization privatekey secretkey secretaccesskey'
+  ).split(' '),
+)
+export const isSecretKey = (key: string) => SECRET_KEYS.has(norm(key))
+
+// Keys of paging and counts: kept as returned and listed in the header.
+const PAGING = new Set(
+  (
+    'page pages pagenumber pagesize perpage pagetoken nextpage hasnextpage haspreviouspage hasmore more total ' +
+    'totalcount totalresults totalrows totalsize count rowcount offset limit cursor next previous after before ' +
+    'startindex itemsperpage truncated scrollid'
+  ).split(' '),
+)
+export const isPaging = (key: string) =>
+  PAGING.has(norm(key).replace(/[0-9]/g, '')) || (/token|cursor|continuation/.test(norm(key)) && !isSecretKey(key))
+// Every field of a GraphQL `pageInfo` is paging.
+const isPagingGroup = (key: string) => norm(key) === 'pageinfo'
+
 // ---------- secrets ----------
 
 // Conservative: formats with a fixed shape, and a value written beside a key
 // that names a secret. A miss is possible; a false hit costs one value.
-const SECRETS: [RegExp, string][] = [
+const PATTERNS: [RegExp, string][] = [
   [/-{5}BEGIN [A-Z ]*PRIVATE KEY-{5}[\s\S]*?-{5}END [A-Z ]*PRIVATE KEY-{5}/g, 'private key'],
-  [/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, 'bearer token'],
-  [/\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/g, 'API key'],
+  [/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/g, 'bearer token'],
+  // `sk-ant-…` and `sk-proj-…`, or one unbroken run with a digit in it: a
+  // slug such as `sk-suche-zachody` is no key.
+  [/\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|\bsk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
   [/\bgh[opsu]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}/g, 'GitHub token'],
   [/\bAKIA[0-9A-Z]{16}\b/g, 'AWS key'],
   [/\bAIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
   [/\bya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
   [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
 ]
-// `password=x`, `"api_key": "x"`: the key and its quotes stay, the value goes.
-const PAIR =
-  /(["']?)\b(password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key)\1(\s*[:=]\s*)(["']?)([^"'\s,;&}\][][^"'\s,;&}\]]{3,})/gi
+const KEYS =
+  'password|passwd|passphrase|client[_-]?secret|secret[_-]?access[_-]?key|secret|x-api-key|api[_-]?key|api[_-]?token|' +
+  'access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|bearer[_-]?token|session[_-]?token|token|private[_-]?key'
+// `Authorization: Basic …`: the scheme and credentials go.
+const AUTH = /\b(Authorization["']?\s*[:=]\s*["']?)(?:Basic|Digest|Token)\s+[^\s"',;]+/gi
+// `password="…"` or `password: '…'`: the value to its closing quote.
+const QUOTED = new RegExp(`\\b(${KEYS})(["']?\\s*[:=]\\s*)(["'])(?!\\[REDACTED)([^"'\\n]+)\\3`, 'gi')
+// `password=…` unquoted. Not after a colon: "password: reset it" is prose.
+const EQUALS = new RegExp(`\\b(${KEYS})(\\s*=\\s*)(?!\\[REDACTED)([^\\s"',;&<>]{4,})`, 'gi')
 
-export function redact(text: string) {
+// Secrets in plain text, by pattern.
+export function redactText(text: string) {
   const found: string[] = []
   let out = text
-  for (const [re, kind] of SECRETS)
+  for (const [re, kind] of PATTERNS)
     out = out.replace(re, () => {
       found.push(kind)
       return `[REDACTED ${kind}]`
     })
-  out = out.replace(PAIR, (_m, q: string, key: string, sep: string, vq: string) => {
+  out = out.replace(AUTH, (_m, head: string) => {
+    found.push('authorization value')
+    return `${head}[REDACTED]`
+  })
+  out = out.replace(QUOTED, (_m, key: string, sep: string, q: string) => {
     found.push(`${key.toLowerCase()} value`)
-    return `${q}${key}${q}${sep}${vq}[REDACTED]`
+    return `${key}${sep}${q}[REDACTED]${q}`
+  })
+  out = out.replace(EQUALS, (_m, key: string, sep: string) => {
+    found.push(`${key.toLowerCase()} value`)
+    return `${key}${sep}[REDACTED]`
   })
   return { text: out, found }
+}
+
+// Secrets in a JSON text, which stays valid JSON: a string under a secret key
+// is replaced whole, other strings are redacted by pattern, and JSON written
+// inside a string is redacted the same way. Numbers, booleans and null under
+// a secret key are left as they are. Undefined when the text is not JSON.
+export function redactJson(text: string): { text: string; found: string[] } | undefined {
+  const edits: [number, number, string][] = []
+  const found: string[] = []
+  try {
+    readJson(text, (start, end, value, key) => {
+      let out: string | undefined
+      if (key !== undefined && isSecretKey(key) && value !== '' && !value.startsWith('[REDACTED')) {
+        out = '[REDACTED]'
+        found.push(`${norm(key)} value`)
+      } else {
+        const r = (/^\s*[[{]/.test(value) && redactJson(value)) || redactText(value)
+        if (r.text !== value) {
+          out = r.text
+          found.push(...r.found)
+        }
+      }
+      if (out !== undefined) edits.push([start, end, JSON.stringify(out)])
+    })
+  } catch {
+    return undefined
+  }
+  let out = ''
+  let at = 0
+  for (const [start, end, s] of edits) {
+    out += text.slice(at, start) + s
+    at = end
+  }
+  return { text: out + text.slice(at), found }
 }
 
 // "2 bearer token, 1 password value"
@@ -82,13 +160,11 @@ export const fold = (s: string) => s.normalize('NFD').replace(/\p{M}+/gu, '').to
 // Short approvals that carry no task of their own, Czech and English.
 const FILLER = new Set(
   (
-    'jo ja jj ano ok okay oki okej dobre dobra dobry super jasne fajn paráda parada pokracuj pokracujte ' +
+    'jo ja jj ano ok okay oki okej dobre dobra dobry super jasne fajn parada pokracuj pokracujte ' +
     'pokracovat dal dalsi delej makej jed jedem hotovo souhlas souhlasim schvaleno tak teda ted tedy no a i ' +
-    'prosim diky dik dekuji dekuju yes yep yeah sure ok continue proceed go next thanks thx fine good great ' +
+    'prosim diky dik dekuji dekuju yes yep yeah sure continue proceed go next thanks thx fine good great ' +
     'nice cool perfect done approved lgtm do it that this please'
-  )
-    .split(' ')
-    .map(fold),
+  ).split(' '),
 )
 
 export function isFiller(text: string) {
@@ -143,23 +219,18 @@ export function isNamed(key: string, words: ReadonlySet<string>) {
 
 // ---------- paging ----------
 
-const PAGING =
-  /^(page|pages|pagenumber|pagesize|perpage|pagetoken|nextpagetoken|prevpagetoken|nextpage|hasnextpage|hasmore|more|total|totalcount|totalresults|totalrows|totalsize|count|rowcount|offset|limit|cursor|nextcursor|next|previous|startindex|itemsperpage|truncated)$/
-export const isPaging = (key: string) => PAGING.test(key.toLowerCase().replace(/[^a-z]/g, ''))
-const isScalar = (v: unknown) => v === null || ['string', 'number', 'boolean'].includes(typeof v)
-
-// The paging and count fields outside the records, copied as the server wrote
-// them: `page=2, total=1234, next_page_token="abc"`.
-export function pagingOf(data: unknown) {
+// The paging and count fields outside the records, values as returned:
+// `page=2, total=1234, data.pageInfo.endCursor="abc"`.
+export function pagingOf(data: unknown, prefix = '') {
   const out: string[] = []
-  const walk = (v: unknown, path: string, depth: number) => {
-    if (!isObject(v) || depth > 2) return
+  const walk = (v: unknown, path: string, group: boolean) => {
+    if (!isObject(v)) return
     for (const [k, x] of Object.entries(v)) {
-      if (isPaging(k) && isScalar(x)) out.push(`${path}${k}=${JSON.stringify(x)}`)
-      else walk(x, `${path}${k}.`, depth + 1)
+      if ((group || isPaging(k)) && isScalar(x)) out.push(`${prefix}${path}${k}=${ser(x)}`)
+      else walk(x, `${path}${k}.`, isPagingGroup(k))
     }
   }
-  walk(data, '', 0)
+  walk(data, '', false)
   return out.join(', ')
 }
 
@@ -169,6 +240,7 @@ export type TrimStats = {
   empty: Set<string>
   blobs: Set<string>
   noise: Set<string>
+  blobItems: number
   cut: number
   hoisted: number
   unpacked: number
@@ -177,12 +249,14 @@ export const newStats = (): TrimStats => ({
   empty: new Set(),
   blobs: new Set(),
   noise: new Set(),
+  blobItems: 0,
   cut: 0,
   hoisted: 0,
   unpacked: 0,
 })
 
 export const SAME = 'same in every record'
+export const BLOB_MARK = '[base64 data: in the saved file]'
 const BLOB = /^(?:data:[\w/+.-]+;base64,)?[A-Za-z0-9+/_-]{200,}={0,2}$/
 const DROPPED = Symbol('base64')
 // Bookkeeping fields APIs add to every object.
@@ -195,55 +269,51 @@ const isEmpty = (v: unknown) =>
   (Array.isArray(v) && v.length === 0) ||
   (isObject(v) && Object.keys(v).length === 0)
 
-export function parseJson(text: string): unknown {
-  const s = text.trim()
-  if (!/^[[{]/.test(s)) return undefined
-  try {
-    return JSON.parse(s)
-  } catch {
-    return undefined
+function trimString(v: string, words: ReadonlySet<string>, t: TrimStats): unknown {
+  const inner = v.length > 1 ? parseJson(v) : undefined
+  // JSON written inside a text value is shown as JSON, when it holds anything.
+  if (inner !== undefined && !isEmpty(inner)) {
+    t.unpacked += 1
+    return trimValue(inner, words, t, false)
   }
+  if (BLOB.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v)) return DROPPED
+  if (v.length > STRING_CAP) {
+    t.cut += 1
+    return `${v.slice(0, STRING_CAP)} …[cut: ${fmt(v.length - STRING_CAP)} more characters in the saved file]`
+  }
+  return v
 }
 
-// One trimmed value. `inRecord` is true below an array: there a paging-like
-// name (`count`) is data, not the response's paging.
-function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, inRecord: boolean): unknown {
-  if (typeof v === 'string') {
-    const inner = v.length > 1 ? parseJson(v) : undefined
-    if (inner !== undefined && typeof inner === 'object') {
-      t.unpacked += 1
-      return trimValue(inner, words, t, inRecord)
-    }
-    if (BLOB.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v)) return DROPPED
-    if (v.length > STRING_CAP) {
-      t.cut += 1
-      return `${v.slice(0, STRING_CAP)} …[cut: ${fmt(v.length - STRING_CAP)} more characters in the saved file]`
-    }
-    return v
-  }
+// One trimmed value. Only an object's fields are ever left out; an array keeps
+// every element in its place, since a row's position is its meaning.
+function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: boolean): unknown {
+  if (typeof v === 'string') return trimString(v, words, t)
   if (Array.isArray(v)) {
-    const items = v.map(x => trimValue(x, words, t, true)).filter(x => x !== DROPPED && !isEmpty(x))
+    const items = v.map(x => {
+      const y = trimValue(x, words, t, false)
+      if (y !== DROPPED) return y
+      t.blobItems += 1
+      return BLOB_MARK
+    })
     return hoist(items, t)
   }
   if (!isObject(v)) return v
   const out: Json = {}
   for (const [k, x] of Object.entries(v)) {
     const named = isNamed(k, words)
-    // Paging and counts travel exactly as written, whatever they hold.
-    if (!inRecord && isPaging(k) && isScalar(x)) {
-      out[k] = x
+    // Paging, cursors and single values the task names travel as returned.
+    if ((group || named || isPaging(k)) && isScalar(x)) {
+      put(out, k, x)
       continue
     }
     if (!named && NOISE.test(k)) {
       t.noise.add(k)
       continue
     }
-    const y = trimValue(x, words, t, inRecord)
-    if (y === DROPPED) {
-      if (named) out[k] = '[base64 data: in the saved file]'
-      else t.blobs.add(k)
-    } else if (isEmpty(y) && !named) t.empty.add(k)
-    else out[k] = y
+    const y = trimValue(x, words, t, isPagingGroup(k))
+    if (y === DROPPED) t.blobs.add(k)
+    else if (isEmpty(y) && !named) t.empty.add(k)
+    else put(out, k, y)
   }
   return out
 }
@@ -253,67 +323,96 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, inRecor
 function hoist(items: unknown[], t: TrimStats): unknown {
   if (items.length < 3 || !items.every(isObject)) return items
   const records = items as Json[]
+  const first = records[0]!
   const same: Json = {}
-  for (const k of Object.keys(records[0]!)) {
-    const s = JSON.stringify(records[0]![k])
-    if (records.every(r => k in r && JSON.stringify(r[k]) === s)) same[k] = records[0]![k]
+  for (const k of Object.keys(first)) {
+    const s = ser(first[k])
+    if (records.every(r => Object.hasOwn(r, k) && ser(r[k]) === s)) put(same, k, first[k])
   }
-  const keys = Object.keys(same)
-  if (keys.length === 0) return items
-  t.hoisted += keys.length
-  return {
-    [SAME]: same,
-    records: records.map(r => Object.fromEntries(Object.entries(r).filter(([k]) => !(k in same)))),
-  }
+  if (Object.keys(same).length === 0) return items
+  t.hoisted += Object.keys(same).length
+  const out: Json = {}
+  put(out, SAME, same)
+  put(
+    out,
+    'records',
+    records.map(r => {
+      const o: Json = {}
+      for (const k of Object.keys(r)) if (!Object.hasOwn(same, k)) put(o, k, r[k])
+      return o
+    }),
+  )
+  return out
 }
 
 // JSON with one record per line: compact, and still valid JSON.
 export function layout(v: unknown, pad = ''): string {
   const flat = (xs: unknown[]) => xs.every(x => !isObject(x) && !Array.isArray(x))
   if (Array.isArray(v)) {
-    if (flat(v)) return JSON.stringify(v)
-    return `[${NL}${v.map(x => `${pad}  ${JSON.stringify(x)}`).join(`,${NL}`)}${NL}${pad}]`
+    if (flat(v)) return ser(v)
+    return `[${NL}${v.map(x => `${pad}  ${ser(x)}`).join(`,${NL}`)}${NL}${pad}]`
   }
   if (isObject(v)) {
     const keys = Object.keys(v)
-    if (flat(Object.values(v))) return JSON.stringify(v)
+    if (flat(Object.values(v))) return ser(v)
     const lines = keys.map(k => `${pad}  ${JSON.stringify(k)}: ${layout(v[k], `${pad}  `)}`)
     return `{${NL}${lines.join(`,${NL}`)}${NL}${pad}}`
   }
-  return JSON.stringify(v) ?? 'null'
+  return ser(v)
 }
 
-// The trimmed text of the result's texts. JSON (also JSON carried inside a
-// text block, or several blocks of it) is trimmed field by field; plain text
-// only loses runs of blank space.
-export function trimTexts(texts: readonly string[], words: ReadonlySet<string>) {
+// JSON blocks trimmed field by field, each block on its own: paging at the
+// top of the second block is still the top. Undefined when a block is no JSON.
+export function trimJson(texts: readonly string[], words: ReadonlySet<string>) {
+  const data = texts.map(parseJson)
+  if (data.some(d => d === undefined)) return undefined
   const t = newStats()
-  const parsed = texts.map(parseJson)
-  if (parsed.every(p => p !== undefined)) {
-    const data = parsed.length === 1 ? parsed[0] : parsed
-    return { data, text: layout(trimValue(data, words, t, false)), stats: t }
-  }
-  const text = texts
+  const many = data.length > 1
+  const text = data
+    .map((d, i) => `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false))}`)
     .join(`${NL}${NL}`)
-    .replace(/[ \t]+$/gm, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, `${NL}${NL}`)
-  return { data: undefined, text, stats: t }
+  const paging = data
+    .map((d, i) => pagingOf(d, many ? `block ${i + 1}: ` : ''))
+    .filter(Boolean)
+    .join(', ')
+  return { text, paging, stats: t }
+}
+
+// Plain text keeps every character but trailing blanks on a line and runs of
+// more than one blank line. Line by line: no regex that can take quadratic time.
+export function trimPlain(texts: readonly string[]) {
+  const out: string[] = []
+  let blank = 0
+  for (const line of texts.join(`${NL}${NL}`).split(NL)) {
+    const kept = line.trimEnd()
+    blank = kept === '' ? blank + 1 : 0
+    if (blank < 2) out.push(kept)
+  }
+  return out.join(NL)
 }
 
 const listed = (s: ReadonlySet<string>) => {
   const a = [...s]
-  return a.slice(0, 15).join(', ') + (a.length > 15 ? `, and ${a.length - 15} more` : '')
+  return a.slice(0, 40).join(', ') + (a.length > 40 ? `, and ${a.length - 40} more names` : '')
 }
 
-// What the trim left out, in words; '' for nothing.
+// What the trim changed, in words; '' for nothing.
 export function leftOut(t: TrimStats) {
   const parts: string[] = []
   if (t.empty.size > 0) parts.push(`empty fields (${listed(t.empty)})`)
-  if (t.blobs.size > 0) parts.push(`base64 data (${listed(t.blobs)})`)
+  if (t.blobs.size > 0) parts.push(`base64 fields (${listed(t.blobs)})`)
+  if (t.blobItems > 0) parts.push(`${t.blobItems} base64 list item${t.blobItems > 1 ? 's' : ''}, each marked in its place`)
   if (t.noise.size > 0) parts.push(`API bookkeeping fields (${listed(t.noise)})`)
-  if (t.cut > 0) parts.push(`the rest of ${t.cut} text value${t.cut > 1 ? 's' : ''} over ${fmt(STRING_CAP)} characters`)
+  if (t.cut > 0) parts.push(`the rest of ${t.cut} text value${t.cut > 1 ? 's' : ''} over ${fmt(STRING_CAP)} characters, marked where cut`)
   return parts.join('; ')
+}
+
+// What the trim moved without leaving anything out.
+export function reshaped(t: TrimStats) {
+  return [
+    ...(t.hoisted > 0 ? [`fields with one value in every record are written once, under "${SAME}"`] : []),
+    ...(t.unpacked > 0 ? [`${t.unpacked} text value${t.unpacked > 1 ? 's' : ''} holding JSON ${t.unpacked > 1 ? 'are' : 'is'} shown as JSON`] : []),
+  ].join('; ')
 }
 
 // Lines of at most `size` characters each, grouped into parts for the helper.
@@ -334,45 +433,54 @@ export function chunks(text: string, size: number) {
   return parts
 }
 
+// Text going into the helper's prompt cannot open or close the prompt's own tags.
+export const neutral = (s: string) => s.replace(/<(\s*\/?\s*(?:data|task|call)\b)/gi, '‹$1')
+
 // ---------- the note ----------
 
 export type Note = {
   tool: string
   before: number
-  how: 'trim' | 'haiku' | 'fallback'
+  how: 'trim' | 'text' | 'helper' | 'fallback'
+  model?: string
   why?: string
   leftOut: string
-  hoisted: boolean
+  reshaped: string
   redacted: readonly string[]
   paging: string
   file: string
   body: string
 }
 
-const HOW = {
-  trim: 'Trimmed by code: nothing below is summarised, only the fields named here were left out.',
-  haiku: 'Condensed by Haiku for this task; its last line names what it left out.',
-  fallback: 'Trimmed by code',
+function howLine(n: Note) {
+  if (n.how === 'trim') return 'Trimmed by code, not summarised: every value below is as the tool returned it, except where a cut is marked.'
+  if (n.how === 'text') return 'Trimmed by code, not summarised: only blanks at line ends and extra blank lines were removed.'
+  if (n.how === 'helper') return `Condensed by ${n.model ?? 'the helper model'} for this task; its last line names what it left out.`
+  return `Trimmed by code, not summarised (${n.why ?? 'the helper model failed'}).`
 }
 
 // The text Claude reads in place of the result: the header, then the body.
 export function note(n: Note) {
   const build = (after: number) =>
     [
-      `[Connector Trim] ${n.tool}: ${fmt(n.before)} → ${fmt(after)} characters (about ${fmt(tokens(n.before))} → ${fmt(tokens(after))} tokens). ${
-        n.how === 'fallback' ? `${HOW.fallback} (${n.why ?? 'the helper model failed'}).` : HOW[n.how]
-      }`,
-      `Left out: ${n.leftOut || 'nothing but blank space'}.${n.hoisted ? ` Fields with one value in every record are written once, under "${SAME}".` : ''}`,
+      `[Connector Trim] ${n.tool}: ${fmt(n.before)} → ${fmt(after)} characters (about ${fmt(tokens(n.before))} → ${fmt(tokens(after))} tokens). ${howLine(n)}`,
+      `Left out by code (all of it is in the saved file): ${n.leftOut || 'nothing'}.${n.reshaped ? ` Also: ${n.reshaped}.` : ''}`,
       ...(n.redacted.length > 0 ? [`Redacted before saving and before any model saw it: ${counted(n.redacted)}.`] : []),
-      ...(n.paging ? [`Paging (copied exactly): ${n.paging}`] : []),
+      ...(n.paging ? [`Paging and counts, values as returned: ${n.paging}`] : []),
       `Full result: ${n.file}`,
-      'Use this note as the tool\'s answer; open the file only for a field this note does not list.',
+      "Use this note as the tool's answer; open the file only for a field this note does not list.",
       '',
       n.body,
     ].join(NL)
-  let text = build(n.body.length)
-  for (let i = 0; i < 2; i++) text = build(text.length)
-  return text
+  // The header states the note's own length, and writing that number can
+  // lengthen the note: settle on a length that states itself.
+  let len = n.body.length
+  for (let i = 0; i < 4; i++) {
+    const next = build(len).length
+    if (next === len) break
+    len = next
+  }
+  return build(len)
 }
 
 // ---------- names and retention ----------
@@ -423,3 +531,4 @@ export function toClear(
   }
   return out
 }
+export { Exact }
