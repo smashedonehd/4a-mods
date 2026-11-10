@@ -569,6 +569,17 @@ test('bookkeeping fields under a paging group are kept', () => {
   expect(trimmed(JSON.stringify({ pageInfo: { etag: [1], n: 2 }, rows: [] })).value.pageInfo).toEqual({ etag: [1], n: 2 })
 })
 
+test('a paging group that trims down to nothing stays as an empty object', () => {
+  const t = trimmed(JSON.stringify({ items: [{ id: 1 }], pageInfo: { etag: 'two words' } }))
+  expect(t.value.pageInfo).toEqual({})
+})
+
+test('an @odata key with a paging name after the prefix is paging', () => {
+  expect(keyClass('@odata.skip')).toBe('paging')
+  expect(keyClass('@odata.total')).toBe('paging')
+  expect(keyClass('@odata.count')).toBe('paging')
+})
+
 test('hoisting compares single values only; a field holding an object or list is never hoisted', () => {
   const rows = [1, 2, 3].map(i => ({ id: i, kind: 'A', nested: { x: 1 }, list: [1] }))
   const t = trimmed(JSON.stringify({ rows }))
