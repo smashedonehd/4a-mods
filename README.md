@@ -96,13 +96,13 @@ By [Kurt Buhler](https://github.com/data-goblin), MIT, copied unchanged from [da
 
 - **Tree pane** (`/filetree`): the chat's folder with git status, the branch, and a column of date, size or line count. The files Claude reads, writes and commits shimmer.
 - **Search, diff and preview**: by name or inside files, a diff of a changed file or folder against `HEAD`, and previews of code, Markdown, images and PDF.
-- **Guards**: files and folders Claude may not edit.
+- **Guards**: files and folders Claude may not edit. They refuse Edit and Write, but for a shell command they only ask, and only when the command names the path.
 - It needs Claude Code 2.1.306 or later.
 - Three defaults change where a chat works or what opens: the pane opens with every chat, and the chat moves with `/cd` when you jump to a folder or when Claude keeps working in another repository. To install with them off: `claude plugin install filetree@4a-mods --config start=off --config jump=tree --config work=off`.
 
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress writes no files of its own; it reads only Claude Code's settings and environment variables. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress writes no files of its own; it reads only Claude Code's settings and environment variables. Filetree keeps its pane state, recent folders and guard list in Claude Code's plugin state and store, writes `keybindings.json` only on `/filetree keys` after you confirm, and makes no network calls; it runs `git`, and on Windows `powershell` to open a file in its default app. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
