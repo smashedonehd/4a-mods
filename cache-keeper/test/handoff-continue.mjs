@@ -1,1642 +1,804 @@
 // Run: node cache-keeper/test/handoff-continue.mjs
-// Drives register.mjs against a fake host with a shared in-memory fs. A
-// "restart" is a second module instance: its module state (H.text, S) is empty.
+// Drives register.mjs against a fake host with a shared in-memory fs, and the
+// handoff pipeline's pure parts (handoff.mjs) directly. A "restart" is a second
+// module instance: its module state is empty.
 import assert from 'node:assert/strict'
+import {
+  normalizePath, commandPaths, rankFiles, gatherFacts, redact, draftText, forkPrompt, cleanReply,
+  missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
+} from '../hooks/handoff.mjs'
 
-const files = new Map() // path -> text, shared by every boot
-const states = new Map() // session id -> what $.state kept: a second boot of an id is a reload
-let T = Date.UTC(2026, 9, 11, 10, 0)
+let passed = 0
+const check = async (name, fn) => {
+  try {
+    await fn()
+    passed++
+  } catch (err) {
+    console.error('FAIL: ' + name)
+    throw err
+  }
+}
+
 const HOUR = 3600e3
+const DAY = 24 * HOUR
+const files = new Map() // path -> text, shared by every boot
+const mtimes = new Map() // path -> mtimeMs
+const store = new Map() // $.store, shared by every boot
+const states = new Map() // session id -> what $.state kept
+let T = Date.UTC(2026, 10, 10, 10, 0)
 let instance = 0
-let failWrites = [] // substrings of paths whose write rejects
-let failNow = false // $.clock.now rejects
-// Lets what the module scheduled with queueMicrotask, or a test with its timers, run
-const settle = () => new Promise((r) => setTimeout(r, 20))
+const settle = () => new Promise((r) => setTimeout(r, 25))
 
-// timers: an array to collect $.clock.after callbacks in, run by the test, so
-// it can start a turn before the scheduled clear; absent, they run at once
-// onRun: called with each command the module runs, before it is logged
-// select: the host has Select, as the desktop app and the terminal do
-// skill: the session has the /session-handoff skill
-// proc: the host's $.process (runs commands, as the CLI does); absent otherwise
-async function boot(cwd, id, { working = false, answer = 'Send anyway', timers, onRun, select = false, skill = true, proc } = {}) {
+// A complete handoff, as the fork writes it
+const GOOD = HEADINGS.map((h) => (h === '# Session Handoff' ? '# Session Handoff: fix the parser' : `${h}\n- none`)).join('\n\n') + '\n\nThe parser fix is half done. ' + 'Detail. '.repeat(30)
+
+// A short conversation: Windows paths, a link, a PR, a background shell, skills
+const MESSAGES = [
+  { role: 'user', text: 'Fix the parser in D:\\proj\\src\\parse.mjs please', toolUses: [] },
+  {
+    role: 'assistant',
+    text: 'Looking. The PR is https://github.com/acme/tool/pull/12.',
+    toolUses: [
+      { tool: 'Read', input: { file_path: 'D:\\proj\\src\\parse.mjs' } },
+      { tool: 'Edit', input: { file_path: 'D:/proj/src/parse.mjs' } },
+      { tool: 'Read', input: { file_path: 'D:\\proj\\gone.txt' } },
+      { tool: 'Bash', input: { command: 'node "D:\\proj\\test dir\\t.mjs"', run_in_background: true, description: 'parser tests' }, text: 'Command running in background with ID: b42' },
+      { tool: 'Skill', input: { skill: 'caveman:caveman' } },
+      { tool: 'mcp__github__get_pr', input: { pr: 12 } },
+    ],
+  },
+  { role: 'user', text: 'Also look at acme/tool#7', toolUses: [] },
+]
+const DISK = ['D:/proj/src/parse.mjs', 'D:/proj/test dir/t.mjs']
+
+// opts: working (a turn runs), fork (prompt -> result or promise), messages
+// (array, or a function that throws), select (desktop surface), proc
+// ($.process), timers (collects $.clock.after), options (userConfig),
+// configDeny, home, skill (the session has /session-handoff)
+async function boot(cwd, id, opts = {}) {
+  const { working = false, select = false, timers, proc, options, configDeny = false, home = '/home', skill = true } = opts
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
-  register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }))
+  register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }), options || {})
   const log = []
-  const sent = [] // full texts of the prompts submitted
-  const submits = [] // what $.prompt.submit got
-  const marks = { invalidated: 0 } // $.ui.invalidate calls
+  const sent = []
+  const prompts = [] // fork prompts
+  const configSets = []
+  const ran = [] // $.process.run argv
+  const buttons = new Map()
+  const selects = new Map()
+  const forkFn = opts.fork || (async () => ({ isAnswered: true, text: GOOD, usage: {} }))
+  const msgs = opts.messages === undefined ? MESSAGES : opts.messages
   const $ = {
-    clock: { now: async () => { if (failNow) throw new Error('clock gone'); return T }, after: (_ms, f) => void (timers ? timers.push(f) : queueMicrotask(f)), every: () => {} },
-    fs: {
-      exists: async (p) => files.has(p),
-      read: async (p) => files.get(p),
-      write: async (p, t) => {
-        if (failWrites.some((x) => p.includes(x))) throw new Error('EACCES')
-        files.delete(p) // most recently written last
-        files.set(p, t)
-      },
-      list: async () => [],
+    clock: {
+      now: async () => T,
+      after: (_ms, f) => (timers ? timers.push(f) : queueMicrotask(f), { cancel() {} }),
+      every: () => ({ cancel() {} }),
     },
-    env: { get: async (k) => (k === 'USERPROFILE' ? '/home' : '') },
-    session: { id: async () => id, cwd: async () => cwd, model: async () => 'claude-opus-5-5', usage: async () => ({}) },
+    fs: {
+      exists: async (p) => files.has(p) || [...files.keys()].some((k) => k.startsWith(p + '/')),
+      read: async (p) => {
+        if (!files.has(p)) throw new Error('ENOENT ' + p)
+        return files.get(p)
+      },
+      write: async (p, t) => {
+        files.delete(p)
+        files.set(p, t)
+        mtimes.set(p, T)
+      },
+      stat: async (p) => {
+        if (files.has(p) || DISK.includes(p)) return { kind: 'file', size: 1, mtimeMs: mtimes.get(p) || T, isLink: false }
+        throw new Error('ENOENT ' + p)
+      },
+      list: async (dir) => [...files.keys()].filter((k) => k.startsWith(dir + '/') && !k.slice(dir.length + 1).includes('/')).map((k) => ({ name: k.slice(dir.length + 1), kind: 'file', size: 1, mtimeMs: mtimes.get(k) || T, isLink: false })),
+    },
+    env: { get: async (k) => (k === 'USERPROFILE' ? home : '') },
+    session: {
+      id: async () => id,
+      cwd: async () => cwd,
+      model: async () => 'claude-opus-5-5',
+      usage: async () => ({}),
+      messages: async () => (typeof msgs === 'function' ? msgs() : msgs),
+      surface: async () => 'terminal',
+    },
+    model: { fork: async (r) => (prompts.push(r.prompt), forkFn(r.prompt)) },
     state: { get: async () => ({ value: states.get(id) }), set: async (_ref, v) => void states.set(id, v) },
-    store: { get: async () => null, set: async () => {}, delete: async () => {}, list: async () => [] },
-    command: { register: async () => {}, list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }], run: async (c) => void (onRun && (await onRun(c)), log.push('run:' + c.command)) },
+    store: {
+      get: async (k) => store.get(k) ?? null,
+      set: async (k, v) => void store.set(k, v),
+      delete: async (k) => void store.delete(k),
+      keys: async () => [...store.keys()],
+    },
+    config: {
+      list: async () => [{ key: 'cache-keeper.handoffOfferAt', value: '300k' }],
+      set: async (a) => (configSets.push(a), configDeny ? { deny: 'no' } : { value: a.value }),
+    },
+    agent: { list: async () => [] },
+    command: {
+      register: async () => {},
+      list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }],
+      run: async (c) => void log.push('run:' + c.command),
+    },
     turn: { abort: async (x) => void log.push('abort:' + x.turnId) },
-    prompt: { submit: async (p) => void (log.push('submit:' + p.text.slice(0, 20)), sent.push(p.text), submits.push(p)), fill: async () => ({}) },
+    prompt: { submit: async (p) => void (log.push('submit'), sent.push(p)), fill: async () => ({}) },
+    process: proc ? { run: async (argv, init) => (ran.push(argv), proc(argv, init)) } : { run: async (argv) => (ran.push(argv), { exitCode: 1, stdout: '', stderr: 'not a git repository' }) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
-      invalidate: () => void marks.invalidated++,
-      ask: async (q) => (log.push('ask:' + q.slice(0, 14)), answer),
-      log: () => {},
-      resolve: (e) => ({ Box: (p) => p, Text: (p) => p, Svg: e.surface === 'terminal' ? undefined : (p) => (svgs.push(p), p), Button: (p) => (buttons.set(p.key, p), p), ...(select && { Select: (p) => (selects.set(p.key, p), p) }) }),
+      invalidate: () => {},
+      ask: async () => 'Send anyway',
+      resolve: (e) => ({
+        Box: (p) => p,
+        Text: (p) => p,
+        Svg: e.surface === 'terminal' ? undefined : (p) => p,
+        Button: (p) => (buttons.set(p.key, p), p),
+        ...(select && { Select: (p) => (selects.set(p.key, p), p) }),
+      }),
     },
-    ...(proc && { process: proc }),
   }
-  const buttons = new Map() // key -> props of the band's buttons at the last render
-  const selects = new Map() // key -> props of the band's Selects at the last render
-  const svgs = [] // props of every Svg drawn
-  // below: what next(e) resolves to, as the hooks under the module answered
   const fire = async (name, e, pred = () => true, below = {}) => {
     let out
     for (const h of hs.filter((x) => x.name === name && pred(x))) out = await h.fn($, e, async () => below)
     return out
   }
   await fire('session.start', {})
+  await settle()
   if (working) await fire('turn.start', { turnId: 'busy' })
-  // Fires the command hooks that handle `command`: the filtered hook that lists
-  // it (/handoff) or, for the skill, the unfiltered ones
   const run = async (command, args = '') => {
     log.length = 0
-    const named = (h) => h.filter && [].concat(h.filter.command).includes(command)
-    const r = await fire('command.run', { command, args }, (h) => named(h) || (!h.filter && command.includes('session-handoff')))
+    const named = (h) => h.filter && h.filter.command && [].concat(h.filter.command).includes(command)
+    const r = await fire('command.run', { command, args }, (h) => named(h) || (!h.filter && h.name === 'command.run'), { passed: true })
     await settle()
-    return { log: [...log], text: r && r.text }
+    return { log: [...log], text: r && r.text, passed: !!(r && r.passed) }
   }
-  // One main-loop response of a turn, as the engine streamed it; read null: no usage
-  const step = async (turnId = 't0', answer = '', stopReason = 'end_turn', agentId, read = 1000) => {
+  // One main-loop response; read: the cache read tokens (the context size)
+  const step = async (turnId = 't0', read = 1000) => {
     for (const h of hs.filter((x) => x.name === 'turn.step')) {
-      const it = h.fn($, { turnId, agentId }, function* () {
-        return { turnId, answer, stopReason, usage: read === null ? undefined : { input_tokens: 10, cache_read_input_tokens: read } }
+      const it = h.fn($, { turnId }, function* () {
+        return { turnId, stopReason: 'end_turn', usage: read === null ? undefined : { input_tokens: 10, cache_read_input_tokens: read } }
       })
       while (!(await it.next()).done);
     }
   }
-  // One main-loop request first (the band stays hidden until there was one),
-  // then renders the band and presses one of its buttons
-  // columns: the window's width, for the desktop band's narrow labels
-  const render = async (surface = 'terminal', columns) => {
+  const render = async (surface = 'terminal') => {
     buttons.clear()
     selects.clear()
-    return fire('ui.render', { component: 'AbovePrompt', surface, ...(columns && { viewport: { columns } }) }, (h) => !h.filter || h.filter.component === 'AbovePrompt')
+    return fire('ui.render', { component: 'AbovePrompt', surface, props: {} }, (h) => h.filter && h.filter.component === 'AbovePrompt')
   }
+  // A card button, pressed as the engine raises it: the ui.press hook for its key
   const press = async (key, surface = 'terminal') => {
-    await step()
-    await render(surface)
-    assert.ok(buttons.has(key), `no ${key} button on the band`)
-    await buttons.get(key).onPress()
-    await settle()
-  }
-  // Ends a turn with a fresh log and lets what it scheduled run
-  const end = async (e) => {
     log.length = 0
-    await fire('turn.complete', e)
+    const r = await fire('ui.press', { element: key, plugin: 'cache-keeper', component: 'AbovePrompt', requestId: '', surface }, (h) => h.filter && h.filter.element === key)
+    assert.ok(r && r.element === key, `no ui.press hook answered ${key}`)
     await settle()
   }
-  return { fire, run, step, press, render, end, log, sent, submits, buttons, selects, svgs, marks }
+  const end = async (e = {}) => {
+    log.length = 0
+    await fire('turn.complete', { reason: 'answer', ...e })
+    await settle()
+  }
+  return { fire, run, step, render, press, end, log, sent, prompts, configSets, ran, buttons, selects }
 }
 
-// The keys of the elements in a drawn tree: what the band shows, not every
-// element the module built
-const drawn = (t, out = new Set()) => {
+// Every string a drawn tree shows, joined
+const texts = (t) => {
+  if (t == null || t === false) return ''
+  if (typeof t === 'string' || typeof t === 'number') return String(t)
+  if (Array.isArray(t)) return t.map(texts).join(' ')
+  if (typeof t === 'object') return [t.label || '', texts(t.children)].join(' ')
+  return ''
+}
+// The keys of a drawn tree
+const keys = (t, out = new Set()) => {
   if (t && typeof t === 'object') {
     if (t.key) out.add(t.key)
-    for (const c of [].concat(t.children || [])) drawn(c, out)
+    for (const c of [].concat(t.children || [])) keys(c, out)
   }
   return out
 }
-
-// A session on the desktop app's band (a surface with Select), past its first step
-async function desk(cwd, id, opts) {
-  const s = await boot(cwd, id, { ...opts, select: true })
-  await s.step()
-  return s
-}
-
-const body = '# Session Handoff\n' + 'x'.repeat(300)
-const SKILL = 'cache-keeper:session-handoff'
-const cleared = (res) => res.log.includes('run:clear')
 const latestKey = () => [...files.keys()].filter((k) => k.includes('/latest-')).pop()
-// The text of the latest handoff written last, if session `id` wrote it
-const latestText = (id) => {
-  const f = JSON.parse(files.get(latestKey()))
-  return String(f.fid || '').startsWith(id + ':') ? f.text : undefined
+const handoffs = () => [...files.keys()].filter((k) => k.includes('/handoffs/') && k.endsWith('.md') && !k.endsWith('.draft.md'))
+const drafts = () => [...files.keys()].filter((k) => k.endsWith('.draft.md'))
+const cleared = (log) => log.includes('run:clear')
+
+// ======================= pure parts (handoff.mjs) =======================
+
+await check('Windows paths: back and forward slashes, quoted with spaces, Git Bash, one key per file', () => {
+  const ranked = rankFiles(
+    [
+      {
+        toolUses: [
+          { tool: 'Read', input: { file_path: 'd:\\Work\\app\\main.ts' } },
+          { tool: 'Edit', input: { file_path: 'D:/Work/app/main.ts' } },
+          { tool: 'Bash', input: { command: 'cat "C:\\Program Files\\App\\conf.ini" && ls /d/Work/app/b.txt D:/Work/c.md; cmd /c dir > /dev/null; curl https://x.dev/a/b' } },
+          { tool: 'PowerShell', input: { command: "Get-Content 'C:\\Users\\n\\notes one.txt'" } },
+          { tool: 'NotebookEdit', input: { notebook_path: 'C:\\Users\\n\\nb.ipynb' } },
+          { tool: 'Grep', input: { path: 'D:\\Work' } },
+        ],
+      },
+    ],
+    { windows: true, home: 'C:\\Users\\n' },
+  )
+  const paths = ranked.map((r) => r.path)
+  assert.equal(paths[0], 'D:/Work/app/main.ts')
+  assert.equal(ranked[0].uses, 5)
+  assert.ok(ranked[0].edited)
+  for (const p of ['C:/Program Files/App/conf.ini', 'D:/Work/app/b.txt', 'D:/Work/c.md', 'C:/Users/n/notes one.txt', 'C:/Users/n/nb.ipynb']) assert.ok(paths.includes(p), p)
+  assert.equal(paths.filter((p) => /main\.ts$/i.test(p)).length, 1)
+  assert.ok(!paths.some((p) => /dev\/null|x\.dev|^\/c$/.test(p)), paths.join(' | '))
+  assert.ok(!paths.includes('D:/Work'), 'Grep is not one of the counted tools')
+  assert.equal(normalizePath('C:\\x\\a.md:12', { windows: true }), 'C:/x/a.md', 'a :line suffix names the same file')
+  const read = rankFiles([{ toolUses: [{ tool: 'Read', input: { file_path: 'D:\\Work\\only-read.md' } }] }], { windows: true })
+  assert.ok(!read[0].edited, 'a file only read is not changed')
+})
+
+await check('POSIX paths: ~ is home, Git Bash spelling stays POSIX off Windows, one segment is no path', () => {
+  const r = rankFiles([{ toolUses: [{ tool: 'Bash', input: { command: 'vim ~/notes/a.md /srv/app/x.py /tmp /d/x/y.txt' } }, { tool: 'Write', input: { file_path: '/srv/app/x.py' } }] }], { windows: false, home: '/home/u' }).map((x) => x.path)
+  assert.deepEqual(r, ['/srv/app/x.py', '/home/u/notes/a.md', '/d/x/y.txt'])
+  assert.equal(normalizePath('/c', {}), '')
+  assert.equal(normalizePath('C:\\a\\b.txt.', {}), 'C:/a/b.txt')
+  assert.equal(normalizePath('/c/Users/x/f.md', { windows: true }), 'C:/Users/x/f.md')
+  assert.equal(normalizePath('C:/Users/n/.claude/projects/D--x/abc.jsonl', {}), '')
+  assert.deepEqual(commandPaths('type "D:\\a b\\c.txt" D:\\d\\e.txt'), ['D:\\a b\\c.txt', 'D:\\d\\e.txt'])
+})
+
+await check('facts: skills, MCP servers, links, PRs, background shells (stopped ones marked)', () => {
+  const f = gatherFacts([
+    { role: 'user', text: '<command-name>/handoff</command-name> see owner/repo#4', toolUses: [] },
+    ...MESSAGES,
+    { role: 'assistant', text: '', toolUses: [{ tool: 'KillShell', input: { shell_id: 'b42' } }, { tool: 'WebFetch', input: { url: 'https://docs.example.org/page.' } }] },
+  ])
+  assert.deepEqual(f.skills, ['/handoff', '/caveman:caveman'])
+  assert.deepEqual(f.servers, ['github'])
+  assert.ok(f.links.includes('https://github.com/acme/tool/pull/12'))
+  assert.ok(f.links.includes('https://docs.example.org/page'))
+  assert.deepEqual(f.prs.sort(), ['acme/tool#12', 'acme/tool#7', 'owner/repo#4'])
+  assert.deepEqual(f.shells, [{ id: 'b42', what: 'parser tests', killed: true }])
+  assert.equal(f.tools, 8)
+})
+
+// Built from parts, so the repository's own secret scan does not flag the test
+const FAKE = {
+  gh: 'gh' + 'p_' + 'A1b2C3d4'.repeat(5),
+  sk: 'sk-' + 'ant-' + 'x'.repeat(40),
+  aws: 'AKIA' + 'ABCDEFGHIJKLMNOP',
+  goog: 'AIza' + 'b'.repeat(35),
+  jwt: 'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(12) + '.' + 'c'.repeat(12),
+  slack: 'xox' + 'b-' + '1234567890-abc',
+  pem: '-----BEGIN RSA ' + 'PRIVATE KEY-----\nMIIabc\n-----END RSA ' + 'PRIVATE KEY-----',
 }
-// The dated handoff file of session `id`
-const dated = (id) => files.get([...files.keys()].find((k) => k.endsWith(`-${id}.md`)))
 
-// 'keep': the skill clears on its own unless told to keep the chat
-async function makeHandoff(cwd, id, opts) {
-  const s = await boot(cwd, id, opts)
-  await s.run(SKILL, 'keep')
-  s.log.length = 0
-  await s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 't1' })
-  // a normal save does not warn
-  assert.ok(!s.log.some((l) => l.includes('will not survive a restart')))
-  return s
-}
+await check('redaction: keys, tokens, bearer, assignments and key blocks go; plain words stay', () => {
+  const input = `a ${FAKE.gh} b ${FAKE.sk} c ${FAKE.aws} d ${FAKE.goog} e ${FAKE.jwt} f ${FAKE.slack}\n${FAKE.pem}\nAuthorization: Bearer abcdefghijklmnop1234\nMY_API_TOKEN=hunter2hunter2\npassword: "s3cretpass"\nThe offer opens at tokens: 300k; token budget is fine; password: none`
+  const r = redact(input)
+  for (const v of Object.values(FAKE)) assert.ok(!r.text.includes(v), v.slice(0, 8))
+  assert.ok(!r.text.includes('abcdefghijklmnop1234'))
+  assert.ok(!r.text.includes('hunter2hunter2'))
+  assert.ok(!r.text.includes('s3cretpass'))
+  assert.equal(r.count, 10)
+  assert.ok(r.text.includes('tokens: 300k; token budget is fine; password: none'))
+  assert.equal(redact('nothing here').count, 0)
+})
 
-// restart: continue clears and sends the handoff, the skill does not run again
-await makeHandoff('/w/proj', 'a1')
-T += HOUR
-let s = await boot('/w/proj', 'b1')
-let res = await s.run(SKILL, 'continue')
-assert.match(res.text, /Clearing/)
-assert.deepEqual(res.log.map((l) => l.split(':')[0]), ['run', 'submit'])
-assert.equal(res.log[0], 'run:clear')
+await check('redaction: URL passwords, Stripe, GitLab, npm, Basic auth, env passwords; prose stays', () => {
+  const stripe = 'sk_' + 'live_' + 'a1B2c3D4e5F6g7H8i9'
+  const glpat = 'glp' + 'at-' + 'abcdefghij0123456789'
+  const npm = 'np' + 'm_' + 'A'.repeat(36)
+  const input = `clone https://bob:hunter2pass@git.example.com/x.git\n${stripe} ${glpat} ${npm}\nAuthorization: Basic Ym9iOmh1bnRlcjJwYXNz\nPGPASSWORD=pgsecret99 DB_PASS="dbsecret77"\nBasic authentication works; BYPASS=true; mytoken=abcdefghijk`
+  const r = redact(input)
+  for (const v of ['hunter2pass', stripe, glpat, npm, 'Ym9iOmh1bnRlcjJwYXNz', 'pgsecret99', 'dbsecret77']) assert.ok(!r.text.includes(v), v.slice(0, 8))
+  assert.ok(r.text.includes('https://bob:<secret removed>@git.example.com/x.git'))
+  assert.equal(r.count, 7)
+  assert.ok(r.text.includes('Basic authentication works; BYPASS=true; mytoken=abcdefghijk'), 'a name inside a longer word is no assignment')
+  const where = 'secret: C:\\Users\\n\\.secrets\\gh.txt\ntoken: ~/.config/gh/hosts.yml\nAPI_KEY=$ENV_VAR_NAME\naccessKey: config.awsAccessKey\npassword: %DB_PASSWORD%'
+  assert.deepEqual(redact(where), { text: where, count: 0 }, 'where a secret lives stays')
+  const bcrypt = '$2b' + '$10$abcdefghijklmnopqrstuv'
+  for (const v of ['api_key=`abcdef123456`', 'password: ' + bcrypt, 'password=$ecretPass123', 'secret=/aB3xYz9+qwertyuiop==', 'secret=/aB3x/Yz9qwertyuiop==', 'password: Summer.Holiday2024', 'PGPASSWORD=hunter2hunter2']) {
+    assert.equal(redact(v).count, 1, v)
+  }
+  assert.equal(redact('PGPASSWORD=$PGPASS_FILE api_key=`$API_KEY`').count, 0, 'env references stay on both rules')
+})
 
-// used once: the next restart finds it consumed
-res = await (await boot('/w/proj', 'b2')).run(SKILL, 'go')
-assert.match(res.text, /already used/)
-assert.ok(!cleared(res))
+await check('the fork reply: fences and preamble off; missing sections named', () => {
+  assert.equal(cleanReply('```markdown\n' + GOOD + '\n```'), GOOD.trim())
+  assert.ok(cleanReply('Here it is:\n\n' + GOOD).startsWith('# Session Handoff: fix'))
+  assert.equal(cleanReply('Here it is:\n\n```markdown\n' + GOOD + '\n```'), GOOD.trim(), 'no unpaired closing fence')
+  const withCode = GOOD.trim() + '\n\n```\nnode t.mjs\n```'
+  assert.equal(cleanReply(withCode), withCode, 'a code block of its own stays whole')
+  assert.deepEqual(missingSections(GOOD), [])
+  assert.deepEqual(missingSections(GOOD.replace('## Running state', '## Running')), ['## Running state'])
+  assert.deepEqual(missingSections('# Session Handoffs'), HEADINGS.slice(1))
+  assert.equal(wordCount(' a  b\nc '), 3)
+})
 
-// the /handoff command (filtered hook) behaves the same
-await makeHandoff('/w/cmd', 'c1')
-res = await (await boot('/w/cmd', 'c2')).run('handoff', 'continue')
-assert.match(res.text, /Clearing/)
-assert.ok(cleared(res))
-res = await (await boot('/w/cmd', 'c3')).run('handoff', 'continue')
-assert.ok(!cleared(res))
-res = await (await boot('/w/cmd', 'c4')).run('handoff', '')
-assert.match(res.text, /Running the session handoff/)
-assert.ok(!cleared(res))
+await check('draft and fork prompt carry the facts; the prompt asks for English and the labels', () => {
+  const g = { cwd: 'D:/proj', messages: 3, rawMessages: MESSAGES, files: [{ path: 'D:/proj/src/parse.mjs', uses: 5, edited: true }], facts: gatherFacts(MESSAGES) }
+  const d = draftText(g)
+  assert.deepEqual(missingSections(d), [])
+  assert.ok(d.includes('`D:/proj/src/parse.mjs`: changed'))
+  assert.ok(d.includes('b42: parser tests'))
+  assert.ok(d.includes('User asked: Fix the parser in D:\\proj\\src\\parse.mjs please'))
+  const p = forkPrompt(g)
+  for (const s of ['Do not call any tool', 'in English', 'User asked', 'My own idea (confirm with the user before acting)', 'Deferred by rule', 'Open (needs the user', 'Pick up here', 'No git state from memory', 'D:/proj/src/parse.mjs (changed)', 'acme/tool#12', 'Absolute paths']) assert.ok(p.includes(s), s)
+})
 
-// same instance: the in-memory handoff wins even if the file vanished
-s = await makeHandoff('/w/inst', 'd1')
-files.delete(latestKey())
-res = await s.run(SKILL, 'continue')
-assert.ok(cleared(res))
+await check('transcript file: rows with tool uses and their results, junk lines skipped', () => {
+  assert.equal(transcriptPath('C:\\Users\\n', 'D:\\Claude Work\\x', 'abc'), 'C:/Users/n/.claude/projects/D--Claude-Work-x/abc.jsonl')
+  const jsonl = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello D:\\a\\b.txt' } }),
+    'not json',
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'u1', name: 'Bash', input: { command: 'sleep 9', run_in_background: true } }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u1', content: [{ type: 'text', text: 'Command running in background with ID: s9' }] }] } }),
+    JSON.stringify({ type: 'summary', summary: 'x' }),
+  ].join('\n')
+  const rows = parseTranscript(jsonl)
+  assert.equal(rows.length, 3)
+  assert.equal(rows[1].toolUses[0].text, 'Command running in background with ID: s9')
+  assert.deepEqual(gatherFacts(rows).shells.map((s) => s.id), ['s9'])
+})
 
-// older than the window
-await makeHandoff('/w/old', 'e1')
-T += 13 * HOUR
-res = await (await boot('/w/old', 'e2')).run(SKILL, 'continue')
-assert.match(res.text, /older than 12 hours/)
-assert.ok(!cleared(res))
+await check('pruning: older than 30 days goes, the newest of an open chat stays, other files stay', () => {
+  const now = Date.UTC(2026, 10, 10)
+  const old = now - (PRUNE_DAYS + 1) * DAY
+  const entries = [
+    { name: '2026-09-01-1000-p-aaaaaaaa.md', kind: 'file', mtimeMs: old },
+    { name: '2026-09-02-1000-p-aaaaaaaa.md', kind: 'file', mtimeMs: old + HOUR }, // newest of open chat aaaaaaaa
+    { name: '2026-09-01-1000-p-bbbbbbbb.md', kind: 'file', mtimeMs: old }, // chat closed
+    { name: '2026-09-01-1000-p-bbbbbbbb.draft.md', kind: 'file', mtimeMs: old },
+    { name: '2026-11-09-1000-p-bbbbbbbb.md', kind: 'file', mtimeMs: now - DAY },
+    { name: 'latest-1a2b.json', kind: 'file', mtimeMs: old },
+    { name: 'sub', kind: 'directory', mtimeMs: old },
+    { name: 'notes.md', kind: 'file', mtimeMs: old }, // not a handoff name
+    { name: '2026-09-01-1000-p-cccccccc.md', kind: 'other', mtimeMs: 0 }, // a link
+  ]
+  assert.deepEqual(pruneNames(entries, now, ['aaaaaaaa-1111-2222']).sort(), ['2026-09-01-1000-p-aaaaaaaa.md', '2026-09-01-1000-p-bbbbbbbb.draft.md', '2026-09-01-1000-p-bbbbbbbb.md'])
+})
 
-// a long-lived chat that hydrated a handoff sees it expire (now is refreshed)
-await makeHandoff('/w/aging', 'f1')
-s = await boot('/w/aging', 'f2')
-T += 13 * HOUR
-res = await s.run(SKILL, 'continue')
-assert.match(res.text, /older than 12 hours/)
-assert.ok(!cleared(res))
+await check('threshold choices', () => {
+  assert.equal(offerTokens('300k'), 300000)
+  assert.equal(offerTokens('off'), 0)
+  assert.equal(offerTokens('310k'), null)
+  assert.equal(offerTokens(undefined), null)
+})
 
-// two chats hydrate the same entry; the second finds it used
-await makeHandoff('/w/pair', 'q1')
-const qa = await boot('/w/pair', 'q2')
-const qb = await boot('/w/pair', 'q3')
-assert.ok(cleared(await qa.run('handoff', 'continue')))
-res = await qb.run('handoff', 'continue')
-assert.match(res.text, /already used/)
-assert.ok(!cleared(res))
+// ======================= the pipeline =======================
 
-// two continue requests at once send the handoff once
-s = await makeHandoff('/w/dbl', 'r1')
-s.log.length = 0
-await Promise.all([s.run(SKILL, 'continue'), s.run(SKILL, 'continue')])
-await new Promise((r) => setTimeout(r, 40))
-assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
-assert.equal(s.log.filter((l) => l.startsWith('submit:')).length, 1)
+await check('/handoff keep: five steps, draft first, the handoff saved and checked, the card ready, no clear', async () => {
+  let draftsAtFork = -1
+  const s = await boot('/w/keep', 'keep0001-0000', { fork: async () => ((draftsAtFork = drafts().filter((d) => d.includes('keep0001')).length), { isAnswered: true, text: GOOD }) })
+  const r = await s.run('handoff', 'keep')
+  assert.match(r.text, /Writing the handoff/)
+  assert.ok(!cleared(r.log))
+  assert.equal(draftsAtFork, 1, 'the draft is on disk before the fork runs')
+  assert.equal(s.prompts.length, 1)
+  assert.ok(s.prompts[0].includes('D:/proj/src/parse.mjs (changed)'))
+  assert.ok(!s.prompts[0].includes('D:/proj/gone.txt'), 'a file no longer on disk is left out')
+  const saved = handoffs().find((k) => k.includes('keep0001'))
+  assert.equal(files.get(saved).trim(), GOOD.trim())
+  assert.equal(JSON.parse(files.get(latestKey())).text, GOOD.trim())
+  const card = await s.render()
+  const t = texts(card)
+  assert.match(t, /Handoff ready: \d+ words/)
+  assert.ok(t.includes('Saved to ' + saved))
+  for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 's', 'words']) assert.ok(t.includes(d), d)
+  assert.equal((t.match(/✓/g) || []).length, 5)
+  for (const k of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close']) assert.ok(s.buttons.has(k), k)
+})
 
-// another folder with the same basename
-await makeHandoff('/w/same', 'g1')
-res = await (await boot('/other/same', 'g2')).run(SKILL, 'continue')
-assert.match(res.text, /No handoff is saved/)
-assert.ok(!cleared(res))
+await check('ready card: Clear and continue clears and sends the handoff with its age in front', async () => {
+  const s = await boot('/w/cc', 'cc000001-0', {})
+  await s.run('handoff', 'keep')
+  T += 5 * 60e3
+  await s.press('ck-ho-clear')
+  assert.deepEqual(s.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit'])
+  assert.match(s.sent[0].text, /^Handoff from my previous session \(saved at .*cc000001.*, written 5m ago\)/)
+  assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
+  assert.equal(s.sent[0].asUser, true)
+  assert.equal(texts(await s.render()).includes('Handoff ready'), false)
+})
 
-// Windows spelling of the same folder
-await makeHandoff('C:\\Work\\Proj\\', 'h1')
-res = await (await boot('c:/work/proj', 'h2')).run(SKILL, 'continue')
-assert.ok(cleared(res))
+await check('ready card: Keep chat closes it and keeps the handoff for /handoff continue', async () => {
+  const s = await boot('/w/kc', 'kc000001-0', {})
+  await s.run('handoff', 'keep')
+  await s.press('ck-ho-keep')
+  assert.ok(s.log.some((l) => /Handoff kept/.test(l)))
+  assert.ok(!keys(await s.render()).has('ck-ho-card'))
+  const r = await s.run('handoff', 'continue')
+  assert.match(r.text, /Clearing/)
+  assert.ok(cleared(r.log))
+})
 
-// the chat that made the handoff went on: it is out of date
-s = await makeHandoff('/w/e', 'i1')
-await s.fire('prompt.submit', { text: 'do more work', origin: { kind: 'composer' } })
-res = await (await boot('/w/e', 'i2')).run(SKILL, 'continue')
-assert.ok(!cleared(res))
+await check('/handoff without args clears and continues on its own', async () => {
+  const s = await boot('/w/auto', 'auto0001-0', {})
+  const r = await s.run('handoff')
+  assert.match(r.text, /clears and continues/)
+  assert.ok(cleared(r.log))
+  assert.equal(s.sent.length, 1)
+})
 
-// a handoff from a previous chat survives the first message of the new chat
-await makeHandoff('/w/h', 'j1')
-s = await boot('/w/h', 'j2')
-await s.fire('prompt.submit', { text: 'a question', origin: { kind: 'composer' } })
-res = await s.run(SKILL, 'continue')
-assert.ok(cleared(res))
+await check('Open file opens the saved handoff with the system app', async () => {
+  const s = await boot('C:\\w\\open', 'open0001-0', { home: 'C:\\Users\\t', proc: () => ({ exitCode: 1, stdout: '', stderr: '' }) })
+  await s.run('handoff', 'keep')
+  await s.press('ck-ho-open')
+  const argv = s.ran.find((a) => a[0] === 'explorer')
+  assert.ok(argv, 'explorer ran')
+  assert.match(argv[1], /^C:\\Users\\t\\\.claude\\mods-data\\cache-keeper\\handoffs\\.*open0001\.md$/)
+  assert.ok(s.log.some((l) => l.startsWith('toast:Opened ')))
+})
 
-// a newer handoff of another chat is not marked used by this chat's message
-s = await makeHandoff('/w/two', 'k1')
-await makeHandoff('/w/two', 'k2')
-await s.fire('prompt.submit', { text: 'more', origin: { kind: 'composer' } })
-res = await (await boot('/w/two', 'k3')).run(SKILL, 'continue')
-assert.ok(cleared(res))
+await check('the fork fails: the card says why, keeps the draft, and Try again writes it', async () => {
+  let n = 0
+  const s = await boot('/w/fail', 'fail0001-0', { fork: async () => (++n === 1 ? { isAnswered: false, reason: 'api-error', status: 529 } : { isAnswered: true, text: GOOD }) })
+  const r = await s.run('handoff')
+  assert.ok(!cleared(r.log), 'a failed handoff clears nothing')
+  const t = texts(await s.render())
+  assert.ok(t.includes('The handoff did not finish'))
+  assert.ok(t.includes('the model call failed (HTTP 529)'))
+  const draft = drafts().find((d) => d.includes('fail0001'))
+  assert.ok(t.includes('Draft saved to ' + draft))
+  assert.ok(files.get(draft).startsWith('# Session Handoff: draft without the model step'))
+  assert.ok(t.includes('✗'))
+  assert.ok(s.buttons.has('ck-ho-retry') && s.buttons.has('ck-ho-open'))
+  await s.press('ck-ho-retry')
+  assert.ok(cleared(s.log), 'the retry keeps what the first run was for: clear')
+})
 
-// truncated or corrupt latest file: told why, nothing cleared
-await makeHandoff('/w/short', 'l1')
-files.set(latestKey(), JSON.stringify({ at: T, fid: 'x', text: 'short' }))
-res = await (await boot('/w/short', 'l2')).run(SKILL, 'continue')
-assert.match(res.text, /incomplete/)
-assert.ok(!cleared(res))
-await makeHandoff('/w/corrupt', 'm1')
-files.set(latestKey(), '{')
-res = await (await boot('/w/corrupt', 'm2')).run(SKILL, 'continue')
-assert.match(res.text, /could not be read/)
-assert.ok(!cleared(res))
+await check('nothing to fork, and a reply without the sections, fail with their reasons', async () => {
+  let s = await boot('/w/nf', 'nf000001-0', { fork: async () => ({ isAnswered: false, reason: 'nothing-to-fork' }) })
+  await s.run('handoff', 'keep')
+  assert.ok(texts(await s.render()).includes('there is no conversation to fork yet'))
+  s = await boot('/w/ms', 'ms000001-0', { fork: async () => ({ isAnswered: true, text: '# Session Handoff: x\n\n## Where it started\nhi' }) })
+  await s.run('handoff', 'keep')
+  const t = texts(await s.render())
+  assert.match(t, /the handoff lacks "Decisions locked \+ what shipped"/)
+  assert.ok(!handoffs().some((k) => k.includes('ms000001')), 'no handoff saved to continue with')
+  assert.ok(files.get(drafts().find((d) => d.includes('ms000001'))).includes('## Where it started\nhi'), 'the reply is kept as the draft')
+  assert.ok(!files.get(latestKey()).includes('ms000001'))
+})
 
-// the dated file cannot be written: the latest copy still survives a restart
-failWrites = ['.md']
-await makeHandoff('/w/nomd', 'n1')
-failWrites = []
-res = await (await boot('/w/nomd', 'n2')).run(SKILL, 'continue')
-assert.ok(cleared(res))
+await check('secrets in the fork reply never reach the saved file', async () => {
+  const s = await boot('/w/sec', 'sec00001-0', { fork: async () => ({ isAnswered: true, text: GOOD + '\nkey ' + FAKE.gh }) })
+  await s.run('handoff', 'keep')
+  const saved = files.get(handoffs().find((k) => k.includes('sec00001')))
+  assert.ok(!saved.includes(FAKE.gh))
+  assert.ok(saved.includes('<secret removed>'))
+  assert.ok(texts(await s.render()).includes('1 secret removed'))
+})
 
-// the latest copy cannot be written: the toast says it will not survive
-failWrites = ['latest-']
-s = await boot('/w/nolatest', 'o1')
-await s.run(SKILL, 'keep')
-s.log.length = 0
-await s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 't1' })
-failWrites = []
-assert.ok(s.log.some((l) => l.includes('will not survive a restart')))
+await check('secrets in the conversation never reach the draft when the fork fails', async () => {
+  const msgs = [{ role: 'user', text: 'use ' + FAKE.gh + ' for the push', toolUses: [] }, ...MESSAGES]
+  const s = await boot('/w/dsec', 'dsec0001-0', { messages: msgs, fork: async () => ({ isAnswered: false, reason: 'api-error', status: 500 }) })
+  await s.run('handoff', 'keep')
+  const draft = files.get(drafts().find((d) => d.includes('dsec0001')))
+  assert.ok(draft && !draft.includes(FAKE.gh))
+  assert.ok(draft.includes('<secret removed>'))
+})
 
-// Claude is still working: the reply says so and nothing is cleared
-await makeHandoff('/w/busy', 'p1')
-res = await (await boot('/w/busy', 'p2', { working: true })).run(SKILL, 'continue')
-assert.match(res.text, /still working/)
-assert.ok(!cleared(res))
+await check('no $.session.messages: the transcript file is read instead, and the card says so', async () => {
+  const id = 'tr000001-0'
+  files.set(transcriptPath('/home', '/w/tr', id), JSON.stringify({ type: 'user', message: { role: 'user', content: 'edit D:\\proj\\src\\parse.mjs' } }))
+  const s = await boot('/w/tr', id, { messages: () => { throw new Error('no such API') } })
+  await s.run('handoff', 'keep')
+  assert.ok(texts(await s.render()).includes('1 message (transcript file)'))
+})
 
-// the band's handoff button: once the handoff is in, it clears and continues
-s = await boot('/w/band', 's1')
-await s.press('handoff')
-assert.ok(s.log.includes('run:cache-keeper:session-handoff'))
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.deepEqual(s.log.filter((l) => !l.startsWith('toast:')).map((l) => l.split(':')[0]), ['run', 'submit'])
-assert.ok(cleared(s))
-res = await (await boot('/w/band', 's2')).run(SKILL, 'continue')
-assert.match(res.text, /already used/)
+await check('neither messages nor a transcript: the first step fails, no draft', async () => {
+  const s = await boot('/w/none', 'none0001-0', { messages: () => { throw new Error('x') } })
+  await s.run('handoff', 'keep')
+  const t = texts(await s.render())
+  assert.ok(t.includes('the conversation could not be read'))
+  assert.ok(!t.includes('Draft saved'))
+})
 
-// the button's handoff turn ended without a handoff: nothing is cleared, not
-// even with an older handoff of this folder still on disk
-await makeHandoff('/w/band-empty', 'u0')
-s = await boot('/w/band-empty', 'u1')
-await s.press('handoff')
-await s.end({ reason: 'aborted', turnId: 't1' })
-assert.ok(!cleared(s))
-
-// pressed while Claude works, the queued handoff never runs: the next ordinary
-// answer is captured by the leftover arm, but it has no handoff heading, so
-// the chat is not cleared
-const plain = 'An ordinary answer. ' + 'y'.repeat(300)
-s = await boot('/w/band-stale', 'w1', { working: true })
-await s.press('handoff')
-await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't2' })
-// meanwhile, a press while Claude works still starts no second handoff
-s.log.length = 0
-await s.press('handoff')
-assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.ok(!cleared(s))
-
-// the leftover arm does not block the button once Claude is idle
-s = await boot('/w/band-idle', 'w2', { working: true })
-await s.press('handoff')
-await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
-s.log.length = 0
-await s.press('handoff')
-assert.ok(s.log.includes('run:cache-keeper:session-handoff'))
-
-// a second press while the handoff runs starts no second one
-s = await boot('/w/band-twice', 'x1')
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't1' })
-s.log.length = 0
-await s.press('handoff')
-assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
-assert.ok(s.log.some((l) => l.includes('already running')))
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
-
-// /handoff typed after the button: the last one wins, so a keep keeps the chat
-s = await boot('/w/band-then-typed', 'y1')
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't1' })
-res = await s.run('handoff', 'keep')
-assert.match(res.text, /stays as it is/)
-assert.ok(!s.log.includes('run:cache-keeper:session-handoff'))
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
-
-// /session-handoff typed after the button (re-arms through the command hook): clears
-s = await boot('/w/band-then-skill', 'z1')
-await s.press('handoff')
-await s.run(SKILL)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-
-// /handoff (typed) clears on its own
-s = await boot('/w/typed', 'v1')
-res = await s.run('handoff', '')
-assert.match(res.text, /clears and continues/)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.deepEqual(s.log.filter((l) => /^(run|submit):/.test(l)).map((l) => l.split(':')[0]), ['run', 'submit'])
-assert.ok(cleared(s))
-
-// so does the skill run on its own
-s = await boot('/w/skill-plain-run', 'v5')
-await s.run(SKILL)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-
-// the skill with the argument "keep" leaves the chat as it is
-s = await boot('/w/skill-keep', 'v5k')
-await s.run(SKILL, ' Keep ')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
-
-// the button's turn ended with an answer without the handoff heading: no clear
-s = await boot('/w/band-plain', 'v6')
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
-assert.ok(!cleared(s))
-
-// A Stop hook blocks the handoff turn: Claude answers again in the same turn,
-// and turn.complete carries only that last answer. The handoff is what is
-// saved and sent, not the reply after it.
-const reply = 'The handoff stands as written: both files are in the other repo. ' + 'z'.repeat(200)
-s = await boot('/w/stop', 'sh1')
-await s.press('handoff')
-await s.step('t1', body)
-await s.step('t1', '', 'tool_use') // the hook's feedback made Claude check something
-await s.step('t1', reply)
-await s.end({ reason: 'answer', answer: reply, turnId: 't1' })
-assert.equal(dated('sh1'), body + '\n')
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// the same with the skill typed: the latest copy is the handoff, and continue sends it
-s = await boot('/w/stop-typed', 'sh2')
-await s.run(SKILL, 'keep')
-await s.step('t1', body)
-await s.step('t1', reply)
-await s.end({ reason: 'answer', answer: reply, turnId: 't1' })
-assert.equal(latestText('sh2'), body)
-assert.ok(cleared(await s.run(SKILL, 'continue')))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// an answer without the heading never replaces a saved handoff
-s = await makeHandoff('/w/stop-keep', 'sh3')
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.equal(latestText('sh3'), body)
-assert.ok(cleared(await s.run(SKILL, 'continue')))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// interrupted once the handoff was in (during the hook's extra work, say): it
-// is saved, but the button does not clear the chat on its own
-s = await boot('/w/stop-abort', 'sh4')
-await s.press('handoff')
-await s.step('t1', body)
-await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
-assert.equal(latestText('sh4'), body)
-assert.ok(!cleared(s))
-// nor does /handoff typed
-s = await boot('/w/stop-abort-typed', 'sh4b')
-await s.run('handoff', '')
-await s.step('t1', body)
-await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
-assert.equal(latestText('sh4b'), body)
-assert.ok(!cleared(s))
-
-// the reply after the hook quotes the heading inside a sentence: the handoff stays
-const quoting = 'Nothing to fix: the `# Session Handoff` above stands as written. ' + 'q'.repeat(200)
-s = await boot('/w/stop-quote', 'sh7')
-await s.run(SKILL, 'keep')
-await s.step('t1', body)
-await s.step('t1', quoting)
-await s.end({ reason: 'answer', answer: quoting, turnId: 't1' })
-assert.equal(dated('sh7'), body + '\n')
-
-// the hook's feedback made Claude rewrite the handoff: the rewrite wins
-const corrected = '# Session Handoff: corrected\n' + 'c'.repeat(300)
-s = await boot('/w/stop-rewrite', 'sh7b')
-await s.press('handoff')
-await s.step('t1', body)
-await s.step('t1', corrected)
-await s.end({ reason: 'answer', answer: corrected, turnId: 't1' })
-assert.equal(dated('sh7b'), corrected + '\n')
-assert.ok(s.sent.at(-1).endsWith('\n\n' + corrected))
-
-// a short reply that repeats the heading line does not replace the handoff
-const repeat = 'Fixed the path.\n\n# Session Handoff: same as above, one path fixed'
-s = await boot('/w/stop-repeat', 'sh7d')
-await s.press('handoff')
-await s.step('t1', body)
-await s.step('t1', repeat)
-await s.end({ reason: 'answer', answer: repeat, turnId: 't1' })
-assert.equal(dated('sh7d'), body + '\n')
-assert.ok(cleared(s))
-
-// a turn that ended with the heading line alone saved nothing
-s = await boot('/w/heading-only', 'sh7f')
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'answer', answer: '# Session Handoff: nothing yet', turnId: 't1' })
-assert.equal(dated('sh7f'), undefined)
-
-// a preamble before the heading is left out of the handoff
-s = await boot('/w/preamble', 'sh7e')
-await s.run(SKILL, 'keep')
-await s.step('t1', 'Here is the handoff.\n\n' + body)
-await s.end({ reason: 'answer', answer: 'Here is the handoff.\n\n' + body, turnId: 't1' })
-assert.equal(dated('sh7e'), body + '\n')
-
-// the turn's first answer had no heading, the hook made Claude write the handoff
-s = await boot('/w/stop-late', 'sh7c')
-await s.press('handoff')
-await s.step('t1', plain)
-await s.step('t1', body)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.equal(dated('sh7c'), body + '\n')
-assert.ok(cleared(s))
-
-// a second handoff in the same chat starts with no draft: a turn that wrote
-// none saves nothing, not the first one again
-s = await boot('/w/stop-twice', 'sh9')
-await s.run(SKILL, 'keep')
-await s.step('t1', body)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.run(SKILL, 'keep')
-await s.step('t2', plain)
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.ok(s.log.some((l) => l.includes('nothing was saved')))
-
-// a subagent's answer with the heading is not the main loop's handoff
-s = await boot('/w/stop-agent', 'sh8')
-await s.run(SKILL, 'keep')
-await s.step('a-t1', body, 'end_turn', 'agent-1')
-await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
-assert.equal(dated('sh8'), undefined)
-
-// an interrupted turn's own answer may be cut off: it is no handoff
-s = await boot('/w/stop-cut-final', 'sh5b')
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'aborted', answer: body, turnId: 't1' })
-assert.equal(dated('sh5b'), undefined)
-
-// a response that did not end the turn (cut off at max_tokens) is no handoff
-s = await boot('/w/stop-cut', 'sh5')
-await s.run(SKILL, 'keep')
-await s.step('t1', body, 'max_tokens')
-await s.end({ reason: 'aborted', answer: '', turnId: 't1' })
-assert.equal(dated('sh5'), undefined)
-
-// the turn already running when the handoff was queued is not the handoff's,
-// even if it answered with the heading
-s = await boot('/w/stop-busy', 'sh6', { working: true })
-await s.press('handoff')
-await s.step('busy', body)
-await s.fire('turn.complete', { reason: 'answer', answer: body, turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't2' })
-await s.step('t2', plain)
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.equal(dated('sh6'), undefined)
-assert.ok(!cleared(s))
-
-// Runs the callbacks the module scheduled so far, then lets them settle
-const runTimers = async (timers) => {
-  for (const f of timers.splice(0)) f()
+await check('working card: five rows, the first three done, the fourth running with its seconds', async () => {
+  let release
+  const gate = new Promise((r) => (release = r))
+  const s = await boot('/w/work', 'work0001-0', { fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await s.run('handoff', 'keep')
+  T += 7000
+  const card = await s.render()
+  const t = texts(card)
+  assert.ok(t.includes('Writing the handoff'))
+  for (const l of ['1. Reading the conversation', '2. Finding the files you used', '3. Listing skills, tools and links', '4. Writing the handoff', '5. Saving and checking']) assert.ok(t.includes(l), l)
+  assert.equal((t.match(/✓/g) || []).length, 3)
+  assert.ok(t.includes('7 s'))
+  assert.ok(keys(card).has('ck-ho-step-4'))
+  // a second /handoff while it runs starts no second fork, but decides what
+  // follows: this one clears
+  await s.run('handoff')
+  assert.equal(s.prompts.length, 1)
+  assert.match(texts(await s.render()), /Writing the handoff, then clearing this chat/)
+  // a later press that asks (band or card) never cancels the clear
+  await s.press('ck-ho-start')
+  assert.match(texts(await s.render()), /Writing the handoff, then clearing this chat/)
+  release()
   await settle()
-}
+  assert.equal(s.sent.length, 1)
+  assert.ok(s.log.includes('run:clear'))
+})
 
-// the band's button: a message typed while the handoff runs would start a turn
-// before the clear; it is held, the chat clears, and it is sent after the handoff
-s = await boot('/w/race-typed', 'ra1')
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't1' })
-res = await s.fire('prompt.submit', { text: 'and then fix the tests', origin: { kind: 'composer' }, turnId: 't1', wait: false })
-assert.ok(res && res.drop)
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
-assert.equal(s.sent.at(-1), 'and then fix the tests')
-// typed by the person: sent back as their own words
-assert.equal(s.submits.at(-1).asUser, true)
+// ======================= the offer and its threshold =======================
 
-// a notification that arrives between the handoff and the clear is held too
-let timers = []
-s = await boot('/w/race-note', 'ra2', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-res = await s.fire('prompt.submit', { text: 'task finished', origin: { kind: 'task-notification' }, wait: false })
-assert.ok(res && res.drop)
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.equal(s.sent.at(-1), 'task finished')
-assert.ok(!s.submits.at(-1).asUser)
+await check('the offer opens at 300k by default, hides for 100k more, and comes back', async () => {
+  const s = await boot('/w/offer', 'offer001-0', {})
+  await s.step('t0', 250000)
+  assert.ok(!keys(await s.render()).has('ck-ho-offer'))
+  await s.step('t0', 310000)
+  let card = await s.render()
+  assert.ok(keys(card).has('ck-ho-offer'))
+  assert.match(texts(card), /Context 310k/)
+  assert.ok(s.buttons.has('ck-ho-start') && s.buttons.has('ck-ho-hide') && s.buttons.has('ck-ho-at'))
+  assert.equal(s.buttons.get('handoff').hotkey, undefined, 'the band button gives h to the offer')
+  await s.press('ck-ho-hide')
+  assert.ok(!keys(await s.render()).has('ck-ho-offer'))
+  await s.step('t0', 420000)
+  assert.ok(keys(await s.render()).has('ck-ho-offer'))
+  await s.press('ck-ho-start')
+  card = await s.render()
+  assert.ok(texts(card).includes('Handoff ready'))
+  assert.ok(!cleared(s.log), 'the offer asks what follows')
+})
 
-// a turn begins anyway before the clear (a command passes the hold): the clear
-// waits for it to end, and its handoff is out of date by then. One fresh
-// handoff is written, and the chat clears with that one.
-const fresh = '# Session Handoff\n' + 'z'.repeat(300)
-// The band's handoff is in and the chat clears next, but turn t2 began first
-async function overtaken(cwd, id) {
-  timers = []
-  const s = await boot(cwd, id, { timers })
-  await s.press('handoff')
-  await s.end({ reason: 'answer', answer: body, turnId: 't1' })
+await check('the threshold: userConfig, the card control (config.set, store fallback), /cache handoff', async () => {
+  let s = await boot('/w/th', 'th000001-0', { options: { handoffOfferAt: 'off' } })
+  await s.step('t0', 900000)
+  assert.ok(!keys(await s.render()).has('ck-ho-offer'), 'off: never offered')
+  s = await boot('/w/th', 'th000002-0', { options: { handoffOfferAt: '150k' } })
+  await s.step('t0', 160000)
+  assert.ok(keys(await s.render()).has('ck-ho-offer'))
+  await s.press('ck-ho-at')
+  assert.deepEqual(s.configSets, [{ key: 'cache-keeper.handoffOfferAt', value: '200k' }])
+  assert.ok(!keys(await s.render()).has('ck-ho-offer'), '160k is under the new 200k')
+  // the config write refused: the store keeps the pick, and the next chat reads it
+  s = await boot('/w/th', 'th000003-0', { configDeny: true })
+  let r = await s.run('cache', 'handoff 500k')
+  assert.match(r.text, /Handoff offer: at 500k tokens/)
+  assert.equal(store.get('offerAt'), '500k')
+  s = await boot('/w/th', 'th000004-0', {})
+  await s.step('t0', 450000)
+  assert.ok(!keys(await s.render()).has('ck-ho-offer'), 'the stored 500k wins over the default')
+  r = await s.run('cache', 'handoff 123k')
+  assert.match(r.text, /Pick one of: off, 150k/)
+  // a config write that lands clears the stored pick
+  await s.run('cache', 'handoff 300k')
+  assert.equal(store.has('offerAt'), false)
+})
+
+await check('desktop: the offer has a Select for the threshold; the band has one handoff button, no split', async () => {
+  const s = await boot('/w/desk', 'desk0001-0', { select: true })
+  await s.step('t0', 320000)
+  const band = await s.render('desktop')
+  assert.ok(s.selects.has('ck-ho-at-pick'))
+  assert.ok(!s.selects.has('handoff-after'), 'the split button is gone')
+  assert.ok(s.buttons.has('handoff') && !s.buttons.has('ck-ho-at'))
+  assert.ok(keys(band).has('ck-ho-offer') && keys(band).has('state'))
+  s.selects.get('ck-ho-at-pick').onSelect('400k')
+  await settle()
+  assert.deepEqual(s.configSets.at(-1), { key: 'cache-keeper.handoffOfferAt', value: '400k' })
+})
+
+// ======================= routes =======================
+
+await check('asked while Claude works: queued, shown, and run when the turn ends', async () => {
+  const s = await boot('/w/q', 'q0000001-0', { working: true })
+  const r = await s.run('handoff')
+  assert.match(r.text, /starts when Claude finishes this turn/)
+  assert.equal(s.prompts.length, 0)
+  assert.ok(texts(await s.render()).includes('Handoff queued: it starts when this turn ends'))
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 1)
+  assert.ok(cleared(s.log))
+})
+
+await check('a press that only asks never cancels a queued clear', async () => {
+  const s = await boot('/w/q2', 'q0000002-0', { working: true })
+  await s.run('handoff')
+  await s.press('ck-ho-start')
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 1)
+  assert.ok(cleared(s.log))
+})
+
+await check('/session-handoff typed but reaching a running turn queues the handoff', async () => {
+  const s = await boot('/w/typed2', 'typed002-0', { working: true })
+  const r = await s.run('cache-keeper:session-handoff')
+  assert.equal(r.passed, true, 'the skill text goes on to Claude')
+  assert.equal(s.prompts.length, 0)
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 1)
+  assert.ok(cleared(s.log))
+})
+
+await check("Claude's own skill call queues the handoff for the turn's end; keep keeps the chat", async () => {
+  let s = await boot('/w/sk', 'sk000001-0', { working: true })
+  await s.fire('tool.call', { tool: 'Skill', skill: 'cache-keeper:session-handoff', input: {} })
+  assert.equal(s.prompts.length, 0)
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 1)
+  assert.ok(cleared(s.log))
+  s = await boot('/w/sk2', 'sk000002-0', { working: true })
+  await s.fire('tool.call', { tool: 'Skill', skill: 'session-handoff', args: 'keep' })
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 1)
+  assert.ok(!cleared(s.log))
+  assert.ok(texts(await s.render()).includes('Handoff ready'))
+  // a subagent's skill call queues nothing
+  s = await boot('/w/sk3', 'sk000003-0', { working: true })
+  await s.fire('tool.call', { tool: 'Skill', skill: 'session-handoff', agentId: 'a1' })
+  await s.end({ turnId: 'busy' })
+  assert.equal(s.prompts.length, 0)
+})
+
+await check('/session-handoff typed while idle runs the pipeline, its text never reaches Claude', async () => {
+  const s = await boot('/w/typed', 'typed001-0', {})
+  const r = await s.run('cache-keeper:session-handoff', 'keep')
+  assert.equal(r.passed, false, 'the skill is not expanded')
+  assert.match(r.text, /Writing the handoff/)
+  assert.equal(s.prompts.length, 1)
+  const c = await s.run('cache-keeper:session-handoff', 'continue')
+  assert.match(c.text, /Clearing/)
+})
+
+await check('a failed clearing handoff releases the held message', async () => {
+  let release
+  const gate = new Promise((r) => (release = r))
+  const s = await boot('/w/hold2', 'hold0002-0', { fork: async () => (await gate, { isAnswered: false, reason: 'api-error', status: 500 }) })
+  await s.run('handoff')
+  const r = await s.fire('prompt.submit', { text: 'and also this', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held')
+  release()
+  await settle()
+  await settle()
+  assert.ok(!cleared(s.log))
+  assert.deepEqual(s.sent, [{ text: 'and also this', asUser: true }])
+})
+
+// ======================= continue across chats =======================
+
+await check('continue after a restart clears and sends once; the next restart finds it used', async () => {
+  await (await boot('/w/proj', 'a1000000-0', {})).run('handoff', 'keep')
+  T += HOUR
+  const s = await boot('/w/proj', 'b1000000-0', {})
+  assert.ok(keys(await (async () => (await s.step(), s.render()))()).has('continue'), 'the band offers the earlier handoff')
+  let r = await s.run('handoff', 'continue')
+  assert.match(r.text, /Clearing/)
+  assert.ok(cleared(r.log))
+  r = await (await boot('/w/proj', 'b2000000-0', {})).run('handoff', 'go')
+  assert.match(r.text, /already used/)
+  assert.ok(!cleared(r.log))
+})
+
+await check('continue: older than 12 hours, another folder, Claude still working', async () => {
+  await (await boot('/w/old', 'e1000000-0', {})).run('handoff', 'keep')
+  T += 13 * HOUR
+  let r = await (await boot('/w/old', 'e2000000-0', {})).run('handoff', 'continue')
+  assert.match(r.text, /older than 12 hours/)
+  await (await boot('/w/x/app', 'f1000000-0', {})).run('handoff', 'keep')
+  r = await (await boot('/w/y/app', 'f2000000-0', {})).run('handoff', 'continue')
+  assert.match(r.text, /No handoff is saved/)
+  r = await (await boot('/w/x/app', 'f3000000-0', { working: true })).run('handoff', 'continue')
+  assert.match(r.text, /still working/)
+})
+
+await check('a new message in the chat that made the handoff marks it used and closes the card', async () => {
+  const s = await boot('/w/msg', 'msg00001-0', {})
+  await s.run('handoff', 'keep')
+  await s.fire('prompt.submit', { text: 'next thing', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.equal(JSON.parse(files.get(latestKey())).at, 0)
+  assert.ok(!keys(await s.render()).has('ck-ho-card'))
+})
+
+// ======================= hold, stale clear, landing =======================
+
+await check('a message typed while a clearing handoff is written is held and sent after the handoff', async () => {
+  let release
+  const gate = new Promise((r) => (release = r))
+  const s = await boot('/w/hold', 'hold0001-0', { fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await s.run('handoff')
+  const r = await s.fire('prompt.submit', { text: 'and also this', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held')
+  release()
+  await settle()
+  await settle()
+  assert.equal(s.sent.length, 2)
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent[1], { text: 'and also this', asUser: true })
+})
+
+await check('a turn that slips in before the due clear: one fresh handoff, then the clear', async () => {
+  const timers = []
+  const s = await boot('/w/stale', 'stale001-0', { timers })
+  await s.run('handoff')
+  while (timers.length) await timers.shift()()
+  await settle()
+  // the pipeline ran and the clear is scheduled, not yet run
+  assert.equal(s.prompts.length, 1)
   await s.fire('turn.start', { turnId: 't2' })
-  return s
-}
-s = await overtaken('/w/race-turn', 'ra3')
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
-assert.ok(s.log.some((l) => l.includes('out of date')))
-// the band shows it running, and a message typed meanwhile waits for the clear
-await s.fire('turn.start', { turnId: 't3' })
-res = await s.fire('prompt.submit', { text: 'after the fresh one', origin: { kind: 'composer' }, turnId: 't3', wait: false })
-assert.ok(res && res.drop)
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + fresh))
-assert.equal(s.sent.at(-1), 'after the fresh one')
-
-// overtaken again before the fresh handoff's clear: no second fresh handoff,
-// the chat stays and what was held goes on here
-s = await overtaken('/w/race-turn-again', 'ra3b')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await runTimers(timers)
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-await s.fire('turn.start', { turnId: 't4' })
-await s.fire('prompt.submit', { text: 'held over t4', origin: { kind: 'composer' }, wait: false })
-await runTimers(timers)
-await s.end({ reason: 'answer', answer: plain, turnId: 't4' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.ok(s.log.some((l) => l.includes('The chat stays')))
-assert.equal(s.sent.at(-1), 'held over t4')
-res = await s.fire('prompt.submit', { text: 'free again', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-// the next overtaken clear may write a fresh handoff again
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't5' })
-await s.fire('turn.start', { turnId: 't6' })
-await s.end({ reason: 'answer', answer: plain, turnId: 't6' })
-await runTimers(timers)
-assert.ok(s.log.includes('run:' + SKILL))
-
-// the handoff turn wrote no handoff: nothing clears, the held message goes on here
-s = await boot('/w/race-none', 'ra4')
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't1' })
-await s.fire('prompt.submit', { text: 'next question', origin: { kind: 'composer' }, turnId: 't1', wait: false })
-await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
-assert.ok(!cleared(s))
-assert.equal(s.sent.at(-1), 'next question')
-
-// /handoff typed (it only asks): a message typed meanwhile is not held
-s = await boot('/w/race-ask', 'ra5')
-await s.run('handoff', '')
-res = await s.fire('prompt.submit', { text: 'go on', origin: { kind: 'composer' }, turnId: 't1', wait: false })
-assert.ok(!(res && res.drop))
-
-// pressed while Claude works, the queued handoff never runs: the leftover arm
-// holds nothing once Claude is idle, and the band does not say it runs
-s = await boot('/w/race-stale', 'ra6', { working: true })
-await s.press('handoff')
-await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
-res = await s.fire('prompt.submit', { text: 'hello again', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-await s.render()
-assert.equal(s.buttons.get('handoff').label, 'handoff')
-
-// a /handoff keep typed while the clear waited only keeps the chat: once its handoff is in,
-// nothing is held any more
-timers = []
-s = await boot('/w/race-keep-later', 'ra7', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
-res = await s.fire('prompt.submit', { text: 'held in t2', origin: { kind: 'composer' }, wait: false })
-assert.ok(res && res.drop)
-await s.run('handoff', 'keep')
-await runTimers(timers) // the clear waits for t2, /handoff queues its skill
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await s.fire('turn.start', { turnId: 't3' })
-await runTimers(timers)
-await s.end({ reason: 'answer', answer: body, turnId: 't3' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.equal(s.sent.at(-1), 'held in t2')
-res = await s.fire('prompt.submit', { text: 'carry on', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-
-// what cannot be sent again as it came passes the hold, and does not make the
-// handoff out of date: the clear still happens
-timers = []
-s = await boot('/w/race-pass', 'ra8', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-for (const p of [{ text: 'look at this', attachments: [{ kind: 'image' }] }, { text: 'see @src/x.ts' }, { text: 'idle notice', isMeta: true }]) {
-  res = await s.fire('prompt.submit', { ...p, origin: { kind: 'composer' }, wait: false })
-  assert.ok(!(res && res.drop))
-}
-await runTimers(timers)
-assert.ok(cleared(s))
-
-// a turn that starts and ends before the scheduled clear: one fresh handoff,
-// whichever scheduled run comes first, and no clear with the old one
-s = await overtaken('/w/race-twice', 'ra9')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.equal(timers.length, 2)
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
-assert.ok(!s.log.some((l) => l.includes('The chat stays')))
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-// One at a time, unlike runTimers: the second must find the first done
-for (const f of timers.splice(0)) {
-  f()
-  await settle()
-}
-assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
-assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
-assert.ok(!s.log.some((l) => /already used|No handoff/.test(l)))
-
-// a second handoff, pressed while the clear waited, is interrupted: the first
-// one is out of date after t2, so nothing clears, and the held message goes on
-// here. No fresh handoff of the plugin's own runs over it.
-s = await overtaken('/w/race-second', 'rb1')
-await s.press('handoff')
-await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await s.fire('turn.start', { turnId: 't3' })
-await runTimers(timers)
-await s.end({ reason: 'aborted', turnId: 't3' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.equal(s.sent.at(-1), 'held meanwhile')
-
-// the same, with the second handoff turn over before the scheduled clear ran:
-// still no clear with the first one, and no fresh handoff over the interrupted one
-s = await overtaken('/w/race-second-fast', 'rb1c')
-await s.press('handoff')
-await s.fire('prompt.submit', { text: 'held meanwhile', origin: { kind: 'composer' }, wait: false })
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await s.fire('turn.start', { turnId: 't3' })
-await s.end({ reason: 'aborted', turnId: 't3' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.equal(s.sent.at(-1), 'held meanwhile')
-// completed instead: the chat clears with it
-s = await overtaken('/w/race-second-fast-ok', 'rb1d')
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await s.fire('turn.start', { turnId: 't3' })
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
-
-// cleared by hand while the fresh handoff ran: the next overtaken clear may
-// write a fresh handoff again
-s = await overtaken('/w/race-refresh-cleared', 'rb1e')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await runTimers(timers)
-await s.fire('classic.SessionStart', { source: 'clear' })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't3' })
-await s.fire('turn.start', { turnId: 't4' })
-await s.end({ reason: 'answer', answer: plain, turnId: 't4' })
-await runTimers(timers)
-assert.ok(s.log.includes('run:' + SKILL))
-assert.ok(!s.log.some((l) => l.includes('The chat stays')))
-
-// a message that comes while the fresh handoff is being started is held too
-s = await overtaken('/w/race-refresh-gap', 'rb1f')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-for (const f of timers.splice(0)) f()
-res = await s.fire('prompt.submit', { text: 'typed in the gap', origin: { kind: 'composer' }, wait: false })
-assert.ok(res && res.drop)
-await settle()
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.equal(s.sent.at(-1), 'typed in the gap')
-
-// a second handoff pressed while idle with the clear due is no turn that makes
-// the first out of date: it ends without a handoff, and the chat clears with the first
-timers = []
-s = await boot('/w/race-second-idle', 'rb1g', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-timers.length = 0
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'aborted', turnId: 't2' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// the same second handoff completes: the chat clears with it, not the first
-s = await overtaken('/w/race-second-ok', 'rb1b')
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await runTimers(timers)
-await s.end({ reason: 'answer', answer: fresh, turnId: 't3' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
-
-// cleared another way while prompts were held: they go to the new chat, and
-// nothing is held after it
-timers = []
-s = await boot('/w/race-cleared', 'rb2', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('prompt.submit', { text: 'held then cleared', origin: { kind: 'composer' }, wait: false })
-timers.length = 0
-await s.fire('classic.SessionStart', { source: 'clear' })
-await runTimers(timers)
-assert.equal(s.sent.at(-1), 'held then cleared')
-res = await s.fire('prompt.submit', { text: 'fresh start', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-
-// c pressed while the band's handoff runs: it is not ready yet, and what is held
-// stays held for the clear that handoff brings, not sent into this chat
-s = await boot('/w/race-c', 'rb5')
-await s.run('handoff', 'keep')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't2' })
-await s.fire('prompt.submit', { text: 'held during t2', origin: { kind: 'composer' }, wait: false })
-await s.press('continue')
-assert.ok(!s.sent.includes('held during t2'))
-await s.end({ reason: 'answer', answer: body, turnId: 't2' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + body))
-assert.equal(s.sent.at(-1), 'held during t2')
-
-// the handoff skill could not be started: what was held while it was queued goes on here
-s = await boot('/w/race-start-fails', 'rb4', {
-  onRun: async (c) => {
-    if (!c.command.includes('session-handoff')) return
-    await s.fire('prompt.submit', { text: 'held while queued', origin: { kind: 'composer' }, wait: false })
-    throw new Error('engine busy')
-  },
+  await s.end({ turnId: 't2' })
+  while (timers.length) {
+    await timers.shift()()
+    await settle()
+  }
+  assert.equal(s.prompts.length, 2, 'one fresh handoff')
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 1)
 })
-await s.press('handoff')
-assert.ok(s.log.some((l) => l.startsWith('toast:Held until')))
-assert.equal(s.sent.at(-1), 'held while queued')
 
-// no handoff skill in the session: the arm is undone and what was held while
-// the press looked for it goes on here
-s = await boot('/w/race-no-skill', 'rb6', { skill: false })
-await s.step()
-await s.render()
-await s.fire('turn.start', { turnId: 't1' })
-const looking = s.buttons.get('handoff').onPress()
-res = await s.fire('prompt.submit', { text: 'held while looking', origin: { kind: 'composer' }, turnId: 't1', wait: false })
-assert.ok(res && res.drop)
-await looking
-await settle()
-assert.ok(s.log.some((l) => l.includes('no such skill')))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.equal(s.sent.at(-1), 'held while looking')
-await s.end({ reason: 'answer', answer: plain, turnId: 't1' })
-assert.ok(!cleared(s))
-
-// the scheduled clear fails outright: the hold ends and held prompts go on here
-timers = []
-s = await boot('/w/race-throw', 'rb3', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('prompt.submit', { text: 'held then failed', origin: { kind: 'composer' }, wait: false })
-failNow = true
-await runTimers(timers)
-failNow = false
-assert.ok(!cleared(s))
-assert.equal(s.sent.at(-1), 'held then failed')
-res = await s.fire('prompt.submit', { text: 'after the failure', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-
-// handoff pressed while Claude works: what arrives inside that running turn
-// (not the handoff's) goes in at once, it starts no turn that could block the clear
-s = await boot('/w/race-busy-inside', 'rc1', { working: true })
-await s.press('handoff')
-// a subagent's turn inside busy is not the main loop's
-await s.fire('turn.start', { turnId: 'sub', agentId: 'ag1' })
-res = await s.fire('prompt.submit', { text: 'inside busy', origin: { kind: 'task-notification' }, turnId: 'busy', wait: false })
-assert.ok(!(res && res.drop))
-// one that would start a turn of its own is still held, and so is one for another turn
-for (const p of [{}, { turnId: 'old' }]) {
-  res = await s.fire('prompt.submit', { text: 'a new turn', origin: { kind: 'task-notification' }, wait: false, ...p })
-  assert.ok(res && res.drop)
-}
-// typed over busy, the person's words may still wait for a turn of their own: held
-for (const wait of [false, true]) {
-  res = await s.fire('prompt.submit', { text: 'typed over busy', origin: { kind: 'composer' }, turnId: 'busy', wait })
-  assert.ok(res && res.drop)
-}
-
-// the clear waits for a turn that began before it: a notification into that
-// turn goes in, it does not push the clear back
-timers = []
-s = await boot('/w/race-due-inside', 'rc4', { timers })
-await s.press('handoff')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
-res = await s.fire('prompt.submit', { text: 'into t2', origin: { kind: 'task-notification' }, turnId: 't2', wait: false })
-assert.ok(!(res && res.drop))
-
-// a background agent's turn after the handoff does not stall the clear
-timers = []
-s = await boot('/w/skill-agent', 'rc5', { working: true, timers })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-await s.fire('turn.start', { turnId: 'bg', agentId: 'ag2' })
-await s.fire('turn.complete', { reason: 'answer', answer: 'done', turnId: 'bg', agentId: 'ag2' })
-await runTimers(timers)
-assert.ok(cleared(s))
-res = await s.fire('prompt.submit', { text: 'after the clear', origin: { kind: 'composer' }, wait: false })
-assert.ok(!(res && res.drop))
-
-// the skill called again in the same turn (another Stop hook blocked), even
-// with "keep", keeps the clear and the handoff the turn already wrote
-s = await boot('/w/skill-twice', 'rc6', { working: true })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'clear', turnId: 'busy' })
-await s.step('busy', body)
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 'busy' })
-await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// a band handoff that never ran leaves its arm: the skill Claude calls in a
-// later turn with "keep" does not inherit its clear
-s = await boot('/w/stale-clear', 'rc8', { working: true })
-await s.press('handoff')
-await s.fire('turn.complete', { reason: 'aborted', turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't2' })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 't2' })
-await s.end({ reason: 'answer', answer: body, turnId: 't2' })
-assert.ok(!cleared(s))
-assert.equal(latestText('rc8'), body)
-
-// the band's handoff is queued behind busy, and Claude calls the skill in busy:
-// busy's handoff is saved, the queued one still runs as the next turn, and the
-// band's clear follows that one
-s = await boot('/w/band-then-skill', 'rc7', { working: true })
-await s.press('handoff')
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.ok(!cleared(s))
-assert.equal(latestText('rc7'), body)
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + fresh))
-
-// the same with /handoff keep queued behind busy: Claude's skill call without
-// args joins it as a keep, and neither handoff clears
-s = await boot('/w/keep-then-skill', 'rc7k', { working: true })
-await s.run('handoff', 'keep')
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.ok(!cleared(s))
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-assert.ok(!cleared(s), s.log.join('|'))
-
-// Claude calls the skill with args "clear" (the 250k Stop hook asks for it):
-// the chat clears and continues with the handoff, as the band's button does
-s = await boot('/w/skill-clear', 'rc2', { working: true })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: ' Clear\n', turnId: 'busy' })
-res = await s.fire('prompt.submit', { text: 'held for the new chat', origin: { kind: 'composer' }, wait: false })
-assert.ok(res && res.drop)
-// busy is the handoff's own turn now: a notification into it is held too
-res = await s.fire('prompt.submit', { text: 'note into the handoff', origin: { kind: 'task-notification' }, turnId: 'busy', wait: false })
-assert.ok(res && res.drop)
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-3).endsWith('\n\n' + body))
-assert.deepEqual(s.sent.slice(-2), ['held for the new chat', 'note into the handoff'])
-
-// called with "keep", the skill leaves the chat as it is
-s = await boot('/w/skill-plain', 'rc3', { working: true })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args: 'keep', turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.ok(!cleared(s))
-assert.equal(latestText('rc3'), body)
-
-// called without args, it clears like the band's button
-s = await boot('/w/skill-noargs', 'rc3b', { working: true })
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.ok(cleared(s))
-assert.ok(s.sent.at(-1).endsWith('\n\n' + body))
-
-// The band's handoff queued behind busy, and Claude calling the skill in busy
-// (args "clear" by default: any args but "keep" clear)
-const bandThenSkill = async (dir, id, o = {}, args = 'clear', press = (s) => s.press('handoff')) => {
-  const s = await boot(dir, id, { working: true, timers, ...o })
-  await press(s)
-  await s.fire('tool.call', { tool: 'Skill', skill: SKILL, args, turnId: 'busy' })
-  return s
-}
-// Once the timers ran, the chat cleared and continued with the handoff `text`
-const clearedWith = async (s, text) => {
-  await runTimers(timers)
-  assert.ok(cleared(s))
-  assert.ok(s.sent.at(-1).endsWith('\n\n' + text))
-}
-// The next turn starts while the turn.complete `end` still runs
-const overlapEnd = async (s, end, turnId) => {
-  s.log.length = 0
-  const ending = s.fire('turn.complete', end)
-  await s.fire('turn.start', { turnId })
-  await ending
-  await settle()
-}
-
-// the band's handoff is queued behind busy, and Claude calls the skill with
-// "clear" in busy: busy's handoff is in, but the queued skill still runs, as
-// the next turn. That turn is the handoff's too: the chat does not clear before
-// it, no third handoff runs, and its rewrite is the one sent
-timers = []
-s = await bandThenSkill('/w/band-then-skill-queued', 'rd1', { select: true })
-await s.step('busy', body)
-await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
-assert.equal(latestText('rd1'), body)
-assert.ok(!s.log.some((l) => l.includes('Clearing this chat')))
-await runTimers(timers)
-assert.ok(!cleared(s))
-await s.fire('turn.start', { turnId: 't2' })
-// the desktop band shows the second handoff running, not "clear and continue"
-await s.render('desktop')
-assert.equal(s.buttons.get('handoff').label, 'handoff running')
-res = await s.fire('prompt.submit', { text: 'typed over the second', origin: { kind: 'composer' }, wait: false })
-assert.ok(res && res.drop)
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-await runTimers(timers)
-assert.ok(cleared(s))
-assert.ok(!s.log.includes('run:' + SKILL))
-assert.ok(s.sent.at(-2).endsWith('\n\n' + fresh))
-assert.equal(s.sent.at(-1), 'typed over the second')
-
-// the queued skill's turn ends without a handoff: the chat clears with busy's
-s = await bandThenSkill('/w/band-then-skill-queued-none', 'rd2')
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await clearedWith(s, body)
-assert.ok(!s.log.includes('run:' + SKILL))
-
-// busy interrupted after the skill took the band's handoff over: its handoff is
-// saved, nothing clears, and no arm waits for a turn that may never come
-s = await bandThenSkill('/w/band-then-skill-cut', 'rd2b')
-await s.step('busy', body)
-await s.end({ reason: 'aborted', answer: '', turnId: 'busy' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.equal(latestText('rd2b'), body)
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-assert.ok(!s.log.some((l) => l.includes('nothing was saved')))
-assert.equal(latestText('rd2b'), body)
-
-// busy itself ended without a handoff: the queued one still runs next, and
-// its handoff is the one the chat clears with
-s = await bandThenSkill('/w/band-then-skill-plain', 'rd2c')
-await s.end({ reason: 'answer', answer: plain, turnId: 'busy' })
-assert.ok(!s.log.some((l) => l.includes('nothing was saved')))
-await runTimers(timers)
-assert.ok(!cleared(s))
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-await clearedWith(s, fresh)
-
-// the skill called twice in busy after the takeover (another Stop hook
-// blocked): the queued turn is still waited for
-s = await bandThenSkill('/w/band-then-skill-twice', 'rd2d')
-await s.step('busy', body)
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-await s.end({ reason: 'answer', answer: 'ok', turnId: 'busy' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-await s.fire('turn.start', { turnId: 't2' })
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-await clearedWith(s, fresh)
-
-// the chat is cleared by hand after the takeover: the new chat's first handoff
-// waits for no queued turn
-s = await bandThenSkill('/w/band-then-skill-hand-clear', 'rd2e')
-await s.fire('classic.SessionStart', { source: 'clear' })
-await s.end({ reason: 'answer', answer: plain, turnId: 'busy' })
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!s.log.some((l) => l.includes('queued handoff')))
-assert.equal(latestText('rd2e'), body)
-
-// the queued turn starts while busy's turn.complete still runs, then writes no
-// handoff: that turn is the handoff's, not one that makes busy's out of date,
-// so the chat clears with busy's
-s = await bandThenSkill('/w/band-then-skill-overlap', 'rd2f')
-await overlapEnd(s, { reason: 'answer', answer: body, turnId: 'busy' }, 't2')
-await runTimers(timers)
-assert.ok(!cleared(s))
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await clearedWith(s, body)
-
-// The band's command is refused by the engine (past a Stop, say) only later:
-// refuse() rejects its run
-let refuse
-const refusable = (c) => (c.command.includes('session-handoff') ? new Promise((_, rej) => (refuse = rej)) : undefined)
-// The band pressed while its run stays pending: press() would wait for it
-const pressPending = async (s) => {
-  await s.step()
+await check('soft landing: the running turn is told once to wind down, then offered stop now', async () => {
+  const s = await boot('/w/land', 'land0001-0', { working: true })
+  await s.run('handoff')
+  const note = async () => {
+    const r = await s.fire('classic.PostToolBatch', {}, (h) => h.name === 'classic.PostToolBatch', { additionalContext: ['below'] })
+    return r && r.additionalContext
+  }
+  const first = await note()
+  assert.deepEqual(first.slice(0, 1), ['below'])
+  assert.match(first[1], /the user asked for a session handoff/)
+  assert.equal((await note()).length, 1, 'told once')
+  assert.ok(!s.buttons.has('ck-ho-stop') && !(await s.render(), s.buttons.has('ck-ho-stop')))
+  for (let i = 0; i < 3; i++) await s.step('busy')
   await s.render()
-  void s.buttons.get('handoff').onPress()
-  await settle()
-}
-// refused once busy's capture re-armed for it: no queued turn comes, so the
-// chat clears with busy's handoff instead of holding every prompt for good
-s = await bandThenSkill('/w/band-then-skill-refused', 'rd5', { onRun: refusable }, 'clear', pressPending)
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-refuse(new Error('engine busy'))
-await settle()
-await clearedWith(s, body)
-
-// refused while busy still runs: the arm is the skill call's now, so busy's
-// handoff is captured and the chat clears with it, as with no band press
-s = await bandThenSkill('/w/band-then-skill-refused-early', 'rd5b', { onRun: refusable }, 'clear', pressPending)
-refuse(new Error('engine busy'))
-await settle()
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-await clearedWith(s, body)
-// and a later handoff of this chat waits for no queued turn
-s = await bandThenSkill('/w/band-then-skill-refused-later', 'rd5c', { onRun: refusable }, '', pressPending)
-refuse(new Error('engine busy'))
-await settle()
-await s.end({ reason: 'answer', answer: body, turnId: 'busy' })
-await runTimers(timers)
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'answer', answer: fresh, turnId: 't2' })
-await runTimers(timers)
-assert.ok(!s.log.some((l) => l.includes('queued handoff')))
-assert.equal(latestText('rd5c'), fresh)
-
-// the next turn starts while the handoff turn's turn.complete still runs (a
-// command passed the hold): the chat stays working, the clear waits for that
-// turn instead of being queued into it, and its handoff is out of date by then
-timers = []
-s = await boot('/w/race-overlap', 'rd3', { timers })
-await s.press('handoff')
-await overlapEnd(s, { reason: 'answer', answer: body, turnId: 't1' }, 't2')
-assert.ok(!s.log.some((l) => l.includes('Clearing this chat and continuing with it')))
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(s.log.some((l) => l.includes('waits for this turn to end')))
-assert.match((await s.run(SKILL, 'continue')).text, /still working/)
-await s.end({ reason: 'answer', answer: plain, turnId: 't2' })
-await runTimers(timers)
-assert.ok(!cleared(s))
-assert.ok(s.log.some((l) => l.includes('out of date')))
-assert.equal(s.log.filter((l) => l === 'run:' + SKILL).length, 1)
-
-// a turn.complete without a turn id still ends the turn
-s = await boot('/w/end-no-id', 'rd4')
-await s.run(SKILL, 'keep')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', { turnId: 't2' })
-await s.fire('turn.complete', { reason: 'answer', answer: plain })
-assert.match((await s.run(SKILL, 'continue')).text, /Clearing this chat/)
-// so does one after a turn.start without one
-s = await boot('/w/start-no-id', 'rd4b')
-await s.run(SKILL, 'keep')
-await s.fire('turn.start', { turnId: 't1' })
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.fire('turn.start', {})
-await s.fire('turn.complete', { reason: 'answer', answer: plain, turnId: 't2' })
-assert.match((await s.run(SKILL, 'continue')).text, /Clearing this chat/)
-
-// Soft landing. What the module answers to a batch of tools, the hooks under
-// it having answered `below`
-const batchResult = (s, extra = {}, below) => s.fire('classic.PostToolBatch', { hook_event_name: 'PostToolBatch', tool_calls: [], ...extra }, undefined, below)
-// The note Claude reads after a batch of tools, if any
-const batch = async (s, extra) => {
-  const r = await batchResult(s, extra)
-  return ((r && r.additionalContext) || []).join('\n')
-}
-// Whether `act` made the band redraw
-const redraws = async (s, act) => {
-  const before = s.marks.invalidated
-  await act()
-  return s.marks.invalidated > before
-}
-
-// handoff pressed while Claude works: the running turn is asked once, after
-// its next batch of tools, to wind down at a safe point; a subagent is not asked
-s = await boot('/w/land-note', 'sl1', { working: true })
-await s.press('handoff')
-assert.equal(await batch(s, { agent_id: 'ag1' }), '')
-assert.match(await batch(s), /handoff/i)
-assert.equal(await batch(s), '')
-// nothing is stopped on its own
-assert.ok(!s.log.some((l) => l.startsWith('abort:')))
-
-// pressed while idle, the handoff's own turn is not asked to wind down
-s = await boot('/w/land-idle', 'sl2')
-await s.press('handoff')
-await s.fire('turn.start', { turnId: 't1' })
-assert.equal(await batch(s), '')
-// and with no landing a request does not redraw the band
-assert.ok(!(await redraws(s, () => s.step('t1'))))
-
-// the band shows the landing; once it runs long it offers to stop the turn,
-// which only a press does
-s = await boot('/w/land-band', 'sl3', { working: true })
-await s.press('handoff')
-await s.render()
-assert.match(s.buttons.get('handoff').label, /landing/)
-assert.ok(!s.buttons.has('stop'))
-// requests before the note do not count
-await s.step('busy')
-await s.step('busy')
-await s.step('busy')
-// the band redraws when the note goes out
-assert.ok(await redraws(s, () => batch(s)))
-await s.step('busy')
-await s.step('busy')
-await s.render()
-assert.ok(!s.buttons.has('stop'))
-// and after each request that follows, also one that came back without usage
-assert.ok(await redraws(s, () => s.step('busy', '', 'end_turn', undefined, null)))
-assert.ok(await redraws(s, () => s.step('busy')))
-await s.render()
-assert.ok(s.buttons.has('stop'))
-assert.ok(!s.log.some((l) => l.startsWith('abort:')))
-await s.buttons.get('stop').onPress()
-await settle()
-assert.ok(s.log.includes('abort:busy'))
-// the stopped turn ends: no landing and no stop on the band any more
-await s.end({ reason: 'aborted', answer: '', turnId: 'busy' })
-await s.render()
-assert.ok(!/landing/.test(s.buttons.get('handoff').label))
-assert.ok(!s.buttons.has('stop'))
-
-// a turn that grows its context fast offers the stop sooner, but only once it
-// had the note
-s = await boot('/w/land-ctx', 'sl4', { working: true })
-await s.press('handoff')
-await s.step('busy', '', 'end_turn', undefined, 60000)
-await s.render()
-assert.ok(!s.buttons.has('stop'))
-await batch(s)
-await s.render()
-assert.ok(s.buttons.has('stop'))
-
-// the landing ends with its turn: the handoff's turn that follows is not asked
-s = await boot('/w/land-end', 'sl5', { working: true })
-await s.press('handoff')
-await s.fire('turn.complete', { reason: 'answer', answer: 'paused here', turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't2' })
-assert.equal(await batch(s), '')
-await s.render()
-assert.ok(!/landing/.test(s.buttons.get('handoff').label))
-assert.ok(!s.buttons.has('stop'))
-
-// no landing for a handoff that could not be started
-s = await boot('/w/land-fail', 'sl6', { working: true, onRun: async (c) => { if (c.command.includes('session-handoff')) throw new Error('engine busy') } })
-await s.press('handoff')
-assert.equal(await batch(s), '')
-
-// Claude calls the skill in the landing turn: that turn writes the handoff now
-// and is not told to wind down any more
-s = await boot('/w/land-skill', 'sl7', { working: true })
-await s.press('handoff')
-await s.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-assert.equal(await batch(s), '')
-
-// a second handoff pressed during a later turn of the same session lands anew:
-// its turn gets the note, and the band counts from the second press
-s = await boot('/w/land-twice', 'sl8', { working: true })
-await s.press('handoff')
-await batch(s)
-for (let i = 0; i < 3; i++) await s.step('busy', '', 'end_turn', undefined, 60000)
-await s.end({ reason: 'answer', answer: 'paused here', turnId: 'busy' })
-await s.fire('turn.start', { turnId: 't1' })
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.equal(dated('sl8').trim(), body)
-T += 10 * 60e3
-await s.fire('turn.start', { turnId: 't2' })
-await s.step('t2', '', 'end_turn', undefined, 100000)
-await s.render()
-await s.buttons.get('handoff').onPress()
-await settle()
-await s.render()
-assert.match(s.buttons.get('handoff').label, /landing · 0m · \+0\b/)
-assert.ok(!s.buttons.has('stop'))
-assert.match(await batch(s), /handoff/i)
-await s.render()
-assert.ok(!s.buttons.has('stop'))
-
-// the note joins what the hooks under the module answered
-s = await boot('/w/land-chain', 'sl9', { working: true })
-await s.press('handoff')
-const below = { additionalContext: ['from below'], continue: true }
-const chained = await batchResult(s, {}, below)
-assert.equal(chained.continue, true)
-assert.equal(chained.additionalContext.length, 2)
-assert.equal(chained.additionalContext[0], 'from below')
-assert.match(chained.additionalContext[1], /handoff/i)
-
-// The cache chip opens the keep-warm menu; a pick turns keep warm on and shuts it
-for (const surface of ['terminal', 'desktop']) {
-  s = await boot('/w/menu-' + surface, 'mn-' + surface)
-  await s.press('cache', surface)
-  await s.press('kw-4', surface)
-  assert.ok(s.log.some((l) => l.startsWith('toast:Keeping this cache warm')))
-  await s.render(surface)
-  assert.ok(!s.buttons.has('kw-1'))
-  // kept warm: the menu offers to stop it
-  await s.press('cache', surface)
-  await s.render(surface)
-  assert.ok(s.buttons.has('kw-off'))
-  s.log.length = 0
-  await s.press('kw-off', surface)
-  assert.ok(s.log.some((l) => l.startsWith('toast:Keep warm off')))
-  await s.press('cache', surface)
-  await s.render(surface)
-  assert.ok(!s.buttons.has('kw-off'))
-  await s.press('cache-close', surface)
-  await s.render(surface)
-  assert.ok(!s.buttons.has('kw-1'))
-  // a typed message shuts the menu, so its digits do not catch what comes next
-  await s.press('cache', surface)
-  await s.fire('prompt.submit', { text: 'a question', origin: { kind: 'composer' } })
-  await s.render(surface)
-  assert.ok(!s.buttons.has('kw-1'))
-}
-
-// The desktop band is native text with small gauges, never one shrinking strip
-s = await boot('/w/desktop', 'dk1')
-await s.press('cache', 'desktop')
-assert.ok(s.svgs.length > 0 && s.svgs.every((g) => g.width <= 64 && !g.source.includes('<text')))
-// a narrow window wraps the figures onto more lines
-const band = await s.render('desktop')
-assert.equal(band.children[0].children[0].flexWrap, 'wrap')
-
-// The band on a surface with Select (the desktop app): no hotkeys, two Selects,
-// and tags for what the fresh chat turns on again
-s = await desk('/w/desk', 'ds1')
-// the context figure opens the figures, as on the terminal band
-assert.ok(JSON.stringify(await s.render('desktop')).includes('"ctx '))
-assert.deepEqual([...s.selects.keys()], ['keep-warm', 'handoff-after'])
-assert.deepEqual([...s.buttons.keys()], ['tag-caveman', 'tag-jev', 'tag-lsp', 'handoff'])
-assert.ok([...s.buttons.values()].every((b) => !b.hotkey))
-// the terminal keeps its hotkeys and its cache chip, Select or not
-await s.render('terminal')
-assert.equal(s.selects.size, 0)
-assert.equal(s.buttons.get('handoff').hotkey, 'h')
-assert.ok(s.buttons.has('cache'))
-
-// keep warm picked from its Select, and turned off again
-await s.render('desktop')
-assert.equal(s.selects.get('keep-warm').value, 'off')
-s.selects.get('keep-warm').onSelect('4')
-await settle()
-assert.ok(s.log.some((l) => l.startsWith('toast:Keeping this cache warm')))
-await s.render('desktop')
-assert.equal(s.selects.get('keep-warm').value, '4')
-s.log.length = 0
-s.selects.get('keep-warm').onSelect('off')
-await settle()
-assert.ok(s.log.some((l) => l.startsWith('toast:Keep warm off')))
-await s.render('desktop')
-assert.equal(s.selects.get('keep-warm').value, 'off')
-
-// a tag starts as the chat left it: caveman turned on here shows its level
-await s.fire('command.run', { command: 'caveman:caveman', args: 'lite' }, (h) => !h.filter)
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman lite')
-assert.ok(!s.buttons.get('tag-caveman').dimColor)
-assert.ok(s.buttons.get('tag-jev').dimColor)
-// a narrow window shortens it
-await s.render('desktop', 80)
-assert.equal(s.buttons.get('tag-caveman').label, 'cave')
-// off, then on again: the level comes back, not the default
-await s.buttons.get('tag-caveman').onPress()
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman')
-assert.ok(s.buttons.get('tag-caveman').dimColor)
-await s.buttons.get('tag-caveman').onPress()
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman lite')
-// a click only marks it: nothing runs now
-s.log.length = 0
-await s.buttons.get('tag-jev').onPress()
-assert.ok(!s.log.some((l) => l.startsWith('run:')))
-await s.render('desktop')
-assert.ok(!s.buttons.get('tag-jev').dimColor)
-
-// the handoff clears, and the fresh chat turns on what the tags mark, before the handoff
-await s.press('handoff', 'desktop')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-const runs = s.log.filter((l) => /^(run|submit):/.test(l))
-assert.deepEqual(runs.slice(0, 3), ['run:clear', 'run:caveman:caveman', 'run:jev:on'])
-assert.ok(runs[3].startsWith('submit:'))
-assert.ok(!runs.includes('run:navigating-code-with-lsp'))
-
-// an untouched tag turns on the default: caveman ultra
-s = await desk('/w/desk-default', 'ds2')
-await s.render('desktop')
-await s.buttons.get('tag-caveman').onPress()
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
-
-// "keep chat" picked: the handoff is saved but the chat stays, and the band then
-// offers "clear and continue" in the place of the handoff and its Select
-s = await desk('/w/desk-keep', 'ds3')
-await s.render('desktop')
-s.selects.get('handoff-after').onSelect('none')
-await s.render('desktop')
-assert.equal(s.selects.get('handoff-after').value, 'none')
-await s.press('handoff', 'desktop')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
-await s.render('desktop')
-assert.ok(s.buttons.has('continue'))
-assert.ok(!s.buttons.has('handoff'))
-assert.ok(!s.selects.has('handoff-after'))
-await s.press('continue', 'desktop')
-assert.ok(cleared(s))
-await s.render('desktop')
-assert.ok(s.buttons.has('handoff'))
-assert.ok(!s.buttons.has('continue'))
-
-// a tag survives a reload, a new chat starts every tag from its default
-s = await desk('/w/desk-reload', 'ds4')
-await s.fire('command.run', { command: 'caveman:caveman', args: 'lite' }, (h) => !h.filter)
-await s.render('desktop')
-await s.buttons.get('tag-jev').onPress()
-await s.buttons.get('tag-caveman').onPress()
-s = await desk('/w/desk-reload', 'ds4')
-await s.render('desktop')
-assert.ok(!s.buttons.get('tag-jev').dimColor)
-assert.ok(s.buttons.get('tag-caveman').dimColor)
-await s.fire('classic.SessionStart', { source: 'clear' })
-await s.step()
-await s.render('desktop')
-assert.ok(s.buttons.get('tag-jev').dimColor)
-await s.buttons.get('tag-caveman').onPress()
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
-// a level parked in the chat before, not the default, once that chat is gone
-s = await desk('/w/desk-parked', 'ds4b')
-await s.fire('command.run', { command: 'caveman:caveman', args: 'lite' }, (h) => !h.filter)
-await s.render('desktop')
-await s.buttons.get('tag-caveman').onPress()
-await s.fire('classic.SessionStart', { source: 'clear' })
-await s.step()
-await s.render('desktop')
-await s.buttons.get('tag-caveman').onPress()
-await s.render('desktop')
-assert.equal(s.buttons.get('tag-caveman').label, 'caveman ultra')
-
-// keep warm started with hours the picks lack shows them in the Select; a value
-// no option has starts nothing
-s = await desk('/w/desk-hours', 'ds5')
-await s.run('keepwarm', '2')
-await s.render('desktop')
-assert.equal(s.selects.get('keep-warm').value, '2')
-assert.ok(s.selects.get('keep-warm').options.some((o) => o.value === '2'))
-s = await desk('/w/desk-nan', 'ds6')
-await s.render('desktop')
-s.log.length = 0
-s.selects.get('keep-warm').onSelect('soon')
-await settle()
-assert.ok(!s.log.some((l) => l.startsWith('toast:Keeping')))
-
-// picked while the handoff runs, what follows it changes too, either way
-s = await boot('/w/desk-switch', 'ds7', { select: true })
-await s.press('handoff', 'desktop')
-await s.fire('turn.start', { turnId: 't1' })
-await s.render('desktop')
-s.selects.get('handoff-after').onSelect('none')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(!cleared(s))
-s = await desk('/w/desk-switch-back', 'ds8')
-await s.render('desktop')
-s.selects.get('handoff-after').onSelect('none')
-await s.press('handoff', 'desktop')
-await s.fire('turn.start', { turnId: 't1' })
-await s.render('desktop')
-s.selects.get('handoff-after').onSelect('clear')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-
-// /handoff typed shows what follows it: it clears, and "keep" leaves the chat
-s = await desk('/w/desk-typed-clear', 'ds13b')
-await s.run('handoff', '')
-await s.fire('turn.start', { turnId: 't1' })
-await s.render('desktop')
-assert.equal(s.selects.get('handoff-after').value, 'clear')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-assert.ok(cleared(s))
-s = await desk('/w/desk-typed', 'ds13')
-await s.run('handoff', 'keep')
-await s.fire('turn.start', { turnId: 't1' })
-await s.render('desktop')
-assert.equal(s.selects.get('handoff-after').value, 'none')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-await s.render('desktop')
-assert.ok(!s.selects.has('handoff-after'))
-
-// a handoff from an earlier chat goes beside the pair: this chat can still hand off
-await makeHandoff('/w/desk-disk', 'ds9')
-s = await desk('/w/desk-disk', 'ds10')
-let keys = drawn(await s.render('desktop'))
-assert.ok(['continue', 'handoff', 'handoff-after'].every((k) => keys.has(k)))
-// this chat's own handoff takes the pair's place
-s = await desk('/w/desk-own', 'ds12')
-await s.render('desktop')
-s.selects.get('handoff-after').onSelect('none')
-await s.press('handoff', 'desktop')
-await s.end({ reason: 'answer', answer: body, turnId: 't1' })
-const tree = await s.render('desktop')
-keys = drawn(tree)
-assert.ok(keys.has('continue') && !keys.has('handoff') && !keys.has('handoff-after'))
-// and only once
-assert.equal(JSON.stringify(tree).split('"key":"continue"').length - 1, 1)
-
-// a long landing offers stop now on the desktop band too
-s = await boot('/w/desk-land', 'ds11', { working: true, select: true })
-await s.press('handoff', 'desktop')
-await s.step('busy', '', 'end_turn', undefined, 60000)
-await batch(s)
-await s.render('desktop')
-assert.ok(s.buttons.has('stop'))
-
-// the band names the step clear and continue is on, and drops it when done
-{
-  const labels = []
-  let sess
-  sess = await boot('/w/phase', 'ph1', { onRun: async (c) => { if (c.command === 'clear') { await sess.render(); labels.push(sess.buttons.get('handoff').label) } } })
-  await sess.press('handoff')
-  await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
-  assert.ok(labels.includes('handoff · clearing chat'), String(labels))
-  await sess.render()
-  assert.equal(sess.buttons.get('handoff').label, 'handoff')
-}
-
-// plugins turned on again are reported, so a missing one is noticed
-{
-  const sess = await boot('/w/revive-report', 'rr1')
-  await sess.fire('tool.call', { tool: 'Skill', skill: 'jev:on', args: '' })
-  await sess.press('handoff')
-  await sess.end({ reason: 'answer', answer: body, turnId: 't1' })
-  assert.ok(sess.log.some((l) => l.startsWith('toast:Turned on again: /jev:on')), sess.log.join('|'))
-}
-
-// An engine that runs a plugin-issued command through the command.run hooks
-// again must not turn /handoff keep into a clear: the run is the hook's own.
-// Only the unfiltered hooks see the skill, as with a typed /session-handoff.
-for (const [args, clears] of [['keep', false], ['', true]]) {
-  timers = []
-  let reentrant
-  const skillArgs = []
-  reentrant = await boot('/w/keep-reentry', 'ke1', {
-    timers,
-    onRun: async (c) => {
-      if (!c.command.includes('session-handoff')) return
-      skillArgs.push(c.args)
-      await reentrant.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter)
-    },
-  })
-  await reentrant.run('handoff', args)
-  await runTimers(timers)
-  await reentrant.end({ reason: 'answer', answer: body, turnId: 't1' })
-  await runTimers(timers)
-  assert.ok(!reentrant.log.some((l) => l.startsWith('toast:Could not start')), reentrant.log.join('|'))
-  assert.equal(cleared(reentrant), clears, reentrant.log.join('|'))
-  // the skill gets the keep too: a hook that sees the run later reads it
-  assert.deepEqual(skillArgs, [args])
-}
-
-// The same re-entry after Claude's skill call took the queued handoff over in
-// the running turn: the takeover stands, and that turn's handoff is saved
-timers = []
-let takeover
-takeover = await boot('/w/takeover-reentry', 'ke2', {
-  working: true,
-  timers,
-  onRun: async (c) => {
-    if (!c.command.includes('session-handoff')) return
-    await takeover.fire('tool.call', { tool: 'Skill', skill: SKILL, turnId: 'busy' })
-    await takeover.fire('command.run', { command: c.command, args: c.args }, (h) => !h.filter)
-  },
+  assert.ok(s.buttons.has('ck-ho-stop'))
+  await s.press('ck-ho-stop')
+  assert.deepEqual(s.log.filter((l) => l.startsWith('abort')), ['abort:busy'])
+  await s.end({ turnId: 'busy', reason: 'interrupted' })
+  assert.equal(s.prompts.length, 1, 'the stopped turn starts the handoff')
 })
-await takeover.run('handoff', '')
-await runTimers(timers)
-assert.ok(!takeover.log.some((l) => l.startsWith('toast:Could not start')), takeover.log.join('|'))
-await takeover.end({ reason: 'answer', answer: body, turnId: 'busy' })
-assert.equal(latestText('ke2'), body)
 
-// Live state at pickup: git read in the folder while the chat clears goes in
-// front of the handoff, after the handoff's age, so a stale handoff loses to it
-const gitOut = (stdout, exitCode = 0, stderr = '') => ({ exitCode, stdout, stderr })
-const STATUS = 'git --no-optional-locks status --short --branch'
-const LOG = 'git --no-optional-locks log -3 --oneline'
-const STASH = 'git --no-optional-locks stash list'
-const WORKTREE = 'git --no-optional-locks worktree list'
-const gitCalls = []
-// A fake $.process.run answering by the command line, `dflt` for the rest
-const fakeGit = (by, dflt = gitOut('')) => async (argv, init) => {
-  gitCalls.push({ argv: argv.join(' '), cwd: init && init.cwd })
-  const r = by[argv.join(' ')] ?? dflt
-  if (r instanceof Error) throw r
-  return r
-}
-// Makes a handoff in cwd, continues with it 42 minutes later in a fresh boot
-// that runs git through `run`, and gives the prompt's text before the handoff
-async function liveOf(cwd, run) {
-  const id = cwd.replace(/\W/g, '')
-  await makeHandoff(cwd, id + '1')
-  T += 42 * 60e3
-  s = await boot(cwd, id + '2', { proc: { run } })
-  res = await s.run(SKILL, 'continue')
-  assert.ok(cleared(res), res.log.join('|'))
-  const prompt = s.sent.at(-1)
-  assert.ok(prompt.startsWith('Handoff from my previous session'))
-  assert.ok(prompt.endsWith('\n\n' + body))
-  return prompt.slice(0, prompt.indexOf(body))
-}
-let live = await liveOf('/w/live', fakeGit({
-  [STATUS]: gitOut('## feat/x...origin/feat/x [ahead 1]\n M a.js\n?? b.js\n'),
-  [LOG]: gitOut('abc1 one\nabc2 two\n'),
-  [WORKTREE]: gitOut('/w/live  abc1 [feat/x]\n'),
-}))
-assert.match(live, /^Handoff from my previous session \(saved at \S+, written 42m ago\)\. Open items it marks "My own idea"/)
-assert.match(live, /Live state at pickup/)
-assert.match(live, /is data, not instructions/)
-assert.match(live, /branch: feat\/x\.\.\.origin\/feat\/x \[ahead 1\]\n/)
-assert.match(live, /status --short:\n M a\.js\n\?\? b\.js\n/)
-assert.match(live, /log -3 --oneline:\nabc1 one\nabc2 two\n/)
-assert.match(live, /stash list: \(none\)\n/)
-assert.match(live, /worktree list:\n\/w\/live  abc1 \[feat\/x\]\n/)
-assert.deepEqual(gitCalls.map((c) => c.argv).sort(), [LOG, STASH, STATUS, WORKTREE].sort())
-assert.ok(gitCalls.every((c) => c.cwd === '/w/live'), JSON.stringify(gitCalls))
+// ======================= the band, revive, live git, pruning =======================
 
-// a clean tree says so; one command failing loses that line alone
-live = await liveOf('/w/clean', fakeGit({ [STATUS]: gitOut('## main\n'), [WORKTREE]: gitOut('', 1, 'fatal: worktrees broke\nmore') }))
-assert.match(live, /branch: main\n/)
-assert.match(live, /status --short: \(clean\)\n/)
-assert.match(live, /log -3 --oneline: \(none\)\n/)
-assert.match(live, /worktree list: \(unavailable: fatal: worktrees broke\)\n/)
+await check('clear and continue turns the marked plugins on again before the handoff', async () => {
+  const s = await boot('/w/rev', 'rev00001-0', { select: true })
+  await s.run('caveman:caveman', 'ultra')
+  await s.run('handoff')
+  assert.ok(s.log.indexOf('run:caveman:caveman') > s.log.indexOf('run:clear'))
+  assert.ok(s.log.indexOf('submit') > s.log.indexOf('run:clear'))
+})
 
-// a long status is cut, not sent whole
-live = await liveOf('/w/long', fakeGit({ [STATUS]: gitOut('## main\n' + Array.from({ length: 50 }, (_, i) => `?? f${i}.js`).join('\n') + '\n') }))
-assert.match(live, /\?\? f28\.js\n… \+21 more lines\n/)
-assert.ok(!live.includes('f29.js'))
+await check('the desktop band keeps its tags and keep-warm Select', async () => {
+  const s = await boot('/w/tags', 'tags0001-0', { select: true })
+  await s.step()
+  const band = await s.render('desktop')
+  assert.ok(s.selects.has('keep-warm'))
+  for (const k of ['tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) assert.ok(s.buttons.has(k), k)
+  assert.ok(keys(band).has('handoff-line'))
+  await s.buttons.get('handoff').onPress()
+  await settle()
+  assert.equal(s.prompts.length, 1)
+})
 
-// a detached HEAD and a repository with no commits yet keep the block
-live = await liveOf('/w/detached', fakeGit({ [STATUS]: gitOut('## HEAD (no branch)\n'), [LOG]: gitOut('abc1 one\n') }))
-assert.match(live, /branch: HEAD \(no branch\)\n/)
-assert.match(live, /log -3 --oneline:\nabc1 one\n/)
-live = await liveOf('/w/unborn', fakeGit({ [STATUS]: gitOut('## No commits yet on main\n') }, gitOut('', 128, "fatal: your current branch 'main' does not have any commits yet")))
-assert.match(live, /branch: No commits yet on main\n/)
-assert.match(live, /log -3 --oneline: \(unavailable: fatal: your current branch 'main' does not have any commits yet\)\n/)
+await check('live git state goes in front of the handoff; outside a repository the handoff goes alone', async () => {
+  const proc = (argv) => {
+    const c = argv.slice(2).join(' ')
+    if (c === 'status --short --branch') return { exitCode: 0, stdout: '## dev...origin/dev\n M a.txt\n', stderr: '' }
+    if (c === 'log -3 --oneline') return { exitCode: 0, stdout: 'abc1 one\n', stderr: '' }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  let s = await boot('/w/git', 'git00001-0', { proc })
+  await s.run('handoff')
+  const text = s.sent[0].text
+  assert.ok(text.indexOf('Live state at pickup') < text.indexOf('# Session Handoff'))
+  for (const l of ['branch: dev...origin/dev', 'status --short:\n M a.txt', 'log -3 --oneline:\nabc1 one', 'stash list: (none)']) assert.ok(text.includes(l), l)
+  s = await boot('/w/nogit', 'nogit001-0', {})
+  await s.run('handoff')
+  assert.ok(!s.sent[0].text.includes('Live state'))
+})
 
-// not a repository, and git missing or hung: no block, the handoff still goes,
-// with its age, and nothing complains
-for (const [cwd, run] of [['/w/norepo', fakeGit({}, gitOut('', 128, 'fatal: not a git repository'))], ['/w/dead', fakeGit({}, new Error('timed out'))]]) {
-  live = await liveOf(cwd, run)
-  assert.ok(!live.includes('Live state'), live)
-  assert.match(live, /written 42m ago\)\. Open items/)
-  assert.ok(!res.log.some((l) => l.startsWith('toast:Could not')), res.log.join('|'))
-}
+await check('pruning on start: old handoffs go in batches, the newest of an open chat stays', async () => {
+  const dir = 'C:\\Users\\p'.replace(/\\/g, '/') + '/.claude/mods-data/cache-keeper/handoffs'
+  const old = T - 40 * DAY
+  const put = (n, m) => (files.set(`${dir}/${n}`, 'x'), mtimes.set(`${dir}/${n}`, m))
+  for (let i = 0; i < 45; i++) put(`2026-09-01-10${String(i).padStart(2, '0')}-p-cccccccc.md`, old + i)
+  put('2026-09-01-1000-p-dddddddd.md', old)
+  put('2026-11-09-1000-p-cccccccc.md', T - DAY)
+  store.set('hb:dddddddd-9999', { id: 'dddddddd-9999', updatedAt: T })
+  const s = await boot('C:\\w\\prune', 'prune001-0', { home: 'C:\\Users\\p', proc: () => ({ exitCode: 0, stdout: '', stderr: '' }) })
+  const dels = s.ran.filter((a) => a[0] === 'cmd')
+  assert.equal(dels.length, 2, '45 files in batches of 40')
+  const gone = dels.flatMap((a) => a.slice(6))
+  assert.equal(gone.length, 45)
+  assert.ok(gone.every((p) => /^C:\\Users\\p\\\.claude\\mods-data\\cache-keeper\\handoffs\\2026-09-01-10\d\d-p-cccccccc\.md$/.test(p)), gone[0])
+  assert.deepEqual(dels[0].slice(0, 6), ['cmd', '/d', '/c', 'del', '/f', '/q'])
+  store.delete('hb:dddddddd-9999')
+})
 
-console.log('handoff-continue: ok')
+console.log(`cache-keeper handoff: ${passed} checks passed`)
