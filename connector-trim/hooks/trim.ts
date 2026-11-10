@@ -495,7 +495,8 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, inList:
       put(out, k, x)
       continue
     }
-    if (!named && !(info.paging && group) && NOISE.test(k)) {
+    // No bookkeeping name is a paging name.
+    if (!named && NOISE.test(k)) {
       t.noise.add(k)
       continue
     }

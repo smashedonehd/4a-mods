@@ -870,3 +870,27 @@ test('each assistant row is read from its last 1,600 characters, then trimmed', 
   const kept = [{ role: 'user', text: 'go on with it' }, { role: 'assistant', text: `A${' '.repeat(1596)}END` }]
   expect(taskOf(kept).assistant).toBe(`…${' '.repeat(1497)}END`)
 })
+
+test('no bookkeeping name is a paging name', () => {
+  for (const k of ['etag', 'ETag', '__typename', 'selfLink', '@odata.etag', '@odata.type', '@odata.id', '@odata.editLink', '@odata.context'])
+    expect([k, keyClass(k)]).toEqual([k, 'none'])
+})
+
+test('JSON unpacked from a text value in a list keeps the list rules', () => {
+  const payload = JSON.stringify({ a: 'w '.repeat(1000), b: 1 })
+  const t = trimmed(JSON.stringify({ rows: [{ id: 1, payload }] }))
+  expect(t.value.rows[0].payload.a).toBe(`${'w '.repeat(500)} …[cut: 1,000 more characters in the saved file]`)
+})
+
+test('the note is its header lines, a blank line, then the body', () => {
+  const text = note({ tool: 'mcp__a__b', before: 50_000, how: 'trim', leftOut: '', reshaped: '', paging: 'page=2', file: 'f.json', body: 'BODY' })
+  expect(text.split('\n')).toEqual([
+    `[Connector Trim] mcp__a__b: 50,000 → ${text.length} characters (about 12,500 → ${Math.ceil(text.length / 4)} tokens). Trimmed by code, not summarised: every value below is as the tool returned it, except where a cut is marked.`,
+    'Left out by code (all of it is in the saved file): nothing.',
+    'Paging and counts, values as returned: page=2',
+    'Full result: f.json',
+    "Use this note as the tool's answer; open the file only for a field this note does not list.",
+    '',
+    'BODY',
+  ])
+})

@@ -336,6 +336,7 @@ test('condense_text without use_helper leaves text whole and calls no model', { 
   expect(await call($)).toEqual(block(PROSE))
   expect([saved(files), asked]).toEqual([[], []])
   expect(files[LOG]).toMatch(/passed whole, the result is not JSON \(condense_text needs use_helper on\)$/m)
+  expect(files[LOG]).toMatch(/^2026-11-10T12:00:00\.000Z mcp__ads__campaign_report: passed whole/)
 })
 
 test("a subagent's call reads the subagent's own conversation", HELPER, async ($, on) => {
