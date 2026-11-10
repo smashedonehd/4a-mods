@@ -6,6 +6,7 @@ declare module 'claude-code' {
       q: Shaped<string>
       name: Shaped<string>
       dirty: Shaped<number>
+      modNote: Shaped<string>
     }
   }
 }
