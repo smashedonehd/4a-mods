@@ -118,25 +118,69 @@ test('Clear and continue runs /clear and sends the handoff as the first prompt',
   await ui.unmount()
 })
 
-test('a slow press returns before its work starts: the hook never waits for the pipeline', async ($: Engine, on: On) => {
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a slow press returns before its work starts: the hook never waits for it`, async ($: Engine, on: On) => {
+    let forks = 0
+    const ran: string[] = []
+    pipeline(on, () => (forks++, { isAnswered: true, text: GOOD, usage: {} }))
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
+    on('prompt.submit', (_$: never, e: never) => ({ text: (e as { text: string }).text }) as never)
+    const clock = await session($, on)
+    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    await step($)
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+    await ui.press({ key: 'ck-ho-start' } as never)
+    expect(forks).toBe(0)
+    expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeFalsy()
+    await clock.advance(0)
+    expect(forks).toBe(1)
+    expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeTruthy()
+    // The band's own handoff button starts its work the same way
+    await ui.press({ key: 'ck-ho-close' } as never)
+    await ui.press({ key: 'handoff' } as never)
+    expect(forks).toBe(1)
+    await clock.advance(0)
+    expect(forks).toBe(2)
+    // So does the card's Clear and continue
+    await ui.press({ key: 'ck-ho-clear' } as never)
+    expect(ran).toEqual([])
+    await clock.advance(0)
+    expect(ran).toEqual(['clear'])
+    await ui.unmount()
+  })
+
+  test(`${surface}: the band's clear and continue returns before it clears`, async ($: Engine, on: On) => {
+    const ran: string[] = []
+    pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
+    on('prompt.submit', (_$: never, e: never) => ({ text: (e as { text: string }).text }) as never)
+    const clock = await session($, on)
+    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    await step($)
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+    await ui.press({ key: 'ck-ho-start' } as never)
+    await clock.advance(0)
+    await ui.press({ key: 'ck-ho-close' } as never)
+    await ui.press({ key: 'continue' } as never)
+    expect(ran).toEqual([])
+    await clock.advance(0)
+    expect(ran).toEqual(['clear'])
+    await ui.unmount()
+  })
+}
+
+test('a Start pressed twice writes one handoff: the second runs on a card that is gone', async ($: Engine, on: On) => {
   let forks = 0
   pipeline(on, () => (forks++, { isAnswered: true, text: GOOD, usage: {} }))
+  on('ui.toast', () => ({ value: undefined }) as never)
   const clock = await session($, on)
   await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
-  await step($)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
-  await ui.press({ key: 'ck-ho-start' } as never)
-  expect(forks).toBe(0)
-  expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeFalsy()
+  await Promise.all([ui.press({ key: 'ck-ho-start' } as never), ui.press({ key: 'ck-ho-start' } as never)])
   await clock.advance(0)
   expect(forks).toBe(1)
-  expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeTruthy()
-  // The band's own handoff button starts its work the same way
-  await ui.press({ key: 'ck-ho-close' } as never)
-  await ui.press({ key: 'handoff' } as never)
-  expect(forks).toBe(1)
-  await clock.advance(0)
-  expect(forks).toBe(2)
   await ui.unmount()
 })
 
@@ -164,3 +208,26 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+test('a plain /clear after Keep chat brings "clear and continue" back: the choice was about the old chat', async ($: Engine, on: On) => {
+  pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
+  on('ui.toast', () => ({ value: undefined }) as never)
+  on('classic.SessionStart', () => ({}) as never)
+  const clock = await session($, on)
+  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  await ui.press({ key: 'ck-ho-start' } as never)
+  await clock.advance(0)
+  await ui.press({ key: 'ck-ho-keep' } as never)
+  await ui.unmount()
+  await step($)
+  const kept = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect(await kept.find({ key: 'handoff' } as never)).toBeTruthy()
+  expect(await kept.find({ key: 'continue' } as never)).toBeFalsy()
+  await kept.unmount()
+  await ($.classic.SessionStart as (e: unknown) => Promise<unknown>)({ source: 'clear' })
+  await step($)
+  const fresh = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect((await fresh.find({ key: 'continue' } as never))?.text).toBe('clear and continue')
+  await fresh.unmount()
+})

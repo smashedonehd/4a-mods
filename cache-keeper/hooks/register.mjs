@@ -838,10 +838,11 @@ const CARD_KEYS = ['ck-ho-start', 'ck-ho-retry', 'ck-ho-hide', 'ck-ho-at', 'ck-h
 // What one card button does
 async function cardAction($, key) {
   switch (key) {
+    // A press runs after its hook returned: the card it was made on may be gone
     case 'ck-ho-start':
-      return runPipeline($, 'ask')
+      return P.phase === '' ? runPipeline($, 'ask') : undefined
     case 'ck-ho-retry':
-      return runPipeline($, P.after === 'clear' ? 'clear' : 'ask')
+      return P.phase === 'failed' ? runPipeline($, P.after === 'clear' ? 'clear' : 'ask') : undefined
     case 'ck-ho-hide':
       snoozeTo = S.ctx + SNOOZE
       $.ui.toast(`Handoff offer hidden until the context reaches ${tokens(snoozeTo)}. /${names.handoff} runs it any time.`, { timeoutMs: 8000 })
@@ -1524,6 +1525,8 @@ export function register(on, options) {
     // written for the old chat goes on and shows when it is in
     snoozeTo = 0
     if (P.phase !== 'working') P.phase = ''
+    // "Keep chat" was about the old chat
+    H.kept = false
     // A new chat: only what runs in it counts. Clear and continue notes its own
     // revived skills, so it keeps them.
     if (!H.continuing) {
