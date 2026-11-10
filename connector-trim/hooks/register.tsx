@@ -75,11 +75,10 @@ type Task = { user: string; assistant: string }
 // its type, defaults filled in: the defaults live in plugin.json alone.
 // A number option, raised to its minimum when set below it.
 const num = (v: unknown, min: number) => Math.max(min, Number(v))
-// A list option: an array, or one comma-separated string; blanks dropped.
+// A list option: an array, or one comma-separated string; blank entries
+// dropped (`matches` trims each entry it reads).
 const strs = (v: PluginOptions[string] | undefined) =>
-  (Array.isArray(v) ? v : String(v ?? '').split(','))
-    .map(x => x.trim())
-    .filter(x => x !== '')
+  (Array.isArray(v) ? v : String(v ?? '').split(',')).filter(x => x.trim() !== '')
 
 function configOf(o: PluginOptions): Config {
   return {
