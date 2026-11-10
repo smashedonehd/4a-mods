@@ -280,7 +280,8 @@ async function condense(
   try {
     const answers = await Promise.all(
       parts.map(async (part, i) => {
-        const maxTokens = Math.min(8000, Math.max(800, Math.ceil(tokens(part.length) * 0.3)))
+        // A part of PART_CHARS asks for at most 7,500.
+        const maxTokens = Math.max(800, Math.ceil(tokens(part.length) * 0.3))
         const r = await $.model.complete(
           {
             model: cfg.model,

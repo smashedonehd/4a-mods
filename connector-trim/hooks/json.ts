@@ -125,10 +125,9 @@ export function readJson(text: string, tick?: () => void, maxDepth = Infinity): 
   return v
 }
 
-// The object or array a text holds, or undefined for anything else, nesting
-// past `maxDepth` included. A TooSlow from `tick` goes through.
+// The JSON value a text holds, or undefined when it holds none or nests past
+// `maxDepth`. A TooSlow from `tick` goes through.
 export function parseJson(text: string, tick?: () => void, maxDepth?: number): unknown {
-  if (!/^\s*[[{]/.test(text)) return undefined
   try {
     return readJson(text, tick, maxDepth)
   } catch (e) {
@@ -167,7 +166,10 @@ export function ser(v: unknown): string {
         write(x[k])
       }
       out.push('}')
-    } else out.push(JSON.stringify(x) ?? 'null')
+    } else {
+      // A string, a number, true, false or null: JSON.stringify always writes one.
+      out.push(JSON.stringify(x) as string)
+    }
   }
   write(v)
   return out.join('')

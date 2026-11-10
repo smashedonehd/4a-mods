@@ -117,7 +117,11 @@ const world = (on: any, w: World) => {
   })
   on('session.start', (_: unknown, e: any): any => ({ cwd: e.cwd }))
   on('command.register', (_: unknown, e: any): any => ({ value: { command: e.name } }))
-  on('ui.status', (): any => ({ value: undefined }))
+  const status: unknown[] = []
+  on('ui.status', (_: unknown, e: any): any => {
+    status.push(e.text)
+    return { value: undefined }
+  })
   on('model.complete', async (_: unknown, e: any): Promise<any> => {
     asked.push(e)
     const r = typeof w.reply === 'function' ? await w.reply(e) : w.reply
@@ -133,7 +137,7 @@ const world = (on: any, w: World) => {
       ? { isError: true, result: w.result ?? 'quota exceeded', text: 'quota exceeded' }
       : { result: w.result ?? [{ type: 'text', text: BIG }] }
   })
-  return { files, asked, read, runs }
+  return { files, asked, read, runs, status }
 }
 
 const call = async ($: any, extra: Record<string, unknown> = {}, tool = TOOL) =>
@@ -774,18 +778,20 @@ test('a blank helper model is haiku; the budget is 1,500 ms', { options: { use_h
   expect((await command($, '')).text).toContain('trimmed by code, within 1,500 ms each')
 })
 
-test('the deadline is checked once the task is read', { options: { time_budget_ms: 100 } }, async ($, on) => {
+// A stall of 300 ms against a budget of 200: the budget must be the one set,
+// not twice it.
+test('the deadline is checked once the task is read', { options: { time_budget_ms: 200 } }, async ($, on) => {
   const { files } = world(on, { result: block(SMALL), slow: { messages: 300 } })
   expect(await call($)).toEqual(block(SMALL))
   expect(saved(files)).toEqual([])
-  expect(files[LOG]).toMatch(/took too long \(reading the task, over 100 ms\)/)
+  expect(files[LOG]).toMatch(/took too long \(reading the task, over 200 ms\)/)
 })
 
-test('the deadline is checked last before saving', { options: { time_budget_ms: 100 } }, async ($, on) => {
+test('the deadline is checked last before saving', { options: { time_budget_ms: 200 } }, async ($, on) => {
   const { files } = world(on, { result: block(SMALL), slow: { exists: 300 } })
   expect(await call($)).toEqual(block(SMALL))
   expect(saved(files)).toEqual([])
-  expect(files[LOG]).toMatch(/took too long \(saving, over 100 ms\)/)
+  expect(files[LOG]).toMatch(/took too long \(saving, over 200 ms\)/)
 })
 
 // `{"rows":[{"id":1,"etag":"eee…"}]}` of exactly `n` characters: the etag is left out.
@@ -915,4 +921,74 @@ test('a result given only as text is trimmed from that text', async ($, on) => {
   const { files } = world(on, { ran: { result: { structured: true }, text: SMALL } })
   expect(String(await call($)).slice(0, 16)).toBe('[Connector Trim]')
   expect(files[saved(files)[0]!]).toBe(SMALL)
+})
+
+// ---------- sixth review ----------
+
+test('every default never-trim entry in plugin.json leaves its tools whole', async ($, on) => {
+  world(on, { result: block(SMALL) })
+  for (const tool of [
+    'mcp__claude-in-chrome__get_page_text',
+    'mcp__Claude_Browser__read_page',
+    'mcp__remote-devices__computer_batch',
+    'mcp__camofox__navigate',
+    'mcp__computer-use__screenshot_all',
+    'mcp__computer-use__type',
+    'mcp__ccd_session__mark_chapter',
+    'mcp__plugin-authoring__scan_secrets',
+    'mcp__web__take_screenshot',
+    'mcp__web__page_snapshot',
+  ])
+    expect([tool, await call($, {}, tool)]).toEqual([tool, block(SMALL)])
+})
+
+test('with use_helper on and condense_text left at its default, text passes whole', HELPER, async ($, on) => {
+  const { files, asked } = world(on, { result: block(PROSE) })
+  expect(await call($)).toEqual(block(PROSE))
+  expect([saved(files), asked]).toEqual([[], []])
+  expect(files[LOG]).toMatch(/not JSON \(condense_text is off\)$/m)
+})
+
+test('the engine\'s request meta is no argument of the tool', HELPER, async ($, on) => {
+  const { asked } = world(on, { result: block(BIG) })
+  await call($, { requestMeta: { 'anthropic/sources': '[]' }, q: 1 })
+  expect(asked[0].prompt).toContain(`<call>${TOOL} {"customer":"123-456","q":1}</call>`)
+})
+
+test('a ledger of exactly 3,000,000 characters is appended to, not copied aside', async ($, on) => {
+  const line = '{"mod":"other"}\n'
+  const old = line.repeat(3_000_000 / line.length)
+  expect(old.length).toBe(3_000_000)
+  const { files } = world(on, { result: block(SMALL), files: { [LEDGER]: old } })
+  await call($)
+  expect(Object.keys(files).filter(p => /savings-\d{8}-\d{6}\.jsonl$/.test(p))).toEqual([])
+  expect(files[LEDGER]!.startsWith(old)).toBe(true)
+})
+
+test('arguments of exactly 2,000 characters reach the helper whole', HELPER, async ($, on) => {
+  const { asked } = world(on, { result: block(BIG) })
+  const args = JSON.stringify({ customer: '123-456', q: 'z'.repeat(1971) })
+  expect(args).toHaveLength(2000)
+  await call($, { q: 'z'.repeat(1971) })
+  expect(asked[0].prompt).toContain(`<call>${TOOL} ${args}</call>`)
+})
+
+test('the status line is cleared once the helper has answered', HELPER, async ($, on) => {
+  const { status: shown } = world(on, { result: block(BIG) })
+  await call($)
+  expect(shown.length).toBe(2)
+  expect(shown[0]).toMatch(/^Connector Trim: haiku is reading campaign_report/)
+  expect(shown[1]).toBeUndefined()
+})
+
+test('an unknown /connector-trim argument shows the usage', async ($, on) => {
+  world(on, { result: block(SMALL) })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect((await command($, 'bogus')).text).toBe('Usage: /connector-trim [off|on|full]')
+})
+
+test('a USERPROFILE that is no Windows path (as WSL hands over) gives way to HOME', async ($, on) => {
+  const { files } = world(on, { result: block(SMALL), env: { USERPROFILE: '/mnt/c/Users/x', HOME: 'C:\\Users\\x' } })
+  await call($)
+  expect(saved(files)).toHaveLength(1)
 })

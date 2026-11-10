@@ -337,7 +337,7 @@ export function taskOf(rows: readonly Row[], toolUseId?: string) {
   const said = rows
     .slice(ask + 1, end)
     .filter(r => r.role === 'assistant' && r.text.trim() !== '')
-    .map(r => clipEnd(r.text, 1600).trim())
+    .map(r => r.text.trim())
   return { user: ask >= 0 ? head(asked, 2000) : '', assistant: tail(said.join(NL), 1500) }
 }
 
@@ -367,7 +367,9 @@ export function isNamed(key: string, words: ReadonlySet<string>) {
 // ---------- paging ----------
 
 // The paging and count fields outside the records, as [name, value as
-// returned]: `page`, `2`; `data.pageInfo.endCursor`, `"abc"`.
+// returned]: `page`, `2`; `data.pageInfo.endCursor`, `"abc"`; a list whole,
+// `search_after`, `[1700000000000,"id#9"]`. An object in a paging group is
+// walked into, so each of its values is named by its path.
 export function pagingOf(data: unknown, prefix = '') {
   const out: [string, string][] = []
   const walk = (v: unknown, path: string, group: boolean) => {
@@ -376,8 +378,9 @@ export function pagingOf(data: unknown, prefix = '') {
       tick()
       const x = v[k]
       const info = infoOf(k)
-      if ((group || (info.paging && isPagingShaped(x))) && isScalar(x)) out.push([`${prefix}${path}${k}`, ser(x)])
-      else if (!isScalar(x)) walk(x, `${path}${k}.`, group || (info.group && isPagingShaped(x)))
+      const paging = group || (info.group && isPagingShaped(x))
+      if (paging && (isScalar(x) || Array.isArray(x))) out.push([`${prefix}${path}${k}`, ser(x)])
+      else if (!isScalar(x)) walk(x, `${path}${k}.`, paging)
     }
   }
   walk(data, '', false)
@@ -473,7 +476,8 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
       t.blobItems += 1
       return BLOB_MARK
     })
-    return hoist(items, t)
+    // A paging group's list travels as returned, never reshaped.
+    return group ? items : hoist(items, t)
   }
   if (!isObject(v)) return v
   const out: Json = {}
@@ -516,22 +520,19 @@ function hoist(items: unknown[], t: TrimStats): unknown {
   for (const k of Object.keys(first)) {
     tick()
     const v = first[k]
-    if (records.every(r => Object.hasOwn(r, k) && sameScalar(r[k], v))) put(same, k, v)
+    // A record without the field reads undefined, which no JSON value is.
+    if (records.every(r => sameScalar(r[k], v))) put(same, k, v)
   }
   if (Object.keys(same).length === 0) return items
   t.hoisted += Object.keys(same).length
-  const out: Json = {}
-  put(out, SAME, same)
-  put(
-    out,
-    'records',
-    records.map(r => {
+  return {
+    [SAME]: same,
+    records: records.map(r => {
       const o: Json = {}
       for (const k of Object.keys(r)) if (!Object.hasOwn(same, k)) put(o, k, r[k])
       return o
     }),
-  )
-  return out
+  }
 }
 
 // The layout would come out longer than this: the caller passes the result whole.

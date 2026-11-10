@@ -27,6 +27,7 @@ import {
   pagingLine,
   pagingOf,
   parseJson,
+  partsOf,
   readBlocks,
   note,
   reshaped,
@@ -416,7 +417,7 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'IsTruncated', 'total', 'totalCount', 'page', 'per_page', 'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after',
     'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2', 'next_offset', 'nextoffset',
     // An acronym glued to a word; `previous` read before `prev`.
-    'NEXTLink', 'previoustoken', 'previouspagetoken',
+    'NEXTLink', 'previoustoken', 'previouspagetoken', 'first_id', 'last_id', 'next_id',
     // Paging by name whatever else is in it: kept as returned when paging-shaped.
     'next_auth_token', 'cursor_secret', 'last_token',
     // The longest key read as a name: 200 characters.
@@ -740,4 +741,118 @@ test('a run keeps which keys each set of words names apart', () => {
   const rows = '[{"cost":1,"clicks":2,"etag":"x"}]'
   expect(JSON.parse(trimJson([rows], new Set(['etag']), { run })!.text)).toEqual([{ cost: 1, clicks: 2, etag: 'x' }])
   expect(JSON.parse(trimJson([rows], new Set(['cost']), { run })!.text)).toEqual([{ cost: 1, clicks: 2 }])
+})
+
+// ---------- sixth review ----------
+
+test('paging values held in lists are kept as returned and listed in the header', () => {
+  const links = [
+    { rel: 'next', href: 'https://x?p=2', method: 'GET' },
+    { rel: 'prev', href: 'https://x?p=0', method: 'GET' },
+    { rel: 'self', href: 'https://x?p=1', method: 'GET' },
+  ]
+  const items = Array.from({ length: 300 }, (_, i) => ({ id: i, name: `n${i}`, kind: 'A' }))
+  const t = trimmed(JSON.stringify({ items, links, search_after: [1700000000000, 'id#9'] }))
+  expect(t.value.links).toEqual(links)
+  expect(t.value.search_after).toEqual([1700000000000, 'id#9'])
+  expect(t.paging).toBe(`links=${JSON.stringify(links)}, search_after=[1700000000000,"id#9"]`)
+  // Records outside a paging group are still hoisted.
+  expect(t.value.items['same in every record']).toEqual({ kind: 'A' })
+  // A list of values past the header's 4,000 characters is named, its values left to the body.
+  const long = Array.from({ length: 20 }, (_, i) => `${'c'.repeat(250)}${i}`)
+  expect(trimmed(JSON.stringify({ search_after: long, rows: [] })).paging).toMatch(/^search_after \([\d,]+ characters of values, in the body below\)$/)
+})
+
+test('two different exact ids are not hoisted as one', () => {
+  const t = trimJson(['{"rows":[{"id":9007199254740993,"n":1},{"id":9007199254740993,"n":2},{"id":9007199254740995,"n":3}]}'], none)!
+  expect(t.stats.hoisted).toBe(0)
+  expect(t.text).toContain('9007199254740995')
+})
+
+test('an empty text and an empty list are left out as empty fields', () => {
+  const t = trimmed('{"rows":[{"id":1,"s":"","l":[],"o":{},"n":null}]}')
+  expect(t.value.rows).toEqual([{ id: 1 }])
+  expect([...t.stats.empty]).toEqual(['s', 'l', 'o', 'n'])
+})
+
+test('a field present in only some records is not hoisted', () => {
+  const t = trimmed('{"rows":[{"id":1,"k":null},{"id":2},{"id":3,"k":null}]}')
+  expect(t.stats.hoisted).toBe(0)
+})
+
+test('the task holds what the assistant wrote in the row that makes the call', () => {
+  const rows = [
+    { role: 'user', text: 'Stáhni report kampaní' },
+    { role: 'assistant', text: 'Stahuji report.', toolUses: [{ tool_use_id: 't1' }] },
+    { role: 'assistant', text: 'Hotovo.' },
+  ]
+  expect(taskOf(rows, 't1')).toEqual({ user: 'Stáhni report kampaní', assistant: 'Stahuji report.' })
+})
+
+test('the request is cut at 2,000 characters and what was said at its last 1,500', () => {
+  const task = taskOf([
+    { role: 'user', text: `${'x'.repeat(2000)}y` },
+    { role: 'assistant', text: `a${'z'.repeat(1500)}` },
+  ])
+  expect(task.user).toBe(`${'x'.repeat(2000)}…`)
+  expect(task.assistant).toBe(`…${'z'.repeat(1500)}`)
+  expect(taskOf([{ role: 'user', text: 'x'.repeat(2000) }]).user).toBe('x'.repeat(2000))
+})
+
+test('base64 starts at 200 characters', () => {
+  const t = trimmed(JSON.stringify({ rows: [{ a: b64(200), b: b64(199) }] }))
+  expect([...t.stats.blobs]).toEqual(['a'])
+  expect(t.value.rows[0]).toEqual({ b: b64(199) })
+})
+
+test('the JSON reader refuses a leading zero and a word that only starts like false', () => {
+  expect(parseJson('[01]')).toBeUndefined()
+  expect(parseJson('[falsy]')).toBeUndefined()
+  expect(parseJson('[0,10,false]')).toEqual([0, 10, false])
+})
+
+test('a cut never splits the highest surrogate pair', () => {
+  expect(clip('ab􏿿', 3)).toBe('ab')
+  expect(clipEnd('􏿿ab', 3)).toBe('ab')
+})
+
+test('__typename is bookkeeping', () => {
+  const t = trimmed('{"rows":[{"id":1,"__typename":"Campaign"}]}')
+  expect(t.value.rows).toEqual([{ id: 1 }])
+  expect([...t.stats.noise]).toEqual(['__typename'])
+})
+
+test('blocks share one length limit, the blank line between them counted', () => {
+  const a = JSON.stringify({ a: 'x'.repeat(100) })
+  const whole = trimJsonWhy([a, a], none)
+  if (typeof whole === 'string') throw new Error(whole)
+  const [first, second] = whole.text.split('\n\n')
+  const layoutOf2 = second!.length - 'Block 2 of 2:\n'.length
+  expect(typeof trimJsonWhy([a, a], none, { maxChars: first!.length + 2 + layoutOf2 })).toBe('object')
+  expect(trimJsonWhy([a, a], none, { maxChars: first!.length + 1 + layoutOf2 })).toBe(NOT_SHORTER)
+})
+
+test('the left-out line names 40 fields, then counts the rest', () => {
+  const stats = (n: number) => {
+    const t = trimmed(JSON.stringify({ rows: [Object.fromEntries(Array.from({ length: n }, (_, i) => [`f${i}`, null]))] }))
+    return leftOut(t.stats)
+  }
+  expect(stats(40)).toBe(`empty fields (${Array.from({ length: 40 }, (_, i) => `f${i}`).join(', ')})`)
+  expect(stats(41)).toBe(`empty fields (${Array.from({ length: 40 }, (_, i) => `f${i}`).join(', ')}, and 1 more names)`)
+})
+
+test('a long line breaks after a comma before an object, and only in the second half of a piece', () => {
+  const line = `${'a'.repeat(60)} ${'b'.repeat(20)},{${'c'.repeat(40)}`
+  expect(chunks(line, 100)[0]).toBe(line.slice(0, 82))
+  const early = `${'a'.repeat(30)},"${'b'.repeat(200)}`
+  expect(chunks(early, 100)[0]).toBe(early.slice(0, 100))
+})
+
+test('a cleared file and one up to 8 bytes longer are not counted again', () => {
+  const f = (name: string, size: number) => ({ name, kind: 'file', size, mtimeMs: 1 })
+  expect(toClear([f('a', CLEARED.length + 8), f('b', CLEARED.length + 9)], 100, 50, 10_000)).toEqual(['b'])
+})
+
+test('a tool name keeps every part after the server', () => {
+  expect(partsOf('mcp__srv__a__b')).toEqual({ server: 'srv', name: 'a__b' })
 })
