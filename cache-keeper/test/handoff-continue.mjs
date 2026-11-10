@@ -389,7 +389,7 @@ await check('/handoff keep: five steps, draft first, the handoff saved and check
   assert.equal(JSON.parse(files.get(latestKey())).text, GOOD.trim())
   const card = await s.render()
   const t = texts(card)
-  assert.match(t, /Handoff ready: \d+ words/)
+  assert.match(t, /Handoff ready · [\d,]+ words/)
   assert.ok(t.includes('Saved to ' + saved))
   for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 's', 'words']) assert.ok(t.includes(d), d)
   assert.equal((t.match(/✓/g) || []).length, 5)
@@ -901,6 +901,17 @@ await check('auto clear on: a turn in the countdown is waited for, then one fres
   assert.ok(cleared(s.log))
   assert.equal(s.sent.length, 1)
   store.delete('settings')
+})
+
+await check('desktop: the ready title reads "Handoff ready · 1,234 words" and never breaks', async () => {
+  const long = GOOD + '\n\n' + 'word '.repeat(1300)
+  const s = await boot('/w/rt', 'rt000001-0', { select: true, fork: async () => ({ isAnswered: true, text: long }) })
+  await s.run('handoff', 'keep')
+  const card = subtree(await s.render('desktop'), 'ck-ho-card')
+  assert.match(texts(card), /Handoff ready · 1,\d{3} words/)
+  const box = subtree(card, 'ck-ho-title')
+  assert.equal(box.flexShrink, 0, 'the title keeps its width')
+  assert.match(texts(box).trim(), /^Handoff ready · /)
 })
 
 await check('desktop: a handoff queued over a ready one keeps the steps, stop now, the saved path and the ready buttons', async () => {
