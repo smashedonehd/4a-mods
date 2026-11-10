@@ -5,7 +5,7 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | Mod | Commands | What it does |
 |---|---|---|
 | [Cache Keeper](#cache-keeper) | `/cache`, `/keepwarm`, `/board`, `/handoff` | Shows whether a chat's prompt cache is warm or cold and what a cold restart would cost, keeps big chats warm, asks before an expensive cold send, shows every local chat on one board, and hands a chat off to a fresh one |
-| [Toggles](#toggles) | `/toggles` | Switches plugins, skills and MCP servers on and off from one pane, shows what each costs in context, and saves the set as a profile |
+| [Toggles](#toggles) | `/toggles` | Switches plugins, skills, MCP servers and mods on and off from one pane, shows what each costs in context, and saves the set as a profile |
 | [Prompt Translate](#prompt-translate) | `/translate` | Translates the draft in the prompt box into English with one button, without sending it |
 | [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
 | [Connector Trim](#connector-trim) | `/connector-trim` | Shortens big JSON results of MCP connectors before Claude reads them: code trims first, Haiku condenses what is still big for the task, and the full result is saved to a file |
@@ -53,10 +53,11 @@ Prices come from the Claude API price list. On a subscription plan they show up 
 
 Every skill, plugin and MCP server that is on takes context in every turn, whether Claude uses it or not. Toggles shows what each one costs and switches it from one pane.
 
-- **`/toggles`**, or the `⚙ Toggles` button beside the mode hint, opens the pane. It has four tabs: Plugins, Skills, MCP and Profiles.
+- **`/toggles`**, or the `⚙ Toggles` button beside the mode hint, opens the pane. It has five tabs: Profiles, Plugins, Skills, MCP and Mods.
 - **The bar** at the top shows how many tokens of the tab are in every turn, one coloured segment per source, counted the way `/context` counts this chat. A `~` marks an estimate from the files where the chat has no count yet.
 - **Your own skills** get a four-way switch: On lists the skill with its description, Name lists it by name alone, User hides it from Claude but keeps `/name` for you, and Off hides it from both. A plugin's skills switch with their plugin, and their row leads to it. A warning shows when skills don't fit the listing budget.
 - **Plugins and MCP servers** switch On or Off. Point at a row to see what it adds. MCP switches apply to the current project; reconnect with `/mcp`.
+- **Mods** lists every mod on this computer: installed from a marketplace, in `~/.claude/mods`, or named in `CLAUDE_CODE_PLUGIN_DIRS`. A mod whose code reads `~/.claude/mods/switches.json` gets **On/Off** (off in every chat, `"<name>": false`) and, where it reads a `:hidden` key, **Shown/Hidden** (keeps working out of sight, `"<name>:hidden": true`); a mod with a pane gets **Open**. Each mod picks the change up within a few seconds, no reload. A mod without that switch says so: turn an installed one off in the Plugins tab, or remove a local one's folder.
 - **Profiles** save which plugins are on and where each skill's switch stands, and apply all of it in one click.
 - **Changes** are written to settings at once. Plugin and skill changes reach the current chat after **Apply now** (`/reload-plugins`), or in a new chat. Apply now waits up to three seconds for Claude Code to read the new settings in, and reloads only once it has. A mod you switch, Toggles itself included, takes effect only in a new chat.
 - **A switch set higher up** (the project's `.claude/settings.json` or `.claude/settings.local.json`, `--settings`, managed settings) is not written over: the press says where it is set.
@@ -95,7 +96,7 @@ MCP connectors (Google Ads, Search Console, GA4 and the like) often answer with 
 
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) and its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Connector Trim keeps full connector results in `~/.claude/mods-data/connector-trim/results/` (7 days, 200 MB at most), its errors in `~/.claude/mods-logs/connector-trim.log`, and one line per shortened result in `~/.claude/mods-logs/savings.jsonl`; it sends a result to Haiku through Claude Code's own client only when trimming by code is not enough. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`) its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Connector Trim keeps full connector results in `~/.claude/mods-data/connector-trim/results/` (7 days, 200 MB at most), its errors in `~/.claude/mods-logs/connector-trim.log`, and one line per shortened result in `~/.claude/mods-logs/savings.jsonl`; it sends a result to Haiku through Claude Code's own client only when trimming by code is not enough. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 

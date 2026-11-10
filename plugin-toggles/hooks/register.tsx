@@ -8,12 +8,13 @@ const norm = (p: string) => p.split(BS).join('/')
 const query = atom({ plugin: 'plugin-toggles', key: 'q' } as const, '', {
   shape: 'q-1',
 })
-const TABS = ['profiles', 'plugins', 'skills', 'mcp'] as const
+const TABS = ['profiles', 'plugins', 'skills', 'mcp', 'mods'] as const
 const TAB_LABEL: Record<string, string> = {
   profiles: 'Profiles',
   plugins: 'Plugins',
   skills: 'Skills',
   mcp: 'MCP',
+  mods: 'Mods',
 }
 const TAB_HELP: Record<string, string> = {
   profiles: 'Saved sets of plugins and skills. Apply switches the whole set in one click.',
@@ -63,6 +64,8 @@ const PALETTE = [
   '#C08A5B',
   '#8C9BB0',
 ]
+// A switched-on mod's On and Shown.
+const GOOD = '#16a34a'
 // Chips drawn at most; the filter narrows the rest.
 const SHOWN = 200
 // Bumped after each write so the pane redraws.
@@ -127,17 +130,21 @@ async function paths($: any) {
   const home = norm(/^[A-Za-z]:[\\/]/.test(profile) ? profile : String(homeVar || profile))
   const dir = config ? norm(String(config)).replace(/\/+$/, '') : `${home}/.claude`
   return {
+    home,
     dir,
+    // Mods look for their switch file here whatever CLAUDE_CONFIG_DIR says.
+    mods: `${home}/.claude/mods`,
     settings: `${dir}/settings.json`,
     global: config ? `${dir}/.claude.json` : `${home}/.claude.json`,
   }
 }
 
-// Rewrites a JSON file through `change`, unless readStrict refuses it.
-async function rewrite($: any, path: string, change: (json: Record<string, any>) => void) {
+// Rewrites a JSON file through `change`, unless readStrict refuses it or
+// `change` returns false.
+async function rewrite($: any, path: string, change: (json: Record<string, any>) => void | false) {
   const json = await readStrict($, path)
   if (json === undefined) return false
-  change(json)
+  if (change(json) === false) return false
   await $.fs.write(path, JSON.stringify(json, null, 2) + NL)
   return true
 }
@@ -233,6 +240,17 @@ type Info = {
   hooks: string[]
 }
 const infoCache = new Map<string, Info | null>()
+
+// Where each installed plugin sits, by id.
+async function installRoots($: any) {
+  const reg = await readJson($, `${(await paths($)).dir}/plugins/installed_plugins.json`)
+  const roots = new Map<string, string>()
+  for (const id of Object.keys(reg.plugins ?? {})) {
+    const path = (reg.plugins[id] ?? [])[0]?.installPath
+    if (path) roots.set(id, norm(String(path)))
+  }
+  return roots
+}
 
 async function pluginInfo($: any, id: string): Promise<Info | null> {
   if (infoCache.has(id)) return infoCache.get(id) ?? null
@@ -716,6 +734,188 @@ async function deleteProfile($: any, name: string) {
   await update($, rev, n => n + 1)
 }
 
+// ---- Mods ----
+// The switch file other mods read on their own, every few seconds: `"<name>":
+// false` stops a mod, `"<name>:hidden": true` keeps it working without its
+// pane or band. No key means on and shown. It lives under the home folder's
+// .claude whatever CLAUDE_CONFIG_DIR says, as those mods look for it there.
+async function switchesFile($: any) {
+  return `${(await paths($)).mods}/switches.json`
+}
+
+type ModInfo = {
+  name: string
+  // The name in words: `cache-clock` is Cache Clock.
+  title: string
+  desc: string
+  // Its slash commands, as its code registers them.
+  tip: string
+  // Its hooks code reads switches.json, so the switch moves it.
+  switchable: boolean
+  // Its hooks code reads a `:hidden` key.
+  hideable: boolean
+  // Its code looks for an `.open-<name>-<session>` request: it has a pane to open.
+  pane: boolean
+  // The plugin id when it was installed from a marketplace.
+  id: string
+  dir: string
+}
+
+// Folders directly inside dir, a link to one counted as one.
+async function dirsIn($: any, dir: string) {
+  return (await listSafe($, dir))
+    .filter(x => !x.name.startsWith('.') && (x.kind === 'dir' || (x as any).isLink))
+    .map(x => `${dir}/${x.name}`)
+}
+
+// CLAUDE_CODE_PLUGIN_DIRS: a Windows list is split at ';', any other at ':',
+// where a lone drive letter joins the path after it (`C:/x`). `~` is home.
+async function envDirs($: any, home: string) {
+  const raw = String((await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) || '')
+  let parts = raw.split(';')
+  if (parts.length === 1) {
+    parts = []
+    for (const piece of raw.split(':')) {
+      const last = parts[parts.length - 1]
+      if (last !== undefined && /^[A-Za-z]$/.test(last.trim()) && /^[\\/]/.test(piece))
+        parts[parts.length - 1] = `${last.trim()}:${piece}`
+      else parts.push(piece)
+    }
+  }
+  return parts
+    .map(x => norm(x.trim()).replace(/\/+$/, ''))
+    .filter(x => x !== '')
+    .map(x => (x === '~' ? home : x.startsWith('~/') ? home + x.slice(1) : x))
+}
+
+// The hooks code of a plugin folder, tests left out, or undefined when it is
+// no mod: a mod has a hooks.json naming modules. Read: the code files in
+// hooks/, and each module hooks.json names wherever it sits.
+const isCode = (name: string) => /\.(tsx?|jsx?|[mc][jt]s)$/.test(name) && !/\.test\./.test(name)
+async function hooksCode($: any, dir: string) {
+  const hooks = await readObject($, `${dir}/hooks/hooks.json`)
+  if (!Array.isArray(hooks?.modules) || hooks.modules.length === 0) return undefined
+  const files = new Set<string>(
+    (await listSafe($, `${dir}/hooks`))
+      .filter(x => x.kind === 'file' && isCode(x.name))
+      .map(x => `${dir}/hooks/${x.name}`),
+  )
+  for (const mod of hooks.modules)
+    if (typeof mod === 'string' && isCode(mod)) {
+      const parts = `${dir}/hooks`.split('/')
+      for (const step of norm(mod).split('/'))
+        if (step === '..') parts.pop()
+        else if (step !== '.' && step !== '') parts.push(step)
+      files.add(parts.join('/'))
+    }
+  const texts = await Promise.all([...files].map(f => readSafe($, f)))
+  return texts.join(NL)
+}
+
+async function inspectMod($: any, dir: string, id: string): Promise<ModInfo | undefined> {
+  const manifest = await readObject($, `${dir}/.claude-plugin/plugin.json`)
+  if (manifest === undefined) return undefined
+  const name = String(manifest.name || dir.split('/').pop() || '')
+  if (name === '' || name === 'plugin-toggles') return undefined
+  const code = await hooksCode($, dir)
+  if (code === undefined) return undefined
+  const commands = [
+    ...new Set(
+      [...code.matchAll(/command\.register\(\s*\{\s*name:\s*['"`]([^'"`]+)['"`]/g)].map(m => `/${m[1]}`),
+    ),
+  ]
+  return {
+    name,
+    title: name
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' '),
+    desc: String(manifest.description ?? ''),
+    tip: commands.join(', '),
+    switchable: code.includes('switches.json'),
+    hideable: code.includes(':hidden'),
+    pane: code.includes('.open-'),
+    id,
+    dir,
+  }
+}
+
+// The last change, said under the list.
+const modNote = atom({ plugin: 'plugin-toggles', key: 'modNote' } as const, '', {
+  shape: 'modNote-1',
+})
+
+// Asks the mod, in this chat, to open its pane: it looks for the file every few seconds.
+async function openMod($: any, m: ModInfo) {
+  const { mods } = await paths($)
+  const json = await readJson($, `${mods}/switches.json`)
+  if (json[m.name] === false || json[`${m.name}:hidden`] === true) {
+    await update($, modNote, () => `${m.title} is ${json[m.name] === false ? 'off' : 'hidden'}. Turn it on and show it first.`)
+    return
+  }
+  const sid = String(await $.session.id())
+  await $.fs.write(`${mods}/.open-${m.name}-${sid}`, '')
+  await update($, modNote, () => `${m.title} opens in this chat within a few seconds.`)
+}
+
+// Flips the mod's On or Shown key: a set key is deleted, a missing one set.
+async function flipMod($: any, m: ModInfo, hide: boolean) {
+  const key = hide ? `${m.name}:hidden` : m.name
+  let was = false
+  let isOff = false
+  const wrote = await rewrite($, await switchesFile($), json => {
+    // Shown means nothing while the mod is off.
+    if (hide && json[m.name] === false) {
+      isOff = true
+      return false
+    }
+    was = hide ? json[key] === true : json[key] === false
+    if (was) delete json[key]
+    else json[key] = hide
+  })
+  if (isOff) await update($, modNote, () => `${m.title} is off. Turn it on first.`)
+  if (!wrote) return
+  await update($, rev, n => n + 1)
+  const now = hide ? (was ? 'shown' : 'hidden') : was ? 'on' : 'off'
+  await update($, modNote, () => `${m.title} is ${now} in every chat.`)
+}
+
+// Every mod on this computer: those installed from a marketplace, those in
+// ~/.claude/mods and those CLAUDE_CODE_PLUGIN_DIRS names, switchable ones
+// first, A to Z within each part. Kept ten seconds, as drawing the pane reads
+// it again on each change; draws that overlap share one scan.
+let modsCache: { at: number; list: Promise<ModInfo[]> } | undefined
+async function modsNow($: any) {
+  const at = Number(await $.clock.now())
+  // A clock that went back counts as stale too.
+  if (modsCache && at >= modsCache.at && at - modsCache.at < 10_000) return modsCache.list
+  const list = scanMods($)
+  modsCache = { at, list }
+  // A scan that failed is not kept.
+  list.catch(() => {
+    if (modsCache?.list === list) modsCache = undefined
+  })
+  return list
+}
+
+async function scanMods($: any) {
+  const { home, mods } = await paths($)
+  const [roots, local, env] = await Promise.all([installRoots($), dirsIn($, mods), envDirs($, home)])
+  const found: [string, string][] = [
+    ...[...roots].map(([id, d]): [string, string] => [d, id]),
+    ...[...local, ...env].map((d): [string, string] => [d, '']),
+  ]
+  const seen = new Set<string>()
+  const list: ModInfo[] = []
+  for (const mod of await Promise.all(found.map(([d, id]) => inspectMod($, d, id))))
+    if (mod && !seen.has(mod.name)) {
+      seen.add(mod.name)
+      list.push(mod)
+    }
+  return list.sort((a, b) => Number(b.switchable) - Number(a.switchable) || a.name.localeCompare(b.name))
+}
+
 async function setMode($: any, kind: string, name: string, mode: Mode) {
   if (kind === 'mcp') return toggleMcp($, name, mode === 'on')
   const source = await outranking($, kind === 'plugins' ? 'enabledPlugins' : 'skillOverrides', name)
@@ -759,7 +959,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'toggles',
-      description: 'Switch plugins, skills and MCP servers on and off',
+      description: 'Switch plugins, skills, MCP servers and mods on and off',
     })
     return next(e)
   })
@@ -888,6 +1088,98 @@ export const register: Register = on => {
               </Box>
             )
           })}
+        </Box>
+      )
+    }
+    if (current === 'mods') {
+      const [mods, switches, plugins, said] = await Promise.all([
+        modsNow($),
+        switchesFile($).then(p => readJson($, p)),
+        switchesNow($).then(s => s.enabledPlugins as Record<string, boolean>),
+        read($, modNote),
+      ])
+      const chrome = e.surface === 'terminal' ? { variant: 'secondary' as const } : {}
+      // A control that is a word while it cannot be pressed, else a button
+      // with a green dot when lit.
+      const control = (key: string, label: string, live: boolean, lit: boolean, press: () => unknown) =>
+        !live ? (
+          <Text key={key} dimColor>
+            {label}
+          </Text>
+        ) : (
+          <Box key={`${key}-box`} alignItems="center" gap={0}>
+            {lit && <Text color={GOOD}>●</Text>}
+            <Button key={key} label={label} dimColor={!lit} {...chrome} onPress={press} />
+          </Box>
+        )
+      return (
+        <Box flexDirection="column" gap={1} padding={1}>
+          {tabs($, e, current)}
+          {mods.length === 0 && <Text dimColor>No mods found.</Text>}
+          {mods.map(m => {
+            const off = m.switchable && switches[m.name] === false
+            const hidden = switches[`${m.name}:hidden`] === true
+            const pluginOff = m.id !== '' && plugins[m.id] === false
+            return (
+              <Box key={`mod:${m.name}`} alignItems="flex-start" justifyContent="space-between" gap={1}>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Text bold dimColor={off} wrap="truncate-end">
+                    {m.title}
+                  </Text>
+                  {m.desc !== '' && (
+                    <Text dimColor wrap="truncate-end">
+                      {m.desc}
+                    </Text>
+                  )}
+                  {m.tip !== '' && (
+                    <Text dimColor italic wrap="truncate-end">
+                      {m.tip}
+                    </Text>
+                  )}
+                  {pluginOff && (
+                    <Text color="warning" wrap="truncate-end">
+                      Plugin off in the Plugins tab, so it does not run.
+                    </Text>
+                  )}
+                  {!m.switchable && (
+                    <Text dimColor wrap="wrap">
+                      {m.id !== ''
+                        ? 'No switch: its code does not read switches.json. Turn it off in the Plugins tab.'
+                        : `No switch: its code does not read switches.json. Remove its folder to stop it: ${m.dir}`}
+                    </Text>
+                  )}
+                </Box>
+                {m.switchable && (
+                  <Box gap={1} flexShrink={0}>
+                    {m.pane &&
+                      (off || hidden ? (
+                        <Text dimColor>Open</Text>
+                      ) : (
+                        <Button key={`mods-open:${m.name}`} label="Open" {...chrome} onPress={() => openMod($, m)} />
+                      ))}
+                    {m.hideable &&
+                      control(`mods-shown:${m.name}`, hidden ? 'Hidden' : 'Shown', !off, !hidden, () =>
+                        flipMod($, m, true),
+                      )}
+                    {control(`mods:${m.name}`, off ? 'Off' : 'On', true, !off, () => flipMod($, m, false))}
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+          <Box flexDirection="column">
+            {said !== '' && (
+              <Text color={GOOD} wrap="truncate-end">
+                {said}
+              </Text>
+            )}
+            <Text dimColor wrap="wrap">
+              Off means off in every chat. Hidden keeps it on but out of sight. Changes apply within a few seconds.
+            </Text>
+            <Text dimColor wrap="wrap">
+              New mods show up the next time you open this tab.
+            </Text>
+          </Box>
         </Box>
       )
     }
