@@ -234,3 +234,83 @@ test('auto band: a follow-up to the first run of a dismissed wave keeps it hidde
   await step($, 'a')
   expect(await shown($)).toBeNull()
 })
+
+// ---- a subagent this session never saw start (it ran before a /clear) ----------
+
+const pane = { title: '', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} } as const
+
+// What the Agents panel says
+async function panelTexts($: Engine) {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'savvy-agents', props: pane })
+  const texts = (await ui.findAll({ type: 'Text' })).map(el => String(el.text ?? ''))
+  await ui.unmount()
+  return texts.join(' | ')
+}
+
+// The engine's own list of agents: the ids it names, with a description each
+const listed = (on: On, ...ids: string[]) =>
+  on('agent.list', () => ({ value: ids.map(id => ({ id, description: `Old ${id}`, type: 'general-purpose', status: 'running' })) }) as never)
+
+test('unseen: a step of a listed subagent that never spawned here founds its run', async ($, on) => {
+  session(on)
+  listed(on, 'x')
+  expect(await panelTexts($)).toContain('No subagents yet.')
+  await step($, 'x')
+  const texts = await panelTexts($)
+  expect(texts).not.toContain('No subagents yet.')
+  expect(texts).toContain('Old x')
+  // Its first request is counted: 2 tokens, not 0
+  expect(texts).toContain('· 2 tokens ·')
+})
+
+test('unseen: two of them make a wave, and their ends close it', async ($, on) => {
+  session(on)
+  listed(on, 'x', 'y')
+  await step($, 'x')
+  expect(await shown($)).toBeNull()
+  await step($, 'y')
+  // A second step of the same one founds nothing more
+  await step($, 'x')
+  expect(await shown($)).toMatchObject({ title: true, label: 'Tasks 0/2' })
+  await finish($, 'x')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 1/2' })
+  await finish($, 'y')
+  expect(await shown($)).toMatchObject({ label: 'Done' })
+})
+
+test('unseen: one that ends before any step was seen shows as finished', async ($, on) => {
+  session(on)
+  listed(on, 'x', 'y')
+  await step($, 'y')
+  await finish($, 'x')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 1/2' })
+})
+
+test('unseen: an id the engine does not list is a fork or a workflow agent, and gets no run', async ($, on) => {
+  session(on)
+  listed(on, 'x')
+  await step($, 'fork-1')
+  await finish($, 'fork-2')
+  expect(await panelTexts($)).toContain('No subagents yet.')
+})
+
+test('unseen: a list that fails founds nothing and breaks nothing', async ($, on) => {
+  session(on)
+  on('agent.list', () => {
+    throw new Error('no list')
+  })
+  await step($, 'x')
+  expect(await panelTexts($)).toContain('No subagents yet.')
+})
+
+test('unseen: a spawned subagent is not founded a second time', async ($, on) => {
+  session(on)
+  listed(on, 'a', 'b')
+  await spawn($, 'a')
+  await step($, 'a')
+  await step($, 'b')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+  // A spawn answered with a founded run's id takes its place
+  await spawn($, 'b')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
+})

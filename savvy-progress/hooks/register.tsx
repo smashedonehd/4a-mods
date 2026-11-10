@@ -493,6 +493,21 @@ const resumedLast = (list: AgentRun[], agentId: string): AgentRun[] => {
   return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1), list[i]]
 }
 
+// A subagent this session never saw start (it ran before a /clear, or a follow-up
+// woke it): the list with a run for it, founded on what `$.agent.list()` says. An
+// id no list names is a workflow's agent or a fork of the engine's own: no run.
+const withRun = async ($: EngineInterface, agentId: string, model: string, at: number): Promise<void> => {
+  if ((await read($, agents)).some(a => a.agentId === agentId)) return
+  const info = await $.agent.list().then(all => all.find(a => a.id === agentId), () => undefined)
+  if (!info) return
+  await update($, agents, list => {
+    if (list.some(a => a.agentId === agentId)) return list
+    const round = 1 + list.filter(a => norm(a.description) === norm(info.description) && info.description).length
+    const run: AgentRun = { id: agentId, agentId, type: info.type, description: info.description, model, status: 'running', startedAt: at, contextTokens: 0, contextMax: windowOf(model), tokens: 0, costUsd: 0, steps: 0, round }
+    return [...list, run].slice(-200)
+  })
+}
+
 // The current wave: the runs since the last moment none was running. A run begins
 // a wave when every run before it had ended by its start; one still running never
 // has. Worked out from the list at each draw, so nothing is kept per run.
@@ -1008,6 +1023,7 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
+    await withRun($, agentId, model, await $.clock.now())
     await update($, agents, list =>
       resumedLast(list, agentId).map((a): AgentRun =>
         a.agentId !== agentId
@@ -1042,6 +1058,7 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (agentId) {
       const at = await $.clock.now()
+      await withRun($, agentId, e.usage?.model || '', at)
       await update($, agents, list =>
         list.map((a): AgentRun => {
           if (a.agentId !== agentId) return a
