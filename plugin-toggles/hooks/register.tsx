@@ -754,26 +754,47 @@ async function dirsIn($: any, dir: string) {
     .map(x => `${dir}/${x.name}`)
 }
 
-// CLAUDE_CODE_PLUGIN_DIRS: split at ';', or at a ':' that does not start a
-// drive's path, `~` for the home folder.
+// CLAUDE_CODE_PLUGIN_DIRS: a Windows list is split at ';', any other at ':',
+// where a lone drive letter joins the path after it (`C:/x`). `~` is home.
 async function envDirs($: any, home: string) {
   const raw = String((await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) || '')
-  return raw
-    .split(/;|:(?![\\/])/)
+  let parts = raw.split(';')
+  if (parts.length === 1) {
+    parts = []
+    for (const piece of raw.split(':')) {
+      const last = parts[parts.length - 1]
+      if (last !== undefined && /^[A-Za-z]$/.test(last.trim()) && /^[\\/]/.test(piece))
+        parts[parts.length - 1] = `${last.trim()}:${piece}`
+      else parts.push(piece)
+    }
+  }
+  return parts
     .map(x => norm(x.trim()).replace(/\/+$/, ''))
-    .filter(x => x !== '' && !/^[A-Za-z]$/.test(x))
+    .filter(x => x !== '')
     .map(x => (x === '~' ? home : x.startsWith('~/') ? home + x.slice(1) : x))
 }
 
 // The hooks code of a plugin folder, tests left out, or undefined when it is
-// no mod: a mod has a hooks.json naming modules.
+// no mod: a mod has a hooks.json naming modules. Read: the code files in
+// hooks/, and each module hooks.json names wherever it sits.
+const isCode = (name: string) => /\.(tsx?|jsx?|mjs|cjs)$/.test(name) && !/\.test\./.test(name)
 async function hooksCode($: any, dir: string) {
   const hooks = await readObject($, `${dir}/hooks/hooks.json`)
   if (!Array.isArray(hooks?.modules) || hooks.modules.length === 0) return undefined
-  const files = (await listSafe($, `${dir}/hooks`)).filter(
-    x => x.kind === 'file' && /\.(tsx?|jsx?|mjs|cjs)$/.test(x.name) && !/\.test\./.test(x.name),
+  const files = new Set<string>(
+    (await listSafe($, `${dir}/hooks`))
+      .filter(x => x.kind === 'file' && isCode(x.name))
+      .map(x => `${dir}/hooks/${x.name}`),
   )
-  const texts = await Promise.all(files.map(x => readSafe($, `${dir}/hooks/${x.name}`)))
+  for (const mod of hooks.modules)
+    if (typeof mod === 'string' && isCode(mod)) {
+      const parts = `${dir}/hooks`.split('/')
+      for (const step of norm(mod).split('/'))
+        if (step === '..') parts.pop()
+        else if (step !== '.' && step !== '') parts.push(step)
+      files.add(parts.join('/'))
+    }
+  const texts = await Promise.all([...files].map(f => readSafe($, f)))
   return texts.join(NL)
 }
 
@@ -831,7 +852,7 @@ async function flipMod($: any, m: ModInfo, hide: boolean) {
     await update($, modNote, () => `${m.title} is off. Turn it on first.`)
     return
   }
-  await writeModSwitch($, m.name, hide, was)
+  if (!(await writeModSwitch($, m.name, hide, was))) return
   const now = hide ? (was ? 'shown' : 'hidden') : was ? 'on' : 'off'
   await update($, modNote, () => `${m.title} is ${now} in every chat.`)
 }
@@ -842,7 +863,8 @@ async function flipMod($: any, m: ModInfo, hide: boolean) {
 let modsCache: { at: number; list: ModInfo[] } | undefined
 async function modsNow($: any) {
   const at = Number(await $.clock.now())
-  if (modsCache && at - modsCache.at < 10_000) return modsCache.list
+  // A clock that went back counts as stale too.
+  if (modsCache && at >= modsCache.at && at - modsCache.at < 10_000) return modsCache.list
   const { home, dir } = await paths($)
   const reg = await readJson($, `${dir}/plugins/installed_plugins.json`)
   const found: [string, string][] = []
@@ -871,6 +893,7 @@ async function writeModSwitch($: any, name: string, hide: boolean, toOn: boolean
     else json[key] = hide ? true : false
   })
   if (wrote) await update($, rev, n => n + 1)
+  return wrote
 }
 
 async function setMode($: any, kind: string, name: string, mode: Mode) {
@@ -916,7 +939,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'toggles',
-      description: 'Switch plugins, skills and MCP servers on and off',
+      description: 'Switch plugins, skills, MCP servers and mods on and off',
     })
     return next(e)
   })
@@ -1090,7 +1113,9 @@ export const register: Register = on => {
                   )}
                   {!m.switchable && (
                     <Text dimColor wrap="wrap">
-                      No switch: its code does not read switches.json. Turn it off in the Plugins tab.
+                      {m.id !== ''
+                        ? 'No switch: its code does not read switches.json. Turn it off in the Plugins tab.'
+                        : `No switch: its code does not read switches.json. Remove its folder to stop it: ${m.dir}`}
                     </Text>
                   )}
                 </Box>
@@ -1142,7 +1167,7 @@ export const register: Register = on => {
               Off means off in every chat. Hidden keeps it on but out of sight. Changes apply within a few seconds.
             </Text>
             <Text dimColor wrap="wrap">
-              New mods appear here by themselves.
+              New mods show up the next time you open this tab.
             </Text>
           </Box>
         </Box>

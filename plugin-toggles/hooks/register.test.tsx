@@ -1010,11 +1010,18 @@ const listing = (on: any, files: Record<string, string>) =>
     return { value: [...names].map(([name, kind]) => ({ name, kind, size: 1, mtimeMs: 0, isLink: false })) }
   })
 
-const modsSetup = (on: any, extra: Record<string, string> = {}, enabledPlugins = {}) => {
+// The clock moves a minute a read, so no test sees another's kept scan.
+let tick = 0
+const modsSetup = (
+  on: any,
+  extra: Record<string, string> = {},
+  enabledPlugins = {},
+  vars: Record<string, string> = {},
+) => {
   on('command.list', () => ({ value: [] }) as any)
-  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('env.get', env({ USERPROFILE: 'C:/Users/x', ...vars }))
   on('settings.read', () => ({ value: { enabledPlugins } }))
-  on('clock.now', (): any => ({ value: 0 }))
+  on('clock.now', (): any => ({ value: (tick += 60_000) }))
   const files = disk(on, { ...modFiles(), ...extra })
   listing(on, files)
   return files
@@ -1078,3 +1085,90 @@ test('a switchable mod whose plugin is off says so', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Plugin off in the Plugins tab/ })).toBeTruthy()
   await ui.unmount()
 })
+
+test('a refused write leaves no note, and Shown or Open on an off mod writes nothing', async ($, on) => {
+  const files = modsSetup(on, { [SWITCHES]: JSON.stringify({ clock: false }) })
+  on('session.id', (): any => ({ value: 'S1' }))
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  // Off: Shown and Open are words, not buttons.
+  expect(await ui.find({ type: 'Button', key: 'mods-shown:clock' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'mods-open:clock' })).toBeFalsy()
+  await ui.press({ key: 'mods:dev' })
+  expect(await ui.find({ type: 'Text', text: /^Dev is off in every chat\.$/ })).toBeTruthy()
+  files[SWITCHES] = '{ broken'
+  await ui.press({ key: 'mods:clock' })
+  expect(files[SWITCHES]).toBe('{ broken')
+  expect(await ui.find({ type: 'Text', text: /Clock is on in every chat/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('Shown and Open refuse a mod switched off or hidden since the pane drew', async ($, on) => {
+  const files = modsSetup(on, {
+    'C:/p/clock/hooks/register.tsx': "'switches.json' + ':hidden' + '.open-'",
+  })
+  on('session.id', (): any => ({ value: 'S1' }))
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  // Another chat hides it while this pane still shows it: Open asks nothing.
+  files[SWITCHES] = JSON.stringify({ 'clock:hidden': true })
+  await ui.press({ key: 'mods-open:clock' })
+  expect(files['C:/Users/x/.claude/mods/.open-clock-S1']).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Clock is hidden\. Turn it on and show it first\.$/ })).toBeTruthy()
+  // Then turns it off: Shown changes nothing.
+  files[SWITCHES] = JSON.stringify({ clock: false })
+  await ui.press({ key: 'mods-shown:clock' })
+  expect(JSON.parse(files[SWITCHES] ?? '{}')).toEqual({ clock: false })
+  expect(await ui.find({ type: 'Text', text: /^Clock is off\. Turn it on first\.$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a mod is switchable by its code, not its tests, and listed once', async ($, on) => {
+  modsSetup(on, {
+    // plain's test mentions switches.json; its code does not.
+    'C:/p/plain/hooks/register.test.tsx': "'switches.json'",
+    // dev is also installed from a marketplace: one card.
+    [INSTALLED]: JSON.stringify({
+      plugins: {
+        'clock@m': [{ installPath: 'C:/p/clock' }],
+        'plain@m': [{ installPath: 'C:/p/plain' }],
+        'dev@m': [{ installPath: 'C:/Users/x/.claude/mods/dev' }],
+      },
+    }),
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  expect(await ui.find({ type: 'Button', key: 'mods:plain' })).toBeFalsy()
+  expect(await ui.findAll({ type: 'Text', text: /^Dev$/ })).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('a module hooks.json names outside hooks/ counts as the mod code', async ($, on) => {
+  modsSetup(on, {
+    'C:/p/plain/hooks/hooks.json': JSON.stringify({ modules: ['../dist/index.js'] }),
+    'C:/p/plain/dist/index.js': "'switches.json'",
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  expect(await ui.find({ type: 'Button', key: 'mods:plain' })).toBeTruthy()
+  await ui.unmount()
+})
+
+for (const [label, list] of [
+  ['Windows', 'C:/env/one;C:\env\two'],
+  ['POSIX', '/env/one:/env/two'],
+] as const)
+  test(`CLAUDE_CODE_PLUGIN_DIRS is split as a ${label} list`, async ($, on) => {
+    const root = label === 'Windows' ? 'C:/env' : '/env'
+    const mod = (n: string) => ({
+      [`${root}/${n}/.claude-plugin/plugin.json`]: JSON.stringify({ name: `env-${n}` }),
+      [`${root}/${n}/hooks/hooks.json`]: JSON.stringify({ modules: ['./register.tsx'] }),
+      [`${root}/${n}/hooks/register.tsx`]: "'switches.json'",
+    })
+    modsSetup(on, { ...mod('one'), ...mod('two') }, {}, { CLAUDE_CODE_PLUGIN_DIRS: list })
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'tab-mods' })
+    expect(await ui.find({ type: 'Button', key: 'mods:env-one' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'mods:env-two' })).toBeTruthy()
+    await ui.unmount()
+  })
