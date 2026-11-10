@@ -194,8 +194,8 @@ test('auto band: the desktop draws it as one Svg with the count in its alt', asy
   expect(String(svg[0]?.props.alt)).toBe('Subagents: Tasks 1/2, 50%')
 })
 
-// The press dismisses the wave that runs now, not the one the row was drawn for
-test('auto band: a dismiss pressed on an old drawing hides the wave that began since', async ($, on) => {
+// The press dismisses the newest wave, not the first one of the session
+test('auto band: a dismiss hides the wave that runs now, not an earlier one', async ($, on) => {
   const clock = session(on)
   await spawn($, 'a')
   await spawn($, 'b')
