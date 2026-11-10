@@ -1,7 +1,7 @@
 {
   "name": "connector-trim",
   "version": "0.1.0",
-  "description": "Makes big JSON results of MCP connectors cheaper: trims them by code, has Haiku condense what is still big for the task, and saves the full result to a file",
+  "description": "Makes big JSON results of MCP connectors cheaper: trims them by code and saves the full result, as returned, to a file. Redacts nothing; a helper model is called only if you turn use_helper on",
   "author": {
     "name": "4AM"
   },
@@ -16,14 +16,20 @@
     },
     "trim_target_chars": {
       "type": "number",
-      "title": "Ask Haiku over (characters, after trimming)",
-      "description": "A trimmed result shorter than this reaches Claude as trimmed, with no model call (at least 500; a lower value counts as 500)",
+      "title": "Ask the helper over (characters, after trimming)",
+      "description": "With use_helper on, a trimmed result shorter than this reaches Claude as trimmed, with no model call (at least 500; a lower value counts as 500). Not used with use_helper off",
       "default": 8000
     },
     "condense_text": {
       "type": "boolean",
       "title": "Condense text results too",
-      "description": "Off: only JSON results are shortened, and text (files, documents, logs) reaches Claude whole. On: big text results are condensed too",
+      "description": "Off: only JSON results are shortened, and text (files, documents, logs) reaches Claude whole. On, together with use_helper: big text results are sent to the helper model as they are and condensed",
+      "default": false
+    },
+    "use_helper": {
+      "type": "boolean",
+      "title": "Use the helper model",
+      "description": "Off (default): the mod never calls a model. On: a result still over trim_target_chars after trimming is sent to the helper model, as the tool returned it apart from the trim and with nothing redacted, together with your last request and the call's arguments",
       "default": false
     },
     "time_budget_ms": {
@@ -36,19 +42,17 @@
       "type": "string",
       "multiple": true,
       "title": "Never trim",
-      "description": "Servers or tools (short or full name, * as a wildcard) whose results always reach Claude whole",
+      "description": "Servers or tools (short or full name, * as a wildcard) whose results always reach Claude whole. A bare tool name matches that tool on every server",
       "default": [
         "claude-in-chrome",
         "Claude_Browser",
+        "remote-devices",
         "camofox",
         "computer-use",
         "ccd_*",
         "plugin-authoring",
         "*screenshot*",
-        "*snapshot*",
-        "read_page",
-        "get_page_text",
-        "find"
+        "*snapshot*"
       ]
     },
     "only": {
@@ -72,7 +76,7 @@
     "helper_model": {
       "type": "string",
       "title": "Helper model",
-      "description": "The model that condenses a result still big after trimming",
+      "description": "The model that condenses a result still big after trimming, with use_helper on",
       "default": "haiku"
     }
   }

@@ -14,8 +14,7 @@ import {
   neutral,
   note,
   partsOf,
-  redactJson,
-  redactText,
+  readBlocks,
   reshaped,
   restore,
   Run,
@@ -24,9 +23,10 @@ import {
   taskOf,
   textsOf,
   toClear,
+  TOO_DEEP,
   TooSlow,
   tokens,
-  trimJsonWhy,
+  trimBlocks,
   trimPlain,
   wordsOf,
 } from './trim.ts'
@@ -52,20 +52,6 @@ const LEDGER_ROTATE = 3_000_000
 // Retention runs at session start and again after this many saves.
 const PRUNE_EVERY = 25
 const DAY_MS = 86_400_000
-// The manifest's defaults, for a host that does not fill them in.
-const DEFAULT_SKIP = [
-  'claude-in-chrome',
-  'Claude_Browser',
-  'camofox',
-  'computer-use',
-  'ccd_*',
-  'plugin-authoring',
-  '*screenshot*',
-  '*snapshot*',
-  'read_page',
-  'get_page_text',
-  'find',
-]
 // Keys of a tool call's input that are the engine's, not the tool's arguments.
 const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'requestMeta', 'consent'])
 
@@ -73,6 +59,7 @@ type Config = {
   minChars: number
   targetChars: number
   condenseText: boolean
+  helper: boolean
   budgetMs: number
   skip: readonly string[]
   only: readonly string[]
@@ -84,28 +71,28 @@ type Call = Record<string, unknown> & { tool_use_id?: string; agentId?: string }
 type Helper = { model: string; calls: number; in: number; out: number }
 type Task = { user: string; assistant: string }
 
+// The engine hands over every option the manifest declares, checked against
+// its type, defaults filled in: the defaults live in plugin.json alone.
 // A number option, raised to its minimum when set below it.
-const num = (v: unknown, fallback: number, min: number) =>
-  typeof v === 'number' && Number.isFinite(v) ? Math.max(min, v) : fallback
+const num = (v: unknown, min: number) => Math.max(min, Number(v))
 // A list option: an array, or one comma-separated string; blanks dropped.
-const strs = (v: unknown, fallback: readonly string[]) =>
-  (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : fallback)
-    .filter((x): x is string => typeof x === 'string')
+const strs = (v: PluginOptions[string] | undefined) =>
+  (Array.isArray(v) ? v : String(v ?? '').split(','))
     .map(x => x.trim())
     .filter(x => x !== '')
 
 function configOf(o: PluginOptions): Config {
-  const model = typeof o.helper_model === 'string' ? o.helper_model.trim() : ''
   return {
-    minChars: num(o.min_chars, 16000, 1000),
-    targetChars: num(o.trim_target_chars, 8000, 500),
+    minChars: num(o.min_chars, 1000),
+    targetChars: num(o.trim_target_chars, 500),
     condenseText: o.condense_text === true,
-    budgetMs: num(o.time_budget_ms, 1500, 0),
-    skip: strs(o.skip, DEFAULT_SKIP),
-    only: strs(o.only, []),
-    keepDays: num(o.keep_days, 7, 1),
-    capMb: num(o.max_saved_mb, 200, 10),
-    model: model || 'haiku',
+    helper: o.use_helper === true,
+    budgetMs: num(o.time_budget_ms, 0),
+    skip: strs(o.skip),
+    only: strs(o.only),
+    keepDays: num(o.keep_days, 1),
+    capMb: num(o.max_saved_mb, 10),
+    model: String(o.helper_model ?? '').trim() || 'haiku',
   }
 }
 
@@ -237,18 +224,15 @@ const NO_TASK: Task = { user: '', assistant: '' }
 async function taskFor($: EngineInterface, e: Call): Promise<Task> {
   try {
     const rows = e.agentId ? await $.session.messages({ agentId: e.agentId }) : await $.session.messages()
-    if (!Array.isArray(rows)) return NO_TASK
-    const task = taskOf(rows as readonly Row[], e.tool_use_id)
-    return { user: redactText(task.user).text, assistant: redactText(task.assistant).text }
+    return Array.isArray(rows) ? taskOf(rows as readonly Row[], e.tool_use_id) : NO_TASK
   } catch {
     return NO_TASK
   }
 }
 
+// The call's own arguments as JSON, at most 2,000 characters.
 function argsOf(e: Call) {
-  const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
-  const json = JSON.stringify(args)
-  const text = redactJson(json)?.text ?? redactText(json).text
+  const text = JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
   return text.length > 2000 ? `${clip(text, 2000)}…` : text
 }
 
@@ -363,10 +347,10 @@ async function freePath($: EngineInterface, e: Call, tool: string, ext: 'json' |
 // The note Claude reads in place of the result, or undefined to send the
 // result exactly as it came. Every reason to send it as it came is settled
 // before anything is saved or sent to the helper, so a result passed whole
-// leaves no file behind and reaches no model: the mod then exposes nothing
-// that running without it would not. Code gets `budgetMs` from the moment
-// the result arrives; past that the result is passed whole, and the log
-// names the stage that ran out of time.
+// leaves no file behind and reaches no model. Code gets `budgetMs` from the
+// moment the result arrives; past that the result is passed whole, and the
+// log names the stage that ran out of time. Nothing is redacted: the saved
+// file is the result as the tool returned it.
 async function shorten(
   $: EngineInterface,
   cfg: Config,
@@ -390,24 +374,17 @@ async function shorten(
     if (raw.length < cfg.minChars) return undefined
     if (bytes(raw) > SAVE_MAX_BYTES) return await whole(`${fmt(bytes(raw))} bytes is more than one saved file holds`)
 
-    // JSON is redacted where it stands, so it stays valid JSON; other text is
-    // trimmed only with condense_text on: a file or a document is no answer to cut.
-    stage = 'redaction'
-    const asJson = got.texts.map(t => redactJson(t, run))
-    const isJson = asJson.every(r => r !== undefined)
-    if (!isJson && !cfg.condenseText) return await whole('the result is not JSON (condense_text is off)')
+    // JSON is trimmed; other text only with condense_text and the helper on:
+    // a file or a document is no answer to cut, and code alone saves little.
+    const data = readBlocks(got.texts, run)
+    if (data === TOO_DEEP) return await whole(TOO_DEEP)
+    const blocks = typeof data === 'string' ? undefined : data
+    if (!blocks && !cfg.condenseText) return await whole('the result is not JSON (condense_text is off)')
+    if (!blocks && !cfg.helper) return await whole('the result is not JSON (condense_text needs use_helper on)')
     if (await takeFull($)) {
       await ledger($, e, tool, 'full', raw.length, raw.length, null)
       return await whole('by /connector-trim full')
     }
-    const red = isJson ? (asJson as { text: string; found: string[] }[]) : got.texts.map(t => redactText(t, false, run))
-    const texts = red.map(r => r.text)
-    const redacted: string[] = []
-    for (const r of red) for (const f of r.found) redacted.push(f)
-    // What is saved is the redacted text, which can be longer than the result.
-    const saving = texts.join(`${NL}${NL}`)
-    if (bytes(saving) > SAVE_MAX_BYTES)
-      return await whole(`${fmt(bytes(saving))} bytes once redacted is more than one saved file holds`)
 
     stage = 'reading the task'
     const task = await taskFor($, e)
@@ -416,33 +393,30 @@ async function shorten(
     run.deadline?.checkNow()
 
     stage = 'trimming'
-    const trimmed = isJson ? trimJsonWhy(texts, words, { run, maxChars: raw.length, read: asJson }) : undefined
+    const trimmed = blocks ? trimBlocks(blocks, words, { run, maxChars: raw.length }) : undefined
     if (typeof trimmed === 'string') return await whole(trimmed)
-    const body = trimmed?.text ?? trimPlain(texts)
+    const body = trimmed?.text ?? trimPlain(got.texts)
 
-    stage = 'naming the saved file'
-    run.deadline?.checkNow()
-    const file = await freePath($, e, tool, isJson && texts.length === 1 ? 'json' : 'txt')
+    stage = 'saving'
+    const file = await freePath($, e, tool, blocks && got.texts.length === 1 ? 'json' : 'txt')
     const base = {
       tool,
       before: raw.length,
       leftOut: trimmed ? leftOut(trimmed.stats) : '',
       reshaped: trimmed ? reshaped(trimmed.stats) : '',
-      redacted,
       paging: trimmed?.paging ?? '',
       file,
     }
     // With no helper call to come, the note by code is the reply: when it is
     // not shorter, nothing is saved and nothing is sent. With one, a failed
-    // helper leaves the note by code, saved and redacted, even if not shorter.
+    // helper leaves the note by code, saved, even if not shorter.
+    const helperDue = cfg.helper && body.length > cfg.targetChars
     const byCode = note({ ...base, how: trimmed ? 'trim' : 'text', body })
-    if (body.length <= cfg.targetChars && byCode.length >= raw.length)
+    if (!helperDue && byCode.length >= raw.length)
       return await whole(`the note (${fmt(byCode.length)}) was not shorter than the result (${fmt(raw.length)})`)
     run.deadline?.checkNow()
-
-    stage = 'saving'
     try {
-      await $.fs.write(file, saving)
+      await $.fs.write(file, raw)
     } catch (err) {
       return await whole(`the full result could not be saved: ${message(err)}`)
     }
@@ -452,7 +426,7 @@ async function shorten(
     let reply = byCode
     let action = 'trim'
     let helper: Helper | null = null
-    if (body.length > cfg.targetChars) {
+    if (helperDue) {
       const asked = await condense($, cfg, tool, args, task, body, signal)
       helper = asked.helper
       if ('text' in asked) {
@@ -494,7 +468,10 @@ async function status($: EngineInterface, cfg: Config) {
   const { results } = await dirsOf($)
   return [
     `Connector Trim is ${isOff ? 'off' : 'on'}.`,
-    `JSON connector results over ${fmt(cfg.minChars)} characters are trimmed by code; still over ${fmt(cfg.targetChars)} after that, ${cfg.model} condenses them for the task. Other text ${cfg.condenseText ? 'is condensed too' : 'reaches Claude whole'} (condense_text).`,
+    `JSON connector results over ${fmt(cfg.minChars)} characters are trimmed by code, within ${fmt(cfg.budgetMs)} ms each. Nothing is redacted.`,
+    cfg.helper
+      ? `use_helper is on: a result still over ${fmt(cfg.targetChars)} characters after trimming is sent as it is, with your request, to ${cfg.model}. Other text ${cfg.condenseText ? 'is sent too' : 'reaches Claude whole'} (condense_text).`
+      : 'use_helper is off: no model is ever called, and text that is not JSON reaches Claude whole.',
     `This chat: ${t.results} result${t.results === 1 ? '' : 's'} shortened, about ${fmt(t.before)} → ${fmt(t.after)} tokens${
       t.helperCalls > 0 ? `; ${t.helperCalls} helper calls, ${fmt(t.helperIn)} tokens in, ${fmt(t.helperOut)} out` : ''
     }.`,

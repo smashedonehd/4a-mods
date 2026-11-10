@@ -1,6 +1,5 @@
-// A JSON reader for tool results: it keeps every number exactly as written
-// and reports where each string value sits in the text, so redaction can
-// replace a value in place and leave every other byte as the server sent it.
+// A JSON reader for tool results: it keeps every number exactly as written,
+// counts nesting as it reads, and can be stopped by the result's deadline.
 
 // A number JavaScript cannot hold as written (past 2^53, `1.50`, `1e5`):
 // kept as its text and written back as it came.
@@ -28,16 +27,6 @@ export function put(o: Json, k: string, v: unknown) {
   else o[k] = v
 }
 
-// The object or list a string stands in, and where that container stands: the
-// key it is under (a list's elements take the list's key) and its parent. The
-// container is complete once the whole text has been read.
-export type Frame = { key: string | undefined; holder: Json | unknown[]; parent: Frame | undefined }
-
-// Called for each string value: its span in the text (quotes included), its
-// value, the key it stands under (an array's elements take the array's), and
-// the container it is in.
-export type Visit = (start: number, end: number, value: string, key: string | undefined, frame: Frame | undefined) => void
-
 const NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 const WS = /[ \t\n\r]*/y
 // A string's text that JSON.parse would change or refuse: an escape or a
@@ -53,16 +42,9 @@ export class TooDeep extends Error {}
 // The value of `text`, which must be one JSON value; throws when it is not.
 // `tick` is called once per value, so a caller can stop a long read; past
 // `maxDepth` nested objects and lists it throws TooDeep.
-export function readJson(
-  text: string,
-  visit?: Visit,
-  tick?: () => void,
-  maxDepth = Infinity,
-  seen?: { depth: number },
-): unknown {
+export function readJson(text: string, tick?: () => void, maxDepth = Infinity): unknown {
   let i = 0
   let depth = 0
-  let frame: Frame | undefined
   const fail = (): never => {
     throw NOT_JSON
   }
@@ -71,8 +53,8 @@ export function readJson(
     WS.exec(text)
     i = WS.lastIndex
   }
-  // A string token from its opening quote: the value and where it began.
-  const str = (): [string, number] => {
+  // A string token from its opening quote, and its value.
+  const str = (): string => {
     const start = i
     let j = i + 1
     for (;;) {
@@ -85,57 +67,47 @@ export function readJson(
     }
     i = j + 1
     const inner = text.slice(start + 1, j)
-    return [NOT_PLAIN.test(inner) ? (JSON.parse(text.slice(start, i)) as string) : inner, start]
+    return NOT_PLAIN.test(inner) ? (JSON.parse(text.slice(start, i)) as string) : inner
   }
-  const value = (key: string | undefined): unknown => {
+  const value = (): unknown => {
     tick?.()
     ws()
     const c = text[i]
     if (c === '{') {
       if (++depth > maxDepth) throw new TooDeep()
-      if (seen && depth > seen.depth) seen.depth = depth
       i++
       const o: Json = {}
-      const outer = frame
-      if (visit) frame = { key, holder: o, parent: outer }
       ws()
-      if (text[i] === '}') return (i++, depth--, (frame = outer), o)
+      if (text[i] === '}') return (i++, depth--, o)
       for (;;) {
         ws()
         if (text[i] !== '"') fail()
-        const [k] = str()
+        const k = str()
         ws()
         if (text[i] !== ':') fail()
         i++
-        put(o, k, value(k))
+        put(o, k, value())
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === '}') return (i++, depth--, (frame = outer), o)
+        else if (text[i] === '}') return (i++, depth--, o)
         else fail()
       }
     }
     if (c === '[') {
       if (++depth > maxDepth) throw new TooDeep()
-      if (seen && depth > seen.depth) seen.depth = depth
       i++
       const a: unknown[] = []
-      const outer = frame
-      if (visit) frame = { key, holder: a, parent: outer }
       ws()
-      if (text[i] === ']') return (i++, depth--, (frame = outer), a)
+      if (text[i] === ']') return (i++, depth--, a)
       for (;;) {
-        a.push(value(key))
+        a.push(value())
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === ']') return (i++, depth--, (frame = outer), a)
+        else if (text[i] === ']') return (i++, depth--, a)
         else fail()
       }
     }
-    if (c === '"') {
-      const [s, start] = str()
-      visit?.(start, i, s, key, frame)
-      return s
-    }
+    if (c === '"') return str()
     if (text.startsWith('true', i)) return ((i += 4), true)
     if (text.startsWith('false', i)) return ((i += 5), false)
     if (text.startsWith('null', i)) return ((i += 4), null)
@@ -147,7 +119,7 @@ export function readJson(
     const n = Number(raw)
     return String(n) === raw ? n : new Exact(raw)
   }
-  const v = value(undefined)
+  const v = value()
   ws()
   if (i !== text.length) fail()
   return v
@@ -158,7 +130,7 @@ export function readJson(
 export function parseJson(text: string, tick?: () => void, maxDepth?: number): unknown {
   if (!/^\s*[[{]/.test(text)) return undefined
   try {
-    return readJson(text, undefined, tick, maxDepth)
+    return readJson(text, tick, maxDepth)
   } catch (e) {
     if (e instanceof TooSlow || e instanceof TooDeep) throw e
     return undefined

@@ -3,6 +3,7 @@ import type { KeyClass } from './trim.ts'
 import {
   CLEARED,
   Deadline,
+  NOT_JSON,
   NOT_RECORDS,
   NOT_SHORTER,
   Run,
@@ -13,6 +14,7 @@ import {
   globMatch,
   isPagingShaped,
   layout,
+  trimBlocks,
   trimJsonWhy,
   clip,
   clipEnd,
@@ -25,8 +27,7 @@ import {
   pagingLine,
   pagingOf,
   parseJson,
-  redactJson,
-  redactText,
+  readBlocks,
   reshaped,
   restore,
   safe,
@@ -124,43 +125,6 @@ test('paging fields inside records are data, not paging', () => {
   expect(pagingOf({ page: 2, rows: [{ count: 3, next: 'x' }] })).toEqual([['page', '2']])
 })
 
-test('JSON stays valid JSON when redacted; only strings are replaced', () => {
-  const text = '{"api_key": null, "password": true, "secret": false, "access_token": 123456, "n": 1.50}'
-  const r = redactJson(text)!
-  expect(r.text).toBe(text)
-  expect(r.found).toEqual([])
-})
-
-test('a secret value goes whole, and JSON inside a string is redacted too', () => {
-  const r = redactJson('{"password":"correct horse battery staple","pw2":{"password":"a,b;cdefgh"},"body":"{\\"password\\": \\"hunter2222\\"}"}')!
-  const v = JSON.parse(r.text)
-  expect(v.password).toBe('[REDACTED]')
-  expect(v.pw2.password).toBe('[REDACTED]')
-  expect(JSON.parse(v.body)).toEqual({ password: '[REDACTED]' })
-  for (const s of ['horse', 'cdefgh', 'hunter2222']) expect(r.text).not.toContain(s)
-  expect(r.found.length).toBe(3)
-})
-
-test('text redaction: keys, schemes and fixed formats go; slugs, paths and prose stay', () => {
-  const key = 'sk-ant-' + 'q'.repeat(40)
-  const pem = ['-----BEGIN', 'RSA PRIVATE KEY-----\nMIIx\n-----END', 'RSA PRIVATE KEY-----'].join(' ')
-  const r = redactText(
-    `a ${key} b password=s3cretpw token="t0k en" c: Bearer ${'t'.repeat(30)} ${pem} Authorization: Basic dXNlcjpwYXNz`,
-  )
-  expect(r.text).toBe(
-    'a [REDACTED API key] b password=[REDACTED] token="t0k en" c: [REDACTED bearer token] [REDACTED private key] Authorization: [REDACTED]',
-  )
-  expect(redactText(r.text).found).toEqual([])
-  const kept = [
-    // Split so the repository's own secret scan, which has the same blind spot, passes it.
-    'https://x.cz/sk-' + 'suche-zachody-kompostovaci-toaleta',
-    'pwd=/home/user/project',
-    'password: reset it in settings',
-    'the next_token=abc123 field',
-  ].join(' ')
-  expect(redactText(kept).text).toBe(kept)
-})
-
 test('the trim keeps paging, named and zero-ish values, drops empty, blob and noise fields', () => {
   const text = JSON.stringify({
     total: null,
@@ -214,7 +178,6 @@ test('plain text keeps indentation, tabs and empty cells; only line ends and bla
 test('a 200,000-space run is trimmed fast', () => {
   const start = Date.now()
   const out = trimPlain([`${' '.repeat(200_000)}x${' '.repeat(200_000)}\n`])
-  redactText(`${' '.repeat(200_000)}x`)
   expect(out).toBe(`${' '.repeat(200_000)}x\n`)
   expect(Date.now() - start).toBeLessThan(1000)
 })
@@ -260,9 +223,6 @@ test('retention: past the keep time, then oldest over the cap; cleared ones are 
 
 // ---------- second review ----------
 
-// Pieces joined at run time, so the repository's own secret scan does not
-// take the fixtures for keys.
-const PEM_HEAD = ['-----BEGIN', 'RSA PRIVATE KEY-----'].join(' ')
 const wellFormed = (s: string) => {
   try {
     encodeURIComponent(s)
@@ -336,81 +296,25 @@ test('a pageInfo group is kept whole inside a list, and listed in the header bes
   expect(trimmed(JSON.stringify({ pageInfo: { foo: 'x', n: 3 }, rows: [] })).paging).toBe('pageInfo.foo="x", pageInfo.n=3')
 })
 
-test('a page token in a paging URL stays; a credential in one goes', () => {
-  const v = JSON.parse(
-    redactJson(
-      JSON.stringify({
-        next: 'https://a/b?page-token=CAESBAgCEAE&limit=60',
-        links: { next: 'https://a/b?token=CAESBAgCEAE' },
-        prev: 'https://a/b?access_token=zzzzzzzz&cursor=abc',
-        note: 'see https://a/b?token=CAESBAgCEAE12',
-      }),
-    )!.text,
+test('paging values come through as returned, credentials in them included: nothing is redacted', () => {
+  const next = 'https://graph.facebook.com/v19.0/me/posts?access_token=EAAGm0PX4ZCpsBA&after=QVFIUk&limit=25'
+  const t = trimmed(
+    JSON.stringify({
+      secrets: { nextPageToken: 'abc123DEF456', api_key: 'sk-live-1' },
+      paging: { next, auth_token: 'abc123DEF456' },
+      nextLink: 'https://x.io/a?page-token=CAESBAgCEAE12&sig=AbCd123456789',
+      rows: [{ password: 'hunter22', note: 'password=hunter22 Bearer abcdefghijklmnopqrstuvwxyz' }],
+    }),
   )
-  expect(v).toEqual({
-    next: 'https://a/b?page-token=CAESBAgCEAE&limit=60',
-    links: { next: 'https://a/b?token=CAESBAgCEAE' },
-    prev: 'https://a/b?access_token=[REDACTED]&cursor=abc',
-    note: 'see https://a/b?token=[REDACTED]',
+  expect(t.value).toEqual({
+    secrets: { nextPageToken: 'abc123DEF456', api_key: 'sk-live-1' },
+    paging: { next, auth_token: 'abc123DEF456' },
+    nextLink: 'https://x.io/a?page-token=CAESBAgCEAE12&sig=AbCd123456789',
+    rows: [{ password: 'hunter22', note: 'password=hunter22 Bearer abcdefghijklmnopqrstuvwxyz' }],
   })
-  const url = 'https://a/b?page-token=CAESBAgCEAE&next_token=abcdefgh&x_page_token=zzzzzzzz'
-  expect(redactText(url).text).toBe(url)
-  // The tail of a name too long to read whole is not a name of its own.
-  const tailOnly = `${'p'.repeat(70)}-token=abcdefgh`
-  expect(redactText(tailOnly).text).toBe(tailOnly)
-})
-
-test('code and empties beside a secret name are not secrets', () => {
-  for (const s of [
-    'const token = await getToken(user)',
-    'if (token===undefined) return',
-    'if (password == other) x',
-    'password=None',
-    'password=undefined',
-    'token=null',
-    'password=abc',
-    'secret_rotated=2024-05-01T10:00',
-    'password: reset it in settings',
-    'pwd=/home/user/project',
-  ])
-    expect(redactText(s).text).toBe(s)
-})
-
-test('lower-case bearer, header-style keys, JWTs, URL passwords and cut-off keys are redacted', () => {
-  const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'abcDEFghiJKLmno_pqrSTU'].join('.')
-  const cases: [string, string][] = [
-    ['authorization: bearer abc.def', 'authorization: [REDACTED]'],
-    ['Authorization: Bearer short', 'Authorization: [REDACTED]'],
-    ['x-api-key: abcdef123456', 'x-api-key: [REDACTED]'],
-    ['api_key: abcdef123456 next', 'api_key: [REDACTED] next'],
-    ['cookie: session=abcdef0123456789', 'cookie: [REDACTED]'],
-    [`token ${jwt} end`, 'token [REDACTED JWT] end'],
-    ['postgres://user:secretpw@db:5432/x', 'postgres://user:[REDACTED]@db:5432/x'],
-    ['https://u:p4ssw0rd@host/db', 'https://u:[REDACTED]@host/db'],
-    [`a ${PEM_HEAD.replace('RSA', 'ENCRYPTED')}\nMIIEabc+/=\nMIIE\nthe end.`, 'a [REDACTED private key]the end.'],
-  ]
-  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
-  expect(redactText('authorization: bearer abcdefghijklmnopqrst').text).not.toContain('abcdefghij')
-  expect(redactText('https://host:8080/path@x').text).toBe('https://host:8080/path@x')
-})
-
-test('a sk- slug is no key, with a digit or without; a real key is', () => {
-  const slug = 'https://x.cz/sk-' + 'kompostovacitoaleta2024modelxyzabc' + '-navod'
-  const plain = 'sk-' + 'a'.repeat(40)
-  expect(redactText(`${slug} ${plain}`).text).toBe(`${slug} ${plain}`)
-  expect(redactText('sk-' + 'a1'.repeat(20)).text).toBe('[REDACTED API key]')
-})
-
-test('JSON inside a string is redacted by key: an array of strings under a secret key goes whole', () => {
-  const r = redactJson(JSON.stringify({ body: JSON.stringify({ api_key: ['k1longvalue', 'k2longvalue', 3] }) }))!
-  expect(JSON.parse(JSON.parse(r.text).body)).toEqual({ api_key: ['[REDACTED]', '[REDACTED]', 3] })
-  expect(r.found).toEqual(['apikey value', 'apikey value'])
-})
-
-test('a value already redacted is neither changed nor counted', () => {
-  const text = '{"password":"[REDACTED]","rows":["password=[REDACTED]"]}'
-  const r = redactJson(text)!
-  expect([r.text, r.found]).toEqual([text, []])
+  expect(t.paging).toBe(
+    `secrets.nextPageToken="abc123DEF456", paging.next="${next}", paging.auth_token="abc123DEF456", nextLink="https://x.io/a?page-token=CAESBAgCEAE12&sig=AbCd123456789"`,
+  )
 })
 
 test('a bookkeeping field the task names is kept', () => {
@@ -422,7 +326,7 @@ test('a bookkeeping field the task names is kept', () => {
 test('the JSON reader: a string ending in a backslash, and trailing text is no JSON', () => {
   expect(parseJson('{"p":"C:\\\\","q":"x\\\\\\"y"}')).toEqual({ p: 'C:\\', q: 'x\\"y' })
   expect(parseJson('{"a":1} x')).toBeUndefined()
-  expect(redactJson('{"a":1} x')).toBeUndefined()
+  expect(readBlocks(['{"a":1} x'])).toBe(NOT_JSON)
 })
 
 test('a long hex id is no base64; padding, other letters or great length make it so', () => {
@@ -434,15 +338,16 @@ test('a long hex id is no base64; padding, other letters or great length make it
   expect([...t.stats.blobs]).toEqual(['b', 'pad', 'longHex'])
 })
 
-test('input nested too deep to walk gives undefined, not an error', () => {
+test('JSON nested thousands of levels deep is too deep, never "not JSON", and never overflows', () => {
   for (const depth of [3000, 20_000]) {
-    const deep = '['.repeat(depth) + ']'.repeat(depth)
-    let r: unknown
-    expect(() => {
-      r = trimJson([deep], none)
-    }).not.toThrow()
-    if (r !== undefined) expect(typeof (r as { text: string }).text).toBe('string')
+    expect(readBlocks(['['.repeat(depth) + ']'.repeat(depth)])).toBe(TOO_DEEP)
+    expect(readBlocks(['{"a":'.repeat(depth) + '1' + '}'.repeat(depth)])).toBe(TOO_DEEP)
+    // Too deep wins over a block that is no JSON at all.
+    expect(readBlocks(['plain text', '['.repeat(depth)])).toBe(TOO_DEEP)
   }
+  // JSON that deep inside a text value stays text.
+  const deep = '['.repeat(1900) + ']'.repeat(1900)
+  expect(trimmed(JSON.stringify({ a: deep, b: 1 })).value.a).toBe(deep)
 })
 
 test('plain text keeps CRLF line endings', () => {
@@ -482,54 +387,20 @@ test('tags are neutralised and restored in one pass', () => {
   expect(restore('‹x ‹ data')).toBe('‹x < data')
 })
 
-test('inputs that made the regexes quadratic run in linear time', () => {
+test('inputs that made the tag swap and the chunks quadratic run in linear time', () => {
   const start = Date.now()
-  expect(redactText(`${PEM_HEAD}\n`.repeat(20_000)).found.length).toBe(20_000)
-  expect(redactJson(JSON.stringify({ log: `${PEM_HEAD}\n`.repeat(3000) }))!.found.length).toBe(3000)
   neutral(`<${' '.repeat(99_990)}x`)
   neutral(`<${' '.repeat(5000)}`.repeat(400))
   restore(`‹${' '.repeat(99_990)}x`)
-  redactText(`password"${' '.repeat(1000)}x`.repeat(2000))
-  redactText(`password${' '.repeat(1_000_000)}x`)
-  redactText(`Bearer${' '.repeat(50)}`.repeat(20_000))
-  redactText(`Authorization${' '.repeat(100)}`.repeat(10_000))
-  redactText('a'.repeat(1_000_000))
-  redactText(`${'x'.repeat(63)}=`.repeat(20_000))
   chunks('a'.repeat(3_000_000), 100_000)
   expect(Date.now() - start).toBeLessThan(2000)
 })
 
 // ---------- third review: the key rules ----------
 
-// Every key the reviews named, with its class by name. A strong key's text
-// is always a secret, a weak key's only when token-shaped, a paging key's is
-// kept as returned when paging-shaped, a group's fields are all paging.
+// Every key the reviews named, with its class by name: a paging key's value
+// is kept as returned when paging-shaped, a group's fields are all paging.
 const KEY_TABLE: Record<KeyClass, string[]> = {
-  strong: [
-    'password', 'passwd', 'passphrase', 'secret', 'client_secret', 'api_key', 'apiKey', 'api-key', 'x-api-key', 'X-API-Key',
-    'x_api_key', 'api_secret', 'access_key', 'accessKey', 'secret_key', 'secretKey', 'private_key', 'privateKey',
-    'access_token', 'refresh_token', 'refreshToken', 'id_token', 'IDToken', 'authorization', 'Authorization', 'Proxy-Authorization',
-    'cookie', 'Cookie', 'set-cookie', 'Set-Cookie', 'set_cookie', 'connection_string', 'connectionString', 'dsn', 'pwd', 'PWD',
-    // A trailing digit run or version is no word; an acronym is one.
-    'password2', 'Password1', 'apikey2', 'apiKeyV2', 'APIKey', 'clientsecret', 'secretkey', 'xapikey', 'pwd2',
-  ],
-  weak: [
-    'private_token', 'oauth_token', 'bot_token', 'csrf_token', 'x-auth-token', 'X-Auth-Token', 'personal_access_token',
-    'github_token', 'SecurityToken', 'X-Amz-Security-Token', 'token_secret', 'webhook_secret', 'signing_secret', 'app_secret',
-    'api_token', 'sessionToken', 'session_token', 'bearer_token', 'next_auth_token', 'auth', 'auth_header', 'basic_auth',
-    'jwt', 'id_jwt', 'token', 'sig', 'credentials', 'client_credentials', 'X-Amz-Credential', 'X-Amz-Signature',
-    'password_hash', 'my_password', 'secrets', 'AWS_SECRET_ACCESS_KEY', 'secretAccessKey', 'signing_key', 'encryption_key',
-    'ssh_key', 'app_key', 'consumer_key', 'Ocp-Apim-Subscription-Key', 'CSRFCookie', 'JWTValue',
-    // `<word>_token` for any word that does not page.
-    'slack_token', 'vault_token', 'hf_token', 'user_token', 'sso_token', 'DISCORD_TOKEN', 'request_token',
-    'idempotency_token', 'upload_token', 'device_token', 'push_token', 'state_token', 'end_token', 'history_token',
-    'last_token', 'oauth2_token', 'OAuth2Token', 'OAuthToken',
-    // Glued words.
-    'dbpassword', 'userpassword', 'passwordhash', 'oauthtoken', 'slacktoken', 'topsecret',
-    // Weak by name, yet their usual values are no token: see the value table.
-    'password_changed_at', 'has_password', 'cookies', 'cookie_consent', 'signature', 'email_signature', 'method_signature',
-    'secret_santa',
-  ],
   paging: [
     'next_page_token', 'pageToken', 'nextPageToken', 'page-token', 'continuationToken', 'ContinuationToken',
     'NextContinuationToken', 'sync_token', 'nextSyncToken', '$skiptoken', '$deltatoken', 'delta_token', 'cursor_token',
@@ -540,7 +411,11 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'bookmark', 'pageBookmark', 'endCursor', 'startCursor', 'next_cursor', 'cursor', 'continuation', 'resumePoint', 'scroll',
     'scroll_id', 'LastEvaluatedKey', 'ExclusiveStartKey', 'starting_after', 'ending_before', 'has_more', 'hasNextPage',
     'IsTruncated', 'total', 'totalCount', 'page', 'per_page', 'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after',
-    'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2',
+    'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2', 'next_offset', 'nextoffset',
+    // Paging by name whatever else is in it: kept as returned when paging-shaped.
+    'next_auth_token', 'cursor_secret', 'last_token',
+    // The longest key read as a name: 200 characters.
+    `${'a'.repeat(190)}_pageToken`,
   ],
   group: ['pageInfo', 'page_info', 'pagination', 'paging', 'links', '_links', 'cursors'],
   none: [
@@ -550,13 +425,11 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'session_id', 'authorization_status', 'authorization_url', 'authority', 'author', 'authors', 'authored_by', 'secretary',
     'passwordless', 'preauth', 'next_steps', 'nextAction', 'next_of_kin', 'nextel', 'linkedin_link', 'permalink',
     'hyperlink', 'html_link', 'download_link', 'blink', 'markers', 'meta', 'response_metadata', 'selfLink',
-    '@odata.editLink', '@odata.context', 'first', 'last', 'monkey', 'xyzkey', 'firstname',
-    // A weak name and a word that describes it.
-    'password_policy', 'jwt_enabled', 'signature_required', 'cookie_policy_url', 'credentials_type', 'credential_type',
-    'cookies_enabled', 'auth_provider', 'auth_method', 'signature_algorithm', 'cookie_domain', 'secret_name', 'secret_id',
-    'auth_url', 'auth_status', 'auth_scheme', 'auth_realm', 'auth_mode', 'token_required',
-    // Longer than any name: never split, never a secret or paging.
-    `${'a'.repeat(200)}_password`,
+    '@odata.editLink', '@odata.context', 'first', 'last', 'monkey', 'xyzkey', 'firstname', 'token',
+    // Credential names are data like any other.
+    'password', 'api_key', 'access_token', 'refresh_token', 'auth_token', 'slack_token', 'oauth2_token', 'sig', 'credentials',
+    // Longer than any name: never split, never paging.
+    `${'a'.repeat(191)}_pageToken`,
   ],
 }
 
@@ -564,107 +437,6 @@ test('the key rules, class by class', () => {
   const wrong: string[] = []
   for (const [want, keys] of Object.entries(KEY_TABLE)) for (const k of keys) if (keyClass(k) !== want) wrong.push(`${k}: ${keyClass(k)}, not ${want}`)
   expect(wrong).toEqual([])
-})
-
-test('a strong key loses any text, a weak key only a token-shaped value', () => {
-  const cases: [string, unknown, boolean][] = [
-    // strong: any non-empty text; pwd unless a path
-    ['password', 'hunter2', true],
-    ['password', 'correct horse battery staple', true],
-    ['api_key', 'k1', true],
-    ['Cookie', 'a=b', true],
-    ['pwd', 'hunter22', true],
-    ['pwd', '/home/filip/project', false],
-    ['PWD', 'C:\\Users\\x', false],
-    ['pwd', '~/project', false],
-    ['password', '', false],
-    ['password', '[REDACTED]', false],
-    // weak: token-shaped only (no blanks, 8+, not all digits, no date, time or URL)
-    ['oauth_token', 'ya-abc123def456', true],
-    ['oauth_token', 'zzz', false],
-    ['token', 'tok1abcdef', true],
-    ['signature', 'Best regards,\nJohn Smith', false],
-    ['email_signature', 'S pozdravem, Filip', false],
-    ['method_signature', 'void f(int)', false],
-    ['password_changed_at', '2024-11-10T10:00:00Z', false],
-    ['has_password', 'yes', false],
-    ['secret_santa', 'Alice', false],
-    ['credentials_type', 'oauth', false],
-    ['cookie_policy_url', 'https://x/cookies', false],
-    ['token', '12345678901', false],
-    ['token', '10:30:00.000', false],
-    // none
-    ['authorization_status', 'approved', false],
-    ['token_address', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', false],
-    ['tokenizer', 'cl100k_base', false],
-    ['session_id', 'abcdef123456', false],
-  ]
-  for (const [key, value, gone] of cases) {
-    const r = redactJson(JSON.stringify({ [key]: value }))!
-    expect([key, value, r.found.length > 0]).toEqual([key, value, gone])
-  }
-  const kept = { password: 12345678, pin: '1234', api_key: null, secret: true, tokens: ['the', 'quick'], max_tokens: '4096' }
-  expect(redactJson(JSON.stringify(kept))!.found).toEqual([])
-})
-
-test('a secret-named object or list loses its token-shaped values at any depth; a header pair is judged by its name', () => {
-  const out = (o: unknown) => JSON.parse(redactJson(JSON.stringify(o))!.text)
-  expect(out({ credentials: { user: 'bob', value: 's3cretValue99', nested: [{ v: 's3cretValue98' }] } })).toEqual({
-    credentials: { user: 'bob', value: '[REDACTED]', nested: [{ v: '[REDACTED]' }] },
-  })
-  expect(out({ token: { value: 's3cretValue99', expires: 3600 } })).toEqual({ token: { value: '[REDACTED]', expires: 3600 } })
-  expect(out({ cookies: [{ name: 'sid', value: 's3cretValue99' }] })).toEqual({ cookies: [{ name: 'sid', value: '[REDACTED]' }] })
-  expect(
-    out({
-      headers: [
-        { name: 'Cookie', value: 'sid=s3' },
-        { key: 'X-Api-Key', value: 'abc' },
-        { name: 'Authorization', value: 'Basic dXNlcjpwYXNz' },
-        { name: 'X-Request-Id', value: 'abcdef123456' },
-        { name: 'sessions', value: '123' },
-      ],
-    }),
-  ).toEqual({
-    headers: [
-      { name: 'Cookie', value: '[REDACTED]' },
-      { key: 'X-Api-Key', value: '[REDACTED]' },
-      { name: 'Authorization', value: '[REDACTED]' },
-      { name: 'X-Request-Id', value: 'abcdef123456' },
-      { name: 'sessions', value: '123' },
-    ],
-  })
-  expect(out({ token_usage: { prompt_tokens: '120', total_tokens: 'abcdefgh1' } })).toEqual({
-    token_usage: { prompt_tokens: '120', total_tokens: 'abcdefgh1' },
-  })
-})
-
-test('paging values are left to their own rules: no value patterns, only credential-named parameters', () => {
-  const jwt = ['eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9', 'eyJib3JkZXJfcmFuayI6NDI5MTY3fQ', 'Zm9vYmFyYmF6cXV4MTIz'].join('.')
-  const v = JSON.parse(
-    redactJson(
-      JSON.stringify({
-        next_page: { offset: jwt, uri: `https://app.asana.com/api/1.0/tasks?limit=5&offset=${jwt}` },
-        next_cursor: jwt,
-        pagination: { token: 'abc123def456', limit: 10, meta: { token: 'abc123def457' } },
-        links: { next: 'https://x.io/a?token=CAESBAgCEAE12' },
-        paging: { next: 'https://graph.facebook.com/v19.0/me/posts?access_token=EAAGm0PX4ZCpsBA&after=QVFIUk&limit=25' },
-        '@odata.deltaLink': 'https://graph.microsoft.com/v1.0/me/messages/delta?$deltatoken=LztZwWjo5IivWBhyxw5rACKxf7mPm0oW6JZZ7fvdI',
-        nextLink: 'https://x.io/a?page-token=CAESBAgCEAE12&sig=AbCd123456789',
-        cursor: 'password:12345678',
-        note: `see ${jwt}`,
-      }),
-    )!.text,
-  )
-  expect(v.next_page.offset).toBe(jwt)
-  expect(v.next_page.uri).toBe(`https://app.asana.com/api/1.0/tasks?limit=5&offset=${jwt}`)
-  expect(v.next_cursor).toBe(jwt)
-  expect(v.pagination).toEqual({ token: 'abc123def456', limit: 10, meta: { token: 'abc123def457' } })
-  expect(v.links.next).toBe('https://x.io/a?token=CAESBAgCEAE12')
-  expect(v.paging.next).toBe('https://graph.facebook.com/v19.0/me/posts?access_token=[REDACTED]&after=QVFIUk&limit=25')
-  expect(v['@odata.deltaLink']).toContain('$deltatoken=LztZwWjo5IivWBhyxw5rACKxf7mPm0oW6JZZ7fvdI')
-  expect(v.nextLink).toBe('https://x.io/a?page-token=CAESBAgCEAE12&sig=[REDACTED]')
-  expect(v.cursor).toBe('password:12345678')
-  expect(v.note).toBe('see [REDACTED JWT]')
 })
 
 test('a paging name holds paging only when its value is paging-shaped', () => {
@@ -689,8 +461,6 @@ test('a paging name holds paging only when its value is paging-shaped', () => {
   // 30 values are more than a paging group holds: they are data, base64 left out.
   const many = trimmed(JSON.stringify({ links: Array.from({ length: 30 }, () => b64(300)), rows: [] }))
   expect(many.stats.blobItems).toBe(30)
-  // A secret name is never paging, whatever paging word is in it.
-  expect(trimmed('{"next_auth_token":"abc","cursor_secret":"x","rows":[]}').paging).toBe('')
 })
 
 test('the header lists paging values up to 4,000 characters, then only their names', () => {
@@ -702,81 +472,10 @@ test('the header lists paging values up to 4,000 characters, then only their nam
   expect(pagingLine([['a', 'x'.repeat(3999)]])).toBe('a (4,001 characters of values, in the body below)')
 })
 
-test('text: strong names take any 6+ value, weak names a token-shaped one with a digit, code stays', () => {
-  const cases: [string, string][] = [
-    ['PASSWORD = hunter22', 'PASSWORD = [REDACTED]'],
-    ['password: hunter', 'password: [REDACTED]'],
-    ['password: 12345678', 'password: [REDACTED]'],
-    ['X-API-Key: abcdefghijkl', 'X-API-Key: [REDACTED]'],
-    ["password=\"it's secret22\"", 'password="[REDACTED]"'],
-    ["{'password': 'hunter22'}", "{'password': '[REDACTED]'}"],
-    ['password := "hunter22"', 'password := "[REDACTED]"'],
-    [`password='say "hi" now22'`, `password='[REDACTED]'`],
-    ['X-Auth-Token: abcdefgh12', 'X-Auth-Token: [REDACTED]'],
-    ['the token:abc12345def', 'the token:[REDACTED]'],
-    ['my_password_is=hunter22', 'my_password_is=[REDACTED]'],
-    ['pwd=hunter22', 'pwd=[REDACTED]'],
-    ['Cookie: sid=abcdef0123456789; theme=dark', 'Cookie: [REDACTED]; theme=dark'],
-    ['https://x.io/a?token=CAESBAgCEAE12', 'https://x.io/a?token=[REDACTED]'],
-  ]
-  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
-  for (const s of [
-    'def f(token=DEFAULT_TOKEN_12): pass',
-    'let apiKey = process.env.API_KEY',
-    'password = input("Password: ")',
-    'const token = getToken(user)',
-    'password = getPassword()',
-    'retry(max_tokens=4096, token_limit=128000)',
-    'total_tokens=1234567',
-    'Tokens: 123456789',
-    'max_tokens: 4096000000',
-    'Password: reset it in settings',
-    'signature: John Smith 3rd',
-    'auth: requiredtwofactor',
-    'password=undefined',
-    'password==hunter22',
-    'password => hunter22',
-    'passwords: 12345678 found',
-    'password: 2024-11-10',
-    'secret: none',
-    'password=true',
-    'token: abc',
-    'key: value123456',
-    'session_id: 12345678',
-    'pwd=/home/x',
-    'https://x.io/a?pageToken=abc123456&nextPageToken=abc123456&continuation_token=abc1234567&$skiptoken=X12345678&sync_token=abc123456&$deltatoken=abc123456',
-  ])
-    expect(redactText(s).text).toBe(s)
-})
-
-test('empty-user URL passwords, PGP private keys and more key formats are caught', () => {
-  const pgp = ['-----BEGIN', 'PGP PRIVATE KEY BLOCK-----\n\nlQOYBF\n-----END', 'PGP PRIVATE KEY BLOCK-----'].join(' ')
-  const cases: [string, string][] = [
-    ['redis://:s3cretpw@cache:6379/0', 'redis://:[REDACTED]@cache:6379/0'],
-    [`key ${pgp} end`, 'key [REDACTED private key] end'],
-    ['authorization: digest abc123', 'authorization: [REDACTED]'],
-    [`x ${'glpat-'}${'abcdefghij0123456789'} y`, 'x [REDACTED GitLab token] y'],
-    [`x ${'npm_'}${'a1'.repeat(18)} y`, 'x [REDACTED npm token] y'],
-    [`x ${'sk_live_'}${'a1'.repeat(12)} y`, 'x [REDACTED Stripe key] y'],
-  ]
-  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
-})
-
-test('a JWT-like run, and every other pattern on its near misses, is read in linear time', () => {
+test('a request of many reminder tags is read in linear time', () => {
   const start = Date.now()
-  redactText('eyJaaaaa-'.repeat(60_000))
-  redactText('eyJaaaaa.'.repeat(60_000))
-  redactJson(JSON.stringify({ rows: [{ note: 'eyJaaaaa-'.repeat(60_000) }] }))
-  redactText('sk-ant-'.repeat(100_000))
-  redactText('ya29.'.repeat(200_000))
-  redactText('xoxb-'.repeat(200_000))
-  redactText('glpat-'.repeat(200_000))
-  redactText('a.bearer '.repeat(100_000))
-  redactText('ab://:'.repeat(200_000))
-  redactText('password= '.repeat(100_000))
-  redactText('<system-reminder>'.repeat(50_000))
   taskOf([{ role: 'user', text: '<system-reminder>'.repeat(50_000) }])
-  expect(Date.now() - start).toBeLessThan(3000)
+  expect(Date.now() - start).toBeLessThan(1000)
 })
 
 test('only records are unpacked from a text value: "[12]" and "{}" stay text', () => {
@@ -823,79 +522,24 @@ const ticking = (at: number) => {
 
 test('a deadline in the past stops each entry point with TooSlow', () => {
   const past = () => new Run(new Deadline(0, () => 1))
-  expect(() => redactJson('{"a":"b"}', past())).toThrow(TooSlow)
-  expect(() => redactText('password=hunter22', false, past())).toThrow(TooSlow)
+  expect(() => readBlocks(['{"a":"b"}'], past())).toThrow(TooSlow)
+  expect(() => trimBlocks([{ a: 'b' }], none, { run: past() })).toThrow(TooSlow)
   expect(() => trimJsonWhy(['{"a":"b"}'], none, { run: past() })).toThrow(TooSlow)
 })
 
 test('the deadline is checked inside the long loops, not only between stages', () => {
-  const strings = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => `password=hunter${i}`))
   const records = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => ({ id: i, name: `n${i}` })))
   // The entry check reads the clock once (0 < 3); only the loops read it again.
-  expect(() => redactJson(strings, new Run(ticking(3)))).toThrow(TooSlow)
-  expect(() => trimJsonWhy([records], none, { run: new Run(ticking(3)) })).toThrow(TooSlow)
-  expect(() => redactJson(strings, new Run(ticking(1e9)))).not.toThrow()
+  expect(() => readBlocks([records], new Run(ticking(3)))).toThrow(TooSlow)
+  const data = readBlocks([records]) as unknown[]
+  expect(() => trimBlocks(data, none, { run: new Run(ticking(3)) })).toThrow(TooSlow)
+  expect(() => trimJsonWhy([records], none, { run: new Run(ticking(1e9)) })).not.toThrow()
 })
 
-test('a flag or a dotted name is read whole and judged by the key rule', () => {
-  const cases: [string, string][] = [
-    ['run --password=hunter22 now', 'run --password=[REDACTED] now'],
-    ['--pwd=hunter22', '--pwd=[REDACTED]'],
-    ['--api-key=abc123def456', '--api-key=[REDACTED]'],
-    ['--db-password=hunter22', '--db-password=[REDACTED]'],
-    ['--client-secret=abcdef123456', '--client-secret=[REDACTED]'],
-    ['--token=abcdefgh1234', '--token=[REDACTED]'],
-    ['-password: hunter22', '-password: [REDACTED]'],
-    ['.password=hunter22', '.password=[REDACTED]'],
-    ['cfg.db.password=hunter22', 'cfg.db.password=[REDACTED]'],
-  ]
-  for (const [input, out] of cases) expect([input, redactText(input).text]).toEqual([input, out])
-  for (const s of ['https://a/b?page-token=CAESBAgCEAE12&x_page_token=zzzz1234', '--pwd=/home/me', '--next-page-token=abc123def'])
-    expect(redactText(s).text).toBe(s)
-})
-
-test('under a paging group only a bare token is the page’s; other weak names are still secrets', () => {
-  const out = JSON.parse(
-    redactJson(
-      JSON.stringify({
-        paging: { auth_token: 'abc123DEF456', token: 'abc123DEF456', cursor: 'abc123DEF456' },
-        page: { session_token: 'abc123DEF456' },
-        links: { jwt: 'abc123DEF456' },
-        next: { api_token: 'abc123DEF456' },
-      }),
-    )!.text,
-  )
-  expect(out).toEqual({
-    paging: { auth_token: '[REDACTED]', token: 'abc123DEF456', cursor: 'abc123DEF456' },
-    page: { session_token: '[REDACTED]' },
-    links: { jwt: '[REDACTED]' },
-    next: { api_token: '[REDACTED]' },
-  })
-})
-
-test('a weak value needs a digit, a capital or a symbol; fields that describe a secret stay', () => {
-  const out = (o: unknown) => JSON.parse(redactJson(JSON.stringify(o))!.text)
-  expect(out({ token: 'required', auth: 'firebase', sig: 'disabled' })).toEqual({ token: 'required', auth: 'firebase', sig: 'disabled' })
-  expect(out({ token: 'Firebase', auth: 'abc-defgh', sig: 'abcdefg1' })).toEqual({ token: '[REDACTED]', auth: '[REDACTED]', sig: '[REDACTED]' })
-  expect(
-    out({ cookies: [{ name: 'sid', domain: '.example.com', path: '/app/v1', user: 'bob.smith', username: 'bob_smith1', scheme: 'Bearer1x', realm: 'realm-01x', type: 'session-1', expires: 'Thu,01-Jan', value: 's3cretValue' }] }),
-  ).toEqual({
-    cookies: [{ name: 'sid', domain: '.example.com', path: '/app/v1', user: 'bob.smith', username: 'bob_smith1', scheme: 'Bearer1x', realm: 'realm-01x', type: 'session-1', expires: 'Thu,01-Jan', value: '[REDACTED]' }],
-  })
-  expect(out({ pwd: './project' })).toEqual({ pwd: './project' })
-})
-
-test('only the exact markers the mod writes count as already redacted', () => {
-  const out = JSON.parse(redactJson('{"password":"[REDACTED by admin]","x":"[REDACTED]"}')!.text)
-  expect(out).toEqual({ password: '[REDACTED]', x: '[REDACTED]' })
-})
-
-test('redaction is idempotent on JSON written inside a secret-named object', () => {
-  const s = JSON.stringify({ credentials: { blob: JSON.stringify({ password: 'p w', n: 1 }) } })
-  const once = redactJson(s)!.text
-  expect(JSON.parse(JSON.parse(once).credentials.blob)).toEqual({ password: '[REDACTED]', n: 1 })
-  const twice = redactJson(once)!
-  expect([twice.text, twice.found]).toEqual([once, []])
+test('inside a paging group every field travels as returned, an empty object or list included', () => {
+  const t = trimmed('{"pageInfo":{"endCursor":"c1","filter":{},"sort":[],"etag":"x"},"rows":[{"a":1,"filter":{}}]}')
+  expect(t.value).toEqual({ pageInfo: { endCursor: 'c1', filter: {}, sort: [], etag: 'x' }, rows: [{ a: 1 }] })
+  expect([...t.stats.empty]).toEqual(['filter'])
 })
 
 test('empty paging containers stay; a HAL link counts as one value', () => {
@@ -915,30 +559,8 @@ test('paging shape: 20 values hold, 21 do not; five levels hold, six do not', ()
   expect(isPagingShaped(nest(6))).toBe(false)
 })
 
-test('inside a paging value: no quoted pairs, no JSON read; beside a header name: judged by it', () => {
-  const v = JSON.parse(
-    redactJson(
-      JSON.stringify({
-        next: 'q?password="hunter22"',
-        cursor: '{"password":"hunter22"}',
-        pagination: { auth: { v: 'abc123DEF456' } },
-        headers: [{ header: 'Authorization', value: 'Basic dXNlcjpwYXNz' }],
-      }),
-    )!.text,
-  )
-  expect(v.next).toBe('q?password="hunter22"')
-  expect(v.cursor).toBe('{"password":"hunter22"}')
-  expect(v.pagination.auth.v).toBe('abc123DEF456')
-  expect(v.headers[0].value).toBe('[REDACTED]')
-})
-
 test('bookkeeping fields under a paging group are kept', () => {
   expect(trimmed(JSON.stringify({ pageInfo: { etag: [1], n: 2 }, rows: [] })).value.pageInfo).toEqual({ etag: [1], n: 2 })
-})
-
-test('a string after a closed object or list is read in its own place', () => {
-  for (const before of ['{}', '[]', '["a"]', '{"k":"v"}'])
-    expect(redactJson(`{"credentials":${before},"x":"abc123DEF456"}`)!.found).toEqual([])
 })
 
 test('hoisting compares single values only; a field holding an object or list is never hoisted', () => {
@@ -962,10 +584,11 @@ test('depth: 200 levels are laid out, 201 are not', () => {
   const at = (n: number) => '['.repeat(n) + '"x"' + ']'.repeat(n)
   expect(typeof trimJsonWhy([at(200)], none)).toBe('object')
   expect(trimJsonWhy([at(201)], none)).toBe(TOO_DEEP)
-  // The same limit when the redaction's reading is reused.
-  expect(typeof trimJsonWhy([at(200)], none, { read: [redactJson(at(200))] })).toBe('object')
-  expect(trimJsonWhy([at(201)], none, { read: [redactJson(at(201))] })).toBe(TOO_DEEP)
+  const obj = (n: number) => '{"a":'.repeat(n) + '1' + '}'.repeat(n)
+  expect(typeof trimJsonWhy([obj(200)], none)).toBe('object')
+  expect(trimJsonWhy([obj(201)], none)).toBe(TOO_DEEP)
   expect(trimJsonWhy(['"just text"'], none)).toBe(NOT_RECORDS)
+  expect(trimJsonWhy(['just text'], none)).toBe(NOT_JSON)
 })
 
 test('the request is read up to 20,000 characters, reminders taken out in one scan', () => {
@@ -986,32 +609,23 @@ test('a deadline reached exactly has passed', () => {
   expect(() => new Deadline(5, () => 4).checkNow()).not.toThrow()
 })
 
-test('the reader, the redaction loop and the trim walk each check the deadline', () => {
+test('the reader and the trim walk each check the deadline', () => {
   const far = () => new Deadline(Number.MAX_SAFE_INTEGER)
-  // 20,000 strings: the reader checks once per value, the redaction once per string.
-  const strings = JSON.stringify(Array.from({ length: 20_000 }, (_, i) => `v${i}`))
-  const a = far()
-  redactJson(strings, new Run(a))
-  expect(a.calls).toBeGreaterThanOrEqual(40_000)
-  // 20,000 numbers: only the reader sees them.
+  // 20,000 numbers: the reader checks once per value.
   const b = far()
-  redactJson(JSON.stringify(Array.from({ length: 20_000 }, (_, i) => i)), new Run(b))
+  readBlocks([JSON.stringify(Array.from({ length: 20_000 }, (_, i) => i))], new Run(b))
   expect(b.calls).toBeGreaterThanOrEqual(20_000)
-  // 20,000 records of two fields, 60,001 values: read, trimmed and laid out.
+  // 20,000 records of two fields, 60,001 values: trimmed and laid out.
+  const data = readBlocks([JSON.stringify(Array.from({ length: 20_000 }, (_, i) => ({ id: i, n: `n${i}` })))]) as unknown[]
   const c = far()
-  trimJsonWhy([JSON.stringify(Array.from({ length: 20_000 }, (_, i) => ({ id: i, n: `n${i}` })))], none, { run: new Run(c) })
-  expect(c.calls).toBeGreaterThanOrEqual(2 * 60_001 + 20_000)
+  trimBlocks(data, none, { run: new Run(c) })
+  expect(c.calls).toBeGreaterThanOrEqual(60_001 + 20_000)
 })
 
 test('a run classifies each key once, in its own book', () => {
   const run = new Run()
-  redactJson('[{"api_key":"x y","n":"1"},{"api_key":"x z","n":"2"}]', run)
-  expect([...run.keys.keys()].sort()).toEqual(['api_key', 'n'])
-  expect(run.keys.get('api_key')?.secret).toBe('strong')
+  trimJsonWhy(['[{"next_page_token":"x","n":"1"},{"next_page_token":"y","n":"2"}]'], none, { run })
+  expect([...run.keys.keys()].sort()).toEqual(['n', 'next_page_token'])
+  expect(run.keys.get('next_page_token')).toEqual({ paging: true, group: true })
 })
 
-test('the reading handed over is used only for the text it was read from', () => {
-  const other = redactJson('{"a":1}')
-  const t = trimJsonWhy(['{"b":2}'], none, { read: [other] })
-  expect(typeof t === 'object' && JSON.parse(t.text)).toEqual({ b: 2 })
-})
