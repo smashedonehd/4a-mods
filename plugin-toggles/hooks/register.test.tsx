@@ -1017,11 +1017,12 @@ const modsSetup = (
   extra: Record<string, string> = {},
   enabledPlugins = {},
   vars: Record<string, string> = {},
+  clock = () => (tick += 60_000),
 ) => {
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x', ...vars }))
   on('settings.read', () => ({ value: { enabledPlugins } }))
-  on('clock.now', (): any => ({ value: (tick += 60_000) }))
+  on('clock.now', (): any => ({ value: clock() }))
   const files = disk(on, { ...modFiles(), ...extra })
   listing(on, files)
   return files
@@ -1099,7 +1100,9 @@ test('a refused write leaves no note, and Shown or Open on an off mod writes not
   files[SWITCHES] = '{ broken'
   await ui.press({ key: 'mods:clock' })
   expect(files[SWITCHES]).toBe('{ broken')
-  expect(await ui.find({ type: 'Text', text: /Clock is on in every chat/ })).toBeFalsy()
+  // The note from the last write that landed stays; Clock gets none.
+  expect(await ui.find({ type: 'Text', text: /^Clock is/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Dev is off in every chat\.$/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -1159,9 +1162,10 @@ test('a module hooks.json names outside hooks/ counts as the mod code', async ($
 for (const [label, list] of [
   ['Windows', 'C:/env/one;C:\\env\\two'],
   ['POSIX', '~/env/one:~/env/two'],
+  ['drive-letter', 'C:/env/one:C:\\env\\two'],
 ] as const)
   test(`CLAUDE_CODE_PLUGIN_DIRS is split as a ${label} list`, async ($, on) => {
-    const root = label === 'Windows' ? 'C:/env' : 'C:/Users/x/env'
+    const root = label === 'POSIX' ? 'C:/Users/x/env' : 'C:/env'
     const mod = (n: string) => ({
       [`${root}/${n}/.claude-plugin/plugin.json`]: JSON.stringify({ name: `env-${n}` }),
       [`${root}/${n}/hooks/hooks.json`]: JSON.stringify({ modules: ['./register.tsx'] }),
@@ -1174,3 +1178,41 @@ for (const [label, list] of [
     expect(await ui.find({ type: 'Button', key: 'mods:env-two' })).toBeTruthy()
     await ui.unmount()
   })
+
+test('the mod list is kept ten seconds, and a clock that went back reads it again', async ($, on) => {
+  let now = 1_000_000
+  const files = modsSetup(on, {}, {}, {}, () => now)
+  const fresh = (n: string) => {
+    files[`C:/Users/x/.claude/mods/${n}/.claude-plugin/plugin.json`] = JSON.stringify({ name: n })
+    files[`C:/Users/x/.claude/mods/${n}/hooks/hooks.json`] = JSON.stringify({ modules: ['./register.tsx'] })
+    files[`C:/Users/x/.claude/mods/${n}/hooks/register.tsx`] = 'switches.json'
+  }
+  const reopen = async (ui: any) => {
+    await ui.press({ key: 'tab-skills' })
+    await ui.press({ key: 'tab-mods' })
+  }
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  fresh('one')
+  now += 5_000
+  await reopen(ui)
+  expect(await ui.find({ type: 'Button', key: 'mods:one' })).toBeFalsy()
+  now += 6_000
+  await reopen(ui)
+  expect(await ui.find({ type: 'Button', key: 'mods:one' })).toBeTruthy()
+  fresh('two')
+  now -= 1_000
+  await reopen(ui)
+  expect(await ui.find({ type: 'Button', key: 'mods:two' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('switches.json stays under home when CLAUDE_CONFIG_DIR moves the config', async ($, on) => {
+  const files = modsSetup(on, {}, {}, { CLAUDE_CONFIG_DIR: 'C:/cfg' })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mods' })
+  await ui.press({ key: 'mods:dev' })
+  expect(JSON.parse(files[SWITCHES] ?? '{}')).toEqual({ dev: false })
+  expect(files['C:/cfg/mods/switches.json']).toBeUndefined()
+  await ui.unmount()
+})

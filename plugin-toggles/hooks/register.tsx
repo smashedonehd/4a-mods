@@ -777,7 +777,7 @@ async function envDirs($: any, home: string) {
 // The hooks code of a plugin folder, tests left out, or undefined when it is
 // no mod: a mod has a hooks.json naming modules. Read: the code files in
 // hooks/, and each module hooks.json names wherever it sits.
-const isCode = (name: string) => /\.(tsx?|jsx?|mjs|cjs)$/.test(name) && !/\.test\./.test(name)
+const isCode = (name: string) => /\.(tsx?|jsx?|[mc][jt]s)$/.test(name) && !/\.test\./.test(name)
 async function hooksCode($: any, dir: string) {
   const hooks = await readObject($, `${dir}/hooks/hooks.json`)
   if (!Array.isArray(hooks?.modules) || hooks.modules.length === 0) return undefined
