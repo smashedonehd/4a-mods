@@ -9,7 +9,7 @@ import type { On } from 'claude-code'
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120 } as never } as const
 
 async function session($: Engine, on: On) {
-  mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
+  const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
   mock.env(on, { HOME: '/home/t' })
   mock.store(on)
   const files = new Map<string, string>()
@@ -26,7 +26,11 @@ async function session($: Engine, on: On) {
   on('command.list', () => ({ value: [] }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   on('session.start', async () => ({ cwd: '/repo' }) as never)
+  on('turn.step', async function* () {
+    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 320000, cache_creation_input_tokens: 0 } } as never
+  })
   await $.session.start({ source: 'startup', cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+  return clock
 }
 
 test('a big context opens the offer on both surfaces', async ($, on) => {
@@ -40,6 +44,12 @@ test('a big context opens the offer on both surfaces', async ($, on) => {
   }
 })
 
+// One request of the main loop: after it the band has figures and its buttons
+const step = async ($: Engine) => {
+  const stream = ($.turn.step as (e: unknown) => AsyncIterable<unknown>)({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  for await (const _ of stream) void _
+}
+
 const ROWS = [
   { role: 'user', text: 'Fix /repo/src/a.ts', toolUses: [] },
   { role: 'assistant', text: 'ok https://github.com/o/r/pull/3', toolUses: [{ tool_use_id: 'u1', tool: 'Edit', input: { file_path: '/repo/src/a.ts' } }] },
@@ -52,17 +62,18 @@ function pipeline(on: On, fork: unknown) {
   on('session.messages', () => ({ value: ROWS }) as never)
   // The path as the engine hands it on (a drive in front on Windows)
   on('fs.stat', (_$: never, e: never) => (/[\\/]repo[\\/]src[\\/]a\.ts$/.test((e as { path: string }).path) ? { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false } } : { value: { kind: 'other', size: 0, mtimeMs: 0, isLink: false } }) as never)
-  on('model.fork', () => ({ value: fork }) as never)
+  on('model.fork', () => ({ value: typeof fork === 'function' ? fork() : fork }) as never)
   on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: 'no git' } }) as never)
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: Start handoff runs the five steps to a ready card`, async ($: Engine, on: On) => {
     pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-    await session($, on)
+    const clock = await session($, on)
     await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
+    await clock.advance(0) // the press starts the pipeline and returns
     expect((await ui.find({ type: 'Text', text: /^Handoff ready/ }))?.text).toMatch(/Handoff ready: \d+ words/)
     expect((await ui.findAll({ type: 'Text', text: /messages?$|files?$/ })).map((x: { text: string }) => x.text)).toEqual(['2 messages', '1 file'])
     for (const key of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close']) expect(await ui.find({ key } as never)).toBeTruthy()
@@ -73,10 +84,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`${surface}: a failed fork shows the reason, the draft and Try again`, async ($: Engine, on: On) => {
     pipeline(on, { isAnswered: false, reason: 'api-error', status: 529, usage: {} })
-    await session($, on)
+    const clock = await session($, on)
     await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
+    await clock.advance(0) // the press starts the pipeline and returns
     expect(await ui.find({ type: 'Text', text: /did not finish/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /HTTP 529/ })).toBeTruthy()
     expect((await ui.find({ type: 'Text', text: /^Draft saved to / }))?.text).toMatch(/\.draft\.md$/)
@@ -92,14 +104,63 @@ test('Clear and continue runs /clear and sends the handoff as the first prompt',
   on('ui.toast', () => ({ value: undefined }) as never)
   on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
   on('prompt.submit', (_$: never, e: never) => (sent.push((e as { text: string }).text), { text: (e as { text: string }).text }) as never)
-  await session($, on)
+  const clock = await session($, on)
   await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   await ui.press({ key: 'ck-ho-start' } as never)
+  await clock.advance(0)
   await ui.press({ key: 'ck-ho-clear' } as never)
+  await clock.advance(0)
   expect(ran).toContain('clear')
   expect(sent.length).toBe(1)
   expect(sent[0]).toMatch(/^Handoff from my previous session/)
   expect(sent[0]).toContain('# Session Handoff: fix a.ts')
   await ui.unmount()
 })
+
+test('a slow press returns before its work starts: the hook never waits for the pipeline', async ($: Engine, on: On) => {
+  let forks = 0
+  pipeline(on, () => (forks++, { isAnswered: true, text: GOOD, usage: {} }))
+  const clock = await session($, on)
+  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  await step($)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  await ui.press({ key: 'ck-ho-start' } as never)
+  expect(forks).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeFalsy()
+  await clock.advance(0)
+  expect(forks).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeTruthy()
+  // The band's own handoff button starts its work the same way
+  await ui.press({ key: 'ck-ho-close' } as never)
+  await ui.press({ key: 'handoff' } as never)
+  expect(forks).toBe(1)
+  await clock.advance(0)
+  expect(forks).toBe(2)
+  await ui.unmount()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: Keep chat takes "clear and continue" off the band until a new handoff is saved`, async ($: Engine, on: On) => {
+    pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
+    on('ui.toast', () => ({ value: undefined }) as never)
+    const clock = await session($, on)
+    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    await step($)
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+    await ui.press({ key: 'ck-ho-start' } as never)
+    await clock.advance(0)
+    // The ready card has its own button, the band none
+    expect(await ui.find({ key: 'continue' } as never)).toBeFalsy()
+    await ui.press({ key: 'ck-ho-keep' } as never)
+    expect(await ui.find({ type: 'Text', text: /^Handoff ready/ })).toBeFalsy()
+    expect(await ui.find({ key: 'continue' } as never)).toBeFalsy()
+    expect(await ui.find({ key: 'handoff' } as never)).toBeTruthy()
+    // A new handoff, its card closed: the band offers to clear again
+    await ui.press({ key: 'handoff' } as never)
+    await clock.advance(0)
+    await ui.press({ key: 'ck-ho-close' } as never)
+    expect((await ui.find({ key: 'continue' } as never))?.text).toBe('clear and continue')
+    await ui.unmount()
+  })
+}
