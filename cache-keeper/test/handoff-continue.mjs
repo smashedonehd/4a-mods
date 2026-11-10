@@ -195,6 +195,18 @@ const keys = (t, out = new Set()) => {
   }
   return out
 }
+// The drawn node with this key, or null
+const subtree = (t, key) => {
+  if (!t || typeof t !== 'object') return null
+  if (Array.isArray(t)) {
+    for (const c of t) {
+      const f = subtree(c, key)
+      if (f) return f
+    }
+    return null
+  }
+  return t.key === key ? t : subtree(t.children, key)
+}
 const latestKey = () => [...files.keys()].filter((k) => k.includes('/latest-')).pop()
 const handoffs = () => [...files.keys()].filter((k) => k.includes('/handoffs/') && k.endsWith('.md') && !k.endsWith('.draft.md'))
 const drafts = () => [...files.keys()].filter((k) => k.endsWith('.draft.md'))
@@ -754,7 +766,8 @@ await check('desktop: a queued handoff offers stop now in the card head and keep
   for (let i = 0; i < 3; i++) await s.step('busy', 650000)
   const band = await s.render('desktop')
   assert.ok(keys(band).has('ck-ho-head') && keys(band).has('ck-ho-steps'))
-  assert.ok(s.buttons.has('ck-ho-stop'))
+  // In the drawn card head, not only built
+  assert.ok(keys(subtree(band, 'ck-ho-head')).has('ck-ho-stop'))
   const handoff = s.buttons.get('handoff')
   assert.equal(handoff.label, 'handoff queued')
   assert.equal(handoff.variant, undefined)
@@ -888,6 +901,23 @@ await check('auto clear on: a turn in the countdown is waited for, then one fres
   assert.ok(cleared(s.log))
   assert.equal(s.sent.length, 1)
   store.delete('settings')
+})
+
+await check('desktop: a handoff queued over a ready one keeps the steps, stop now, the saved path and the ready buttons', async () => {
+  const s = await boot('/w/rq', 'rq000001-0', { select: true })
+  await s.run('handoff', 'keep')
+  await s.fire('turn.start', { turnId: 'busy' })
+  await s.fire('tool.call', { tool: 'Skill', skill: 'session-handoff', args: 'keep' })
+  await s.fire('classic.PostToolBatch', {}, (h) => h.name === 'classic.PostToolBatch', { additionalContext: [] })
+  for (let i = 0; i < 3; i++) await s.step('busy', 650000)
+  const band = await s.render('desktop')
+  const card = subtree(band, 'ck-ho-card')
+  const k = keys(card)
+  assert.ok(k.has('ck-ho-steps') && k.has('ck-ho-head'), 'not the one-line ready card')
+  assert.ok(keys(subtree(card, 'ck-ho-head')).has('ck-ho-stop'))
+  assert.match(texts(card), /Saved to .*rq000001/)
+  const buttons = keys(subtree(card, 'ck-ho-buttons'))
+  for (const b of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open']) assert.ok(buttons.has(b), b)
 })
 
 // ======================= the band, revive, live git, pruning =======================
