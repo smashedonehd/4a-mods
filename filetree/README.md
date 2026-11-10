@@ -56,6 +56,6 @@ Read from the code, not tried on Windows, except where it says so.
 
 ## Checked here
 
-Run on Windows 11 on 2026-11-10: with Claude Code 2.1.322, `claude plugin validate` passes and `claude plugin test filetree` gives 309 pass, 0 fail. With 2.1.282 the hooks module does not load and the same tests give 31 pass, 278 fail. The 46 copied files have the same git blob hashes as upstream. The pane itself was not opened in the Desktop app.
+Run on Windows 11 on 2026-11-10: with Claude Code 2.1.322, `claude plugin validate` passes and `claude plugin test filetree` gives 309 pass, 0 fail. With 2.1.282 the hooks module does not load and the same tests give 31 pass, 278 fail. The 45 copied files have the same git blob hashes as upstream. The pane itself was not opened in the Desktop app.
 
 Install instructions for the marketplace are in the [repository README](../README.md).
