@@ -1154,12 +1154,14 @@ test('a module hooks.json names outside hooks/ counts as the mod code', async ($
   await ui.unmount()
 })
 
+// The POSIX list starts at `~`: the engine gives a bare `/env` the host's
+// drive on Windows, so an absolute POSIX path would not match the disk here.
 for (const [label, list] of [
-  ['Windows', 'C:/env/one;C:\env\two'],
-  ['POSIX', '/env/one:/env/two'],
+  ['Windows', 'C:/env/one;C:\\env\\two'],
+  ['POSIX', '~/env/one:~/env/two'],
 ] as const)
   test(`CLAUDE_CODE_PLUGIN_DIRS is split as a ${label} list`, async ($, on) => {
-    const root = label === 'Windows' ? 'C:/env' : '/env'
+    const root = label === 'Windows' ? 'C:/env' : 'C:/Users/x/env'
     const mod = (n: string) => ({
       [`${root}/${n}/.claude-plugin/plugin.json`]: JSON.stringify({ name: `env-${n}` }),
       [`${root}/${n}/hooks/hooks.json`]: JSON.stringify({ modules: ['./register.tsx'] }),
