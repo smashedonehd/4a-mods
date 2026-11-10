@@ -181,7 +181,7 @@ const PAGING_NAMES = new Set(
     'page pages pagenumber pagesize perpage pagecount nextpage hasnextpage haspreviouspage hasmore more total totalcount ' +
     'totalresults totalrows totalsize totalitems totalpages count rowcount offset limit skip cursor next prev previous ' +
     'after before startindex startat maxresults itemsperpage truncated istruncated islast scrollid marker bookmark ' +
-    'continuation odatacount lastevaluatedkey exclusivestartkey startingafter endingbefore searchafter pitid sinceid maxid'
+    'continuation odatacount exclusivestartkey startingafter endingbefore searchafter pitid sinceid maxid'
   ).split(' '),
 )
 // Words that make any key paging: `endCursor`, `KeyMarker`, `pageBookmark`, `resumePoint`.
@@ -233,13 +233,14 @@ export function keyClass(key: string): KeyClass {
 
 // A value paging can hold: a number, a boolean, null, a string without
 // blanks (a cursor or a URL), or an object or list of at most 20 such values
-// all told; a HAL link (`{ href, title, templated }`) is one value.
+// all told; a HAL link (`{ href, title, templated }`) is one value, judged by
+// its href.
 export function isPagingShaped(v: unknown) {
   let left = 20
   const ok = (x: unknown, depth: number): boolean => {
     if (typeof x === 'string') return !/\s/.test(x)
     if (isScalar(x)) return true
-    if (isObject(x) && typeof x.href === 'string') return --left >= 0 && !/\s/.test(x.href)
+    if (isObject(x) && typeof x.href === 'string') return !/\s/.test(x.href)
     const xs = Array.isArray(x) ? x : isObject(x) ? Object.values(x) : undefined
     if (!xs || depth > 4 || (left -= xs.length) < 0) return false
     return xs.every(y => ok(y, depth + 1))
@@ -310,7 +311,7 @@ export function clean(s: string) {
   let out = ''
   let at = 0
   for (let open = text.indexOf(OPEN); open >= 0; open = text.indexOf(OPEN, at)) {
-    const close = text.indexOf(CLOSE, open + OPEN.length)
+    const close = text.indexOf(CLOSE, open)
     if (close < 0) break
     out += text.slice(at, open)
     at = close + CLOSE.length
@@ -519,7 +520,8 @@ const sameScalar = (a: unknown, b: unknown) => (a instanceof Exact ? b instanceo
 
 // Records of three or more whose single value (text, number, true, false,
 // null) is one in all of them: the field is written once, beside the
-// records. A field holding an object or a list is never compared.
+// records. A field holding an object or a list is never the same: each
+// record's was built on its own.
 function hoist(items: unknown[], t: TrimStats): unknown {
   if (items.length < 3 || !items.every(isObject)) return items
   const records = items as Json[]
@@ -528,7 +530,7 @@ function hoist(items: unknown[], t: TrimStats): unknown {
   for (const k of Object.keys(first)) {
     tick()
     const v = first[k]
-    if (isScalar(v) && records.every(r => Object.hasOwn(r, k) && sameScalar(r[k], v))) put(same, k, v)
+    if (records.every(r => Object.hasOwn(r, k) && sameScalar(r[k], v))) put(same, k, v)
   }
   if (Object.keys(same).length === 0) return items
   t.hoisted += Object.keys(same).length

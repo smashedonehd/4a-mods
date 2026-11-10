@@ -28,6 +28,7 @@ import {
   pagingOf,
   parseJson,
   readBlocks,
+  note,
   reshaped,
   restore,
   safe,
@@ -188,6 +189,8 @@ test('result shapes: text blocks, a string, the SDK object, images and errors', 
   expect(textsOf({ content: [{ type: 'text', text: 'a' }], isError: false })).toEqual({ texts: ['a'] })
   expect(textsOf({ content: [], isError: true })).toEqual({ skip: 'error' })
   expect(textsOf([{ type: 'image', data: '' }])).toEqual({ skip: 'image' })
+  expect(textsOf([{ type: 'text', text: 'a' }, { type: 'audio', data: '' }])).toEqual({ skip: 'image' })
+  expect(textsOf([{ type: 'document', data: '' }])).toEqual({ skip: 'image' })
   expect(textsOf([{ type: 'resource_link', uri: 'x' }])).toEqual({ skip: 'a resource_link block' })
 })
 
@@ -629,3 +632,91 @@ test('a run classifies each key once, in its own book', () => {
   expect(run.keys.get('next_page_token')).toEqual({ paging: true, group: true })
 })
 
+
+// ---------- fifth review: boundaries ----------
+
+test('next_offset is paging, and listed in the header', () => {
+  expect(pagingOf({ next_offset: 40, rows: [] })).toEqual([['next_offset', '40']])
+})
+
+test('a paging group holds 20 HAL links, each one value; 21 are data', () => {
+  const links = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`l${i}`, { href: `https://x/${i}`, title: 'Page x' }]))
+  expect(isPagingShaped(links(20))).toBe(true)
+  expect(isPagingShaped(links(21))).toBe(false)
+  expect(isPagingShaped({ next: { href: 'page two' } })).toBe(false)
+})
+
+test('in a list a text of 1,000 characters is kept, one of 1,001 is cut', () => {
+  const t = trimmed(JSON.stringify({ rows: [{ a: 'w '.repeat(500) }, { a: `${'w '.repeat(500)}x` }] }))
+  expect(t.value.rows[0].a).toBe('w '.repeat(500))
+  expect(t.value.rows[1].a).toBe(`${'w '.repeat(500)} …[cut: 1 more characters in the saved file]`)
+})
+
+test('a hex run is base64 from 1,000 characters on; letters with no digit never are', () => {
+  const t = trimmed(JSON.stringify({ rows: [{ a: 'f0'.repeat(500), b: `${'f0'.repeat(499)}f`, c: 'abcxyz'.repeat(50) }] }))
+  expect([...t.stats.blobs]).toEqual(['a'])
+  expect(t.value.rows[0]).toEqual({ b: `${'f0'.repeat(499)}f`, c: 'abcxyz'.repeat(50) })
+})
+
+test('the layout may be exactly as long as its limit', () => {
+  const v = { a: [{ b: 1 }, { b: 2 }] }
+  const n = layout(v).length
+  expect(layout(v, n)).toBe(layout(v))
+  expect(() => layout(v, n - 1)).toThrow()
+})
+
+test('a long line breaks after a comma that opens a list before it breaks at a blank', () => {
+  const line = `${'a'.repeat(60)} ${'b'.repeat(20)},[${'c'.repeat(40)}`
+  expect(chunks(line, 100)[0]).toBe(line.slice(0, 82))
+})
+
+test("the note's header states the note's own length, across a change in digits", () => {
+  for (let n = 9_400; n < 9_700; n++) {
+    const text = note({ tool: 't', before: 50_000, how: 'trim', leftOut: '', reshaped: '', paging: '', file: 'f', body: 'x'.repeat(n) })
+    const stated = Number(/→ ([\d,]+) characters/.exec(text)![1]!.replace(/,/g, ''))
+    expect([n, stated]).toEqual([n, text.length])
+  }
+})
+
+test('retention keeps a file exactly at the keep time and a folder exactly at its cap', () => {
+  const f = (name: string, size: number, mtimeMs: number) => ({ name, kind: 'file', size, mtimeMs })
+  expect(toClear([f('a', 600, 50)], 100, 50, 10_000)).toEqual([])
+  expect(toClear([f('a', 600, 49)], 100, 50, 10_000)).toEqual(['a'])
+  expect(toClear([f('a', 600, 100), f('b', 400, 90)], 100, 50, 1000)).toEqual([])
+  expect(toClear([f('a', 600, 100), f('b', 401, 90)], 100, 50, 1000)).toEqual(['b'])
+})
+
+test('a name in a saved path is at most 60 characters', () => {
+  expect(safe('a'.repeat(100))).toBe('a'.repeat(60))
+})
+
+test('six filler words are an approval; seven are not', () => {
+  expect(isFiller('jo ok dobre super jasne fajn')).toBe(true)
+  expect(isFiller('jo ok dobre super jasne fajn diky')).toBe(false)
+})
+
+test('a plural loses its s only past four letters', () => {
+  expect([...wordsOf('cars costs')].sort()).toEqual(['cars', 'cost', 'costs'])
+})
+
+test('a key part of three letters is named; a key past 200 characters is not', () => {
+  expect(isNamed('fooBar', new Set(['foo']))).toBe(true)
+  const cost = new Set(['cost'])
+  expect(isNamed(`cost_${'x'.repeat(195)}`, cost)).toBe(true)
+  expect(isNamed(`cost_${'x'.repeat(196)}`, cost)).toBe(false)
+})
+
+test('exact numbers that agree in every record are hoisted', () => {
+  const t = trimJson(['{"rows":[{"id":1,"price":1.50},{"id":2,"price":1.50},{"id":3,"price":1.50}]}'], none)!
+  expect(t.text).toContain('"same in every record": {"price":1.50}')
+  expect(t.stats.hoisted).toBe(1)
+})
+
+test('the JSON reader: no bare decimal point, no raw control character, CR is a blank, __proto__ is a field', () => {
+  expect(parseJson('[1.]')).toBeUndefined()
+  expect(parseJson('["a\tb"]')).toBeUndefined()
+  expect(parseJson('{\r\n"a":1\r\n}')).toEqual({ a: 1 })
+  const proto = parseJson('{"__proto__":{"a":1},"b":2}') as Record<string, unknown>
+  expect(Object.keys(proto)).toEqual(['__proto__', 'b'])
+  expect(ser(proto)).toBe('{"__proto__":{"a":1},"b":2}')
+})
