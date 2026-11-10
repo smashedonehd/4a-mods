@@ -916,6 +916,13 @@ async function cardAction($, key) {
     case 'ck-ho-at':
       return setOfferAt($, OFFER_CHOICES[(OFFER_CHOICES.indexOf(offerChoice) + 1) % OFFER_CHOICES.length])
     case 'ck-ho-clear':
+      // Armed (or counting down) inside a turn: the clear already comes at its end
+      if (S.working && (P.autoAt || P.autoWait)) {
+        cancelAutoClear()
+        P.autoWait = true
+        $.ui.toast('The chat clears and continues when this turn ends.', { timeoutMs: 8000 })
+        return
+      }
       cancelAutoClear()
       return clearAndContinue($)
     case 'ck-ho-keep':
@@ -1386,7 +1393,8 @@ function handoffCard($, e, els, Svg) {
   else if (P.phase === 'ready') title = Text({ color: HUE.green, bold: true, children: [readyText + (doing ? ' · ' + doing : '')] })
   else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
   // Auto clear: the seconds before the chat clears, ahead of the buttons
-  const countdown = P.phase === 'ready' && !!(P.autoAt || P.autoWait) && !H.continuing && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [P.autoWait ? 'Clearing when this turn ends' : `Clearing in ${autoClearLeft()} s`] })
+  // A handoff queued over the card decides what follows instead
+  const countdown = P.phase === 'ready' && !!(P.autoAt || P.autoWait) && !H.continuing && !P.pending && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [P.autoWait ? 'Clearing when this turn ends' : `Clearing in ${autoClearLeft()} s`] })
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
     const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
@@ -1405,7 +1413,8 @@ function handoffCard($, e, els, Svg) {
   const clearLabel = countdown ? 'Clear now' : 'Clear and continue'
   const ready = P.phase === 'ready' && !H.continuing && [
     countdown,
-    desk ? Button({ key: 'ck-ho-clear', label: clearLabel, variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', clearLabel, hot('c')),
+    // Armed, the clear comes when the turn ends: no button to ask for it sooner
+    !P.autoWait && (desk ? Button({ key: 'ck-ho-clear', label: clearLabel, variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', clearLabel, hot('c'))),
     cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
     cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
     cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
