@@ -87,7 +87,7 @@ MCP connectors (Google Ads, Search Console, GA4 and the like) often answer with 
 - **The full result is saved** in `~/.claude/mods-data/connector-trim/results/`. The note Claude reads starts with a `[Connector Trim]` header: the size before and after, what was left out, the paging fields, the saved file's path, and a line telling Claude to use the note and open the file only for a field the note does not have. Obvious secrets (API keys, bearer tokens, private keys, `password=` values) are redacted before the result is saved and before Haiku sees it.
 - **Left whole:** results under 16,000 characters, errors, results with images, and browser and desktop-control tools where the exact content matters (Claude in Chrome, the built-in browser, camofox, computer use, screenshots, page reads). Subagents' connector calls are shortened too.
 - **`/connector-trim`** shows whether it is on and this chat's totals. `/connector-trim off` and `on` switch it, kept across chats; `/connector-trim full` lets the next big result in this chat through whole, once.
-- **Settings** (`/config`, or Configure in `/plugin`): both thresholds, the never-trim list and an only-trim list (servers or tools, `*` as a wildcard), the helper model, and how long saved results are kept: 7 days and 200 MB by default. A mod can't delete files, so a cleared result is written over with a one-line note.
+- **Settings** (Configure in `/plugin`; the single values also in `/config`): both thresholds, the never-trim list and an only-trim list (servers or tools, `*` as a wildcard), the helper model, and how long saved results are kept: 7 days and 200 MB by default. A mod can't delete files, so a cleared result is written over with a one-line note.
 
 ## Where the data lives
 
