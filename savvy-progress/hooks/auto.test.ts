@@ -351,3 +351,13 @@ test('unseen: a /clear keeps the runs the list still has, and survives a list th
   await cleared($)
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
 })
+
+test('unseen: a /clear leaves a teammate to its own events', async ($, on) => {
+  session(on)
+  on('classic.SessionStart', () => ({}) as never)
+  on('agent.list', () => ({ value: [{ id: 't', teammateId: 'ann@team', description: 'Old t', type: 'teammate', status: 'running' }] }) as never)
+  await cleared($)
+  expect(await panelTexts($)).toContain('No subagents yet.')
+  await step($, 't')
+  expect(await panelTexts($)).toContain('Old t')
+})

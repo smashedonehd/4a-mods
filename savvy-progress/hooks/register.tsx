@@ -1013,8 +1013,10 @@ export const register: Register = (on, options) => {
   // are not, and no `session.start` fires. The ones still at work get a run at
   // once, not at their next model request. Their model shows with that request.
   on('classic.SessionStart', { source: ['clear'] }, async ($, e, next) => {
+    // A teammate in a pane of its own runs no loop here, and a dead pane leaves it
+    // "running": it waits for an event of its own.
     for (const info of await listedAgents($)) {
-      if (info.status === 'running' || info.status === 'waiting' || info.status === 'pending') await addUnseen($, info, '')
+      if (!info.teammateId && (info.status === 'running' || info.status === 'waiting' || info.status === 'pending')) await addUnseen($, info, '')
     }
     return next(e)
   })
