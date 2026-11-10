@@ -4,21 +4,21 @@
 import { Exact, TooDeep, TooSlow, isObject, isScalar, parseJson, put, readJson, ser } from './json.ts'
 import type { Json } from './json.ts'
 
-export { TooSlow, isObject, parseJson, ser }
+export { TooSlow, parseJson, ser }
 export const NL = '\n'
 // A text value inside a list is cut past this many characters.
-export const STRING_CAP = 1000
+const STRING_CAP = 1000
 // A text value outside every list (beside the records) is kept whole up to this.
-export const HEAD_CAP = 4000
+const HEAD_CAP = 4000
 // The header lists paging values up to this many characters in all; past
 // that it names the fields and leaves their values to the body.
-export const PAGING_CAP = 4000
+const PAGING_CAP = 4000
 // Deeper JSON is passed whole: laying it out would cost more than it saves.
-export const MAX_DEPTH = 200
+const MAX_DEPTH = 200
 // The layout indents at most this many levels; deeper levels keep that indent.
-export const MAX_INDENT = 12
+const MAX_INDENT = 12
 // A key longer than this is no name anyone reads: class none, never split.
-export const MAX_KEY = 200
+const MAX_KEY = 200
 // Approximate tokens, the way the savings ledger counts them.
 export const tokens = (chars: number) => Math.ceil(chars / 4)
 export const fmt = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
@@ -71,9 +71,9 @@ function inRun<T>(run: Run | undefined, f: () => T): T {
 const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff
 const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff
 // An end index that does not split a surrogate pair: one back when it would.
-export const safeEnd = (s: string, n: number) => (n > 0 && n < s.length && isHigh(s.charCodeAt(n - 1)) ? n - 1 : n)
+const safeEnd = (s: string, n: number) => (n > 0 && n < s.length && isHigh(s.charCodeAt(n - 1)) ? n - 1 : n)
 // A start index that does not split a surrogate pair: one on when it would.
-export const safeStart = (s: string, n: number) => (n > 0 && n < s.length && isLow(s.charCodeAt(n)) ? n + 1 : n)
+const safeStart = (s: string, n: number) => (n > 0 && n < s.length && isLow(s.charCodeAt(n)) ? n + 1 : n)
 // The first `n` characters, or the last, never half an emoji.
 export const clip = (s: string, n: number) => s.slice(0, safeEnd(s, n))
 export const clipEnd = (s: string, n: number) => s.slice(safeStart(s, Math.max(0, s.length - n)))
@@ -150,7 +150,7 @@ function unglue(word: string): string[] {
 const charKind = (c: number) => (c >= 97 && c <= 122 ? 1 : c >= 65 && c <= 90 ? 2 : c >= 48 && c <= 57 ? 3 : 0)
 
 // The words of a key, by one scan.
-export function keyWords(key: string): string[] {
+function keyWords(key: string): string[] {
   const out: string[] = []
   let start = -1
   for (let i = 0; i <= key.length; i++) {
@@ -184,14 +184,15 @@ const PAGING_WORDS = new Set(['cursor', 'marker', 'bookmark', 'continuation', 'r
 const GROUP_NAMES = new Set(['pageinfo', 'pagination', 'paging', 'links', 'cursors'])
 const LINK_FIRST_SET = new Set(LINK_FIRST)
 
-function pagingNameOf(w: readonly string[], joined: string) {
+// (`@odata.count` is `count`: no paging name starts with odata but
+// `odatacount`, and `count` is one too.)
+function pagingNameOf(w: readonly string[]) {
   const p = w[0] === 'odata' ? w.slice(1) : w
   const first = p[0]
   const last = p[p.length - 1]
   const before = p[p.length - 2]
   if (first === undefined) return false
   return (
-    PAGING_NAMES.has(joined) ||
     PAGING_NAMES.has(p.join('')) ||
     (p.length >= 2 && LINK_FIRST_SET.has(first) && LINK_LAST.has(last!)) ||
     p.some(x => PAGING_WORDS.has(x)) ||
@@ -204,7 +205,7 @@ function keyInfo(key: string): KeyInfo {
   if (key.length > MAX_KEY) return NO_INFO
   const words = keyWords(key)
   const joined = words.join('')
-  const paging = pagingNameOf(words, joined)
+  const paging = pagingNameOf(words)
   return { paging, group: paging || GROUP_NAMES.has(joined) }
 }
 // A key's class, read once per result.
@@ -274,7 +275,7 @@ export function readBlocks(texts: readonly string[], run?: Run): unknown[] | str
 // ---------- the task's words ----------
 
 // Lower case without diacritics, so "kampaně" and "kampane" are one word.
-export const fold = (s: string) => s.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase()
+const fold = (s: string) => s.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase()
 
 // Short approvals that carry no task of their own, Czech and English.
 const FILLER = new Set(
@@ -312,7 +313,8 @@ export function clean(s: string) {
   }
   return (out + text.slice(at)).trim()
 }
-const head = (s: string, n: number) => (s.length > n ? `${clip(s, n)}…` : s)
+// The first `n` characters, and `…` when there were more.
+export const head = (s: string, n: number) => (s.length > n ? `${clip(s, n)}…` : s)
 const tail = (s: string, n: number) => (s.length > n ? `…${clipEnd(s, n)}` : s)
 
 export type Row = { role: string; text: string; toolUses?: readonly { tool_use_id: string }[] }
@@ -408,7 +410,7 @@ export type TrimStats = {
   hoisted: number
   unpacked: number
 }
-export const newStats = (): TrimStats => ({
+const newStats = (): TrimStats => ({
   empty: new Set(),
   blobs: new Set(),
   noise: new Set(),
@@ -418,8 +420,8 @@ export const newStats = (): TrimStats => ({
   unpacked: 0,
 })
 
-export const SAME = 'same in every record'
-export const BLOB_MARK = '[base64 data: in the saved file]'
+const SAME = 'same in every record'
+const BLOB_MARK = '[base64 data: in the saved file]'
 const BLOB = /^(?:data:[\w/+.-]+;base64,)?[A-Za-z0-9+/_-]{200,}={0,2}$/
 // Base64, not a long hex id: letters and digits both, and a character hex
 // has not, `=` padding, or a length no id runs to.
@@ -453,7 +455,7 @@ function trimString(v: string, words: ReadonlySet<string>, t: TrimStats, inList:
   const inner = v.length > 1 && looksLikeJson(v) ? parseJson(v, tick, MAX_DEPTH) : undefined
   if (isUnpackable(inner)) {
     t.unpacked += 1
-    return trimValue(inner, words, t, false, inList)
+    return trimValue(inner, words, t, inList)
   }
   if (!inList && v.length <= HEAD_CAP) return v
   if (isBlob(v)) return DROPPED
@@ -466,20 +468,19 @@ function trimString(v: string, words: ReadonlySet<string>, t: TrimStats, inList:
 }
 
 // One trimmed value. Only an object's fields are ever left out; an array keeps
-// every element in its place, since a row's position is its meaning. In a
-// paging group every single value travels as returned.
-function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: boolean, inList: boolean): unknown {
+// every element in its place, since a row's position is its meaning. A paging
+// group travels as returned, whole: nothing in it is cut, left out or moved.
+function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, inList: boolean): unknown {
   tick()
-  if (typeof v === 'string') return group ? v : trimString(v, words, t, inList)
+  if (typeof v === 'string') return trimString(v, words, t, inList)
   if (Array.isArray(v)) {
     const items = v.map(x => {
-      const y = trimValue(x, words, t, group, true)
+      const y = trimValue(x, words, t, true)
       if (y !== DROPPED) return y
       t.blobItems += 1
       return BLOB_MARK
     })
-    // A paging group's list travels as returned, never reshaped.
-    return group ? items : hoist(items, t)
+    return hoist(items, t)
   }
   if (!isObject(v)) return v
   const out: Json = {}
@@ -487,22 +488,22 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
     const x = v[k]
     const named = isNamed(k, words)
     const info = infoOf(k)
-    const paging = group || (info.paging && isPagingShaped(x))
-    // Single values the task names travel as returned (paging ones do in
-    // the paging group below).
+    // A paging name is a group name too.
+    const group = info.group && isPagingShaped(x)
+    // Single values the task names travel as returned.
     if (named && isScalar(x)) {
       put(out, k, x)
       continue
     }
-    if (!named && !paging && NOISE.test(k)) {
+    if (!named && !(info.paging && group) && NOISE.test(k)) {
       t.noise.add(k)
       continue
     }
-    const y = trimValue(x, words, t, group || (info.group && isPagingShaped(x)), inList)
+    const y = group ? x : trimValue(x, words, t, inList)
     if (y === DROPPED) t.blobs.add(k)
     // An empty paging container (`LastEvaluatedKey: {}`) says there is no
-    // next page, and inside a paging group every value travels: it stays.
-    else if (isEmpty(y) && !named && !group && !info.group) t.empty.add(k)
+    // next page: it stays.
+    else if (isEmpty(y) && !named && !info.group) t.empty.add(k)
     else put(out, k, y)
   }
   return out
@@ -614,7 +615,7 @@ export function trimBlocks(
       const max = opts.maxChars ?? Infinity
       let used = 0
       const blocks = data.map((d, i) => {
-        const body = `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false, false), max - used)}`
+        const body = `${many ? `Block ${i + 1} of ${data.length}:${NL}` : ''}${layout(trimValue(d, words, t, false), max - used)}`
         used += body.length + 2
         return body
       })
@@ -761,47 +762,46 @@ export const restore = (s: string) => swapTags(s, MARK, '<')
 
 // ---------- the note ----------
 
+// How the body was made: by code, or by the helper (its model named), or by
+// code after the helper failed (why named).
 export type Note = {
   tool: string
   before: number
-  how: 'trim' | 'text' | 'helper' | 'fallback'
-  model?: string
-  why?: string
   leftOut: string
   reshaped: string
   paging: string
   file: string
   body: string
-}
+} & ({ how: 'trim' | 'text' } | { how: 'helper'; model: string } | { how: 'fallback'; why: string })
 
 function howLine(n: Note) {
+  if (n.how === 'helper') return `Condensed by ${n.model} for this task; its last line names what it left out.`
+  if (n.how === 'fallback') return `Trimmed by code, not summarised (${n.why}).`
   if (n.how === 'trim') return 'Trimmed by code, not summarised: every value below is as the tool returned it, except where a cut is marked.'
-  if (n.how === 'text') return 'Trimmed by code, not summarised: only blanks at line ends and extra blank lines were removed.'
-  if (n.how === 'helper') return `Condensed by ${n.model ?? 'the helper model'} for this task; its last line names what it left out.`
-  return `Trimmed by code, not summarised (${n.why ?? 'the helper model failed'}).`
+  return 'Trimmed by code, not summarised: only blanks at line ends and extra blank lines were removed.'
 }
 
-// The text Claude reads in place of the result: the header, then the body.
+// The text Claude reads in place of the result: the header, a blank line,
+// then the body.
 export function note(n: Note) {
-  const build = (after: number) =>
-    [
-      `[Connector Trim] ${n.tool}: ${fmt(n.before)} → ${fmt(after)} characters (about ${fmt(tokens(n.before))} → ${fmt(tokens(after))} tokens). ${howLine(n)}`,
-      `Left out by code (all of it is in the saved file): ${n.leftOut || 'nothing'}.${n.reshaped ? ` Also: ${n.reshaped}.` : ''}`,
-      ...(n.paging ? [`Paging and counts, values as returned: ${n.paging}`] : []),
-      `Full result: ${n.file}`,
-      "Use this note as the tool's answer; open the file only for a field this note does not list.",
-      '',
-      n.body,
-    ].join(NL)
+  const rest = [
+    `Left out by code (all of it is in the saved file): ${n.leftOut || 'nothing'}.${n.reshaped ? ` Also: ${n.reshaped}.` : ''}`,
+    ...(n.paging ? [`Paging and counts, values as returned: ${n.paging}`] : []),
+    `Full result: ${n.file}`,
+    "Use this note as the tool's answer; open the file only for a field this note does not list.",
+  ].join(NL)
+  const how = howLine(n)
+  const header = (after: number) =>
+    `[Connector Trim] ${n.tool}: ${fmt(n.before)} → ${fmt(after)} characters (about ${fmt(tokens(n.before))} → ${fmt(tokens(after))} tokens). ${how}${NL}${rest}${NL}${NL}`
   // The header states the note's own length, and writing that number can
   // lengthen the note: settle on a length that states itself.
   let len = n.body.length
   for (let i = 0; i < 4; i++) {
-    const next = build(len).length
+    const next = header(len).length + n.body.length
     if (next === len) break
     len = next
   }
-  return build(len)
+  return header(len) + n.body
 }
 
 // ---------- names and retention ----------
@@ -874,4 +874,3 @@ export function toClear(
   }
   return out
 }
-export { Exact }
