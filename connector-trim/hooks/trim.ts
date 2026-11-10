@@ -269,14 +269,14 @@ function hoist(items: unknown[], t: TrimStats): unknown {
 
 // JSON with one record per line: compact, and still valid JSON.
 export function layout(v: unknown, pad = ''): string {
+  const flat = (xs: unknown[]) => xs.every(x => !isObject(x) && !Array.isArray(x))
   if (Array.isArray(v)) {
-    if (v.length === 0) return '[]'
-    if (v.every(x => !isObject(x) && !Array.isArray(x))) return JSON.stringify(v)
+    if (flat(v)) return JSON.stringify(v)
     return `[${NL}${v.map(x => `${pad}  ${JSON.stringify(x)}`).join(`,${NL}`)}${NL}${pad}]`
   }
   if (isObject(v)) {
     const keys = Object.keys(v)
-    if (keys.length === 0) return '{}'
+    if (flat(Object.values(v))) return JSON.stringify(v)
     const lines = keys.map(k => `${pad}  ${JSON.stringify(k)}: ${layout(v[k], `${pad}  `)}`)
     return `{${NL}${lines.join(`,${NL}`)}${NL}${pad}}`
   }

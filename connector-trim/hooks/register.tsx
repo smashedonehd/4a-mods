@@ -73,8 +73,12 @@ type Task = { user: string; assistant: string }
 
 const num = (v: unknown, fallback: number, min: number) =>
   typeof v === 'number' && Number.isFinite(v) && v >= min ? v : fallback
+// A list option: an array, or one comma-separated string; blanks dropped.
 const strs = (v: unknown, fallback: readonly string[]) =>
-  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : typeof v === 'string' ? v.split(',') : fallback
+  (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : fallback)
+    .filter((x): x is string => typeof x === 'string')
+    .map(x => x.trim())
+    .filter(x => x !== '')
 
 function configOf(o: PluginOptions): Config {
   const model = typeof o.helper_model === 'string' ? o.helper_model.trim() : ''
