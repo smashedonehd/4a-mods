@@ -337,7 +337,9 @@ export function taskOf(rows: readonly Row[], toolUseId?: string) {
   const said = rows
     .slice(ask + 1, end)
     .filter(r => r.role === 'assistant' && r.text.trim() !== '')
-    .map(r => r.text.trim())
+    // Each row's last 1,600 characters, trimmed: a row that ends in a run of
+    // blanks gives what follows them, not the blanks.
+    .map(r => clipEnd(r.text, 1600).trim())
   return { user: ask >= 0 ? head(asked, 2000) : '', assistant: tail(said.join(NL), 1500) }
 }
 

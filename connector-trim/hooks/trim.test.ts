@@ -856,3 +856,18 @@ test('a cleared file and one up to 8 bytes longer are not counted again', () => 
 test('a tool name keeps every part after the server', () => {
   expect(partsOf('mcp__srv__a__b')).toEqual({ server: 'srv', name: 'a__b' })
 })
+
+test('each assistant row is read from its last 1,600 characters, then trimmed', () => {
+  const rows = [
+    { role: 'user', text: 'show the campaigns' },
+    { role: 'assistant', text: 'EARLIER PLAN: fetch report.' },
+    { role: 'assistant', text: `${'A'.repeat(3000)}${' '.repeat(1700)}END`, toolUses: [{ tool_use_id: 't1' }] },
+  ]
+  expect(taskOf(rows, 't1').assistant).toBe('EARLIER PLAN: fetch report.
+END')
+  // Exactly the last 1,600 characters: 1,601 lose the A, 1,600 keep it.
+  const edge = [{ role: 'user', text: 'go on with it' }, { role: 'assistant', text: `A${' '.repeat(1597)}END` }]
+  expect(taskOf(edge).assistant).toBe('END')
+  const kept = [{ role: 'user', text: 'go on with it' }, { role: 'assistant', text: `A${' '.repeat(1596)}END` }]
+  expect(taskOf(kept).assistant).toBe(`…${' '.repeat(1497)}END`)
+})
