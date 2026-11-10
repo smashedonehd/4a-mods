@@ -481,7 +481,6 @@ function forkFailure(r) {
 
 // Runs the five steps now, or once the running turn ends. after: see P.after.
 async function runPipeline($, after = 'ask') {
-  now = await $.clock.now()
   // A later press that only asks never cancels a clear asked for earlier
   const merged = (prev) => (prev === 'clear' ? 'clear' : after)
   if (P.phase === 'working') {
@@ -490,16 +489,19 @@ async function runPipeline($, after = 'ask') {
     return
   }
   if (S.working) {
+    now = await $.clock.now()
     if (!P.pending) startLanding()
     P.pending = merged(P.pending)
     $.ui.invalidate('ui.render')
     $.ui.toast('Session handoff queued: it starts when Claude finishes this turn.')
     return
   }
+  // Claimed before the first await: two presses must not both get past the check
   Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
   H.clearDue = false
   startTicker($)
   try {
+    now = await $.clock.now()
     const read = await runStep($, 0, () => readMessages($), (r) => plural(r.messages.length, 'message') + (r.fromFile ? ' (transcript file)' : ''))
     const messages = read.messages
     const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
@@ -729,7 +731,7 @@ async function continueRequest($) {
 // hook, or queues itself behind the running turn
 function handoffRequest($, after) {
   const queued = S.working
-  $.clock.after(50, () => void runPipeline($, after).catch(() => {}))
+  offHook($, () => runPipeline($, after), 50)
   if (queued) return { text: 'The handoff starts when Claude finishes this turn. Watch the card above the prompt.' }
   return { text: `Writing the handoff: watch the card above the prompt.${after === 'clear' ? ' When it is in, this chat clears and continues with it.' : ' This chat stays as it is.'}` }
 }
@@ -868,13 +870,14 @@ async function cardAction($, key) {
   }
 }
 
-// The presses that write a handoff, clear the chat or open a file: they outlast
-// the time a ui.press hook may run, so the hook starts them and returns
+// The presses that write a handoff, clear the chat or open a file: the hook
+// starts them and returns. The desktop app drops a ui.press hook 10 s after it
+// began ("ran past its 10s budget"), and writing a handoff takes longer.
 const SLOW_KEYS = new Set(['ck-ho-start', 'ck-ho-retry', 'ck-ho-clear', 'ck-ho-open'])
 
-// Runs `work` once the calling hook has returned. Never throws.
-function offHook($, work) {
-  $.clock.after(0, () => void Promise.resolve().then(work).catch((err) => $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })))
+// Runs `work` once the calling hook has returned, `ms` later. Never throws.
+function offHook($, work, ms = 0) {
+  $.clock.after(ms, () => void Promise.resolve().then(work).catch((err) => $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })))
 }
 
 async function cardPress($, key) {
@@ -1018,9 +1021,9 @@ function handoffLabel() {
 // After "Keep chat" it is gone: the person chose to stay, and /handoff continue
 // still clears with that handoff.
 function continueButton($, Button, extra = {}) {
-  if (H.continuing) return Button({ key: 'continue', label: 'clearing', plain: true, ...extra, onPress: () => {} })
-  if (!H.text || H.kept || P.phase === 'ready') return null
-  return Button({ key: 'continue', label: 'clear and continue', plain: true, ...extra, onPress: () => offHook($, () => clearAndContinue($)) })
+  if (!H.continuing && (!H.text || H.kept || P.phase === 'ready')) return null
+  // A press while it clears does nothing: clearAndContinue lets one run in
+  return Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, ...extra, onPress: () => clearAndContinueLater($, 0) })
 }
 
 // The band on a surface with Select (desktop, editor): row one is the cache and
@@ -1690,7 +1693,7 @@ export function register(on, options) {
     }
     // A handoff queued behind this turn starts now, off this hook (the fork
     // needs the turn's end). An interrupted turn starts it too: "stop now".
-    if (!overlapped && P.pending) $.clock.after(50, () => void runPipeline($, P.pending || 'ask').catch(() => {}))
+    if (!overlapped && P.pending) offHook($, () => runPipeline($, P.pending || 'ask'), 50)
     else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')

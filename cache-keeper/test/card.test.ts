@@ -29,13 +29,21 @@ async function session($: Engine, on: On) {
   on('turn.step', async function* () {
     return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 320000, cache_creation_input_tokens: 0 } } as never
   })
+  // What the module sends out: the commands it runs and the prompts it submits
+  const ran: string[] = []
+  const sent: string[] = []
+  on('ui.toast', () => ({ value: undefined }) as never)
+  on('command.run', (_$, e: never) => (ran.push((e as { command: string }).command), {}) as never)
+  on('prompt.submit', (_$, e: never) => (sent.push((e as { text: string }).text), { text: (e as { text: string }).text }) as never)
+  on('classic.SessionStart', () => ({}) as never)
   await $.session.start({ source: 'startup', cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
-  return clock
+  // A context big enough for the handoff offer
+  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  return { clock, ran, sent }
 }
 
 test('a big context opens the offer on both surfaces', async ($, on) => {
   await session($, on)
-  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     expect((await ui.find({ type: 'Text', text: /Context 320k/ }))?.text).toContain('hand this chat off')
@@ -69,8 +77,7 @@ function pipeline(on: On, fork: unknown) {
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: Start handoff runs the five steps to a ready card`, async ($: Engine, on: On) => {
     pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-    const clock = await session($, on)
-    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    const { clock } = await session($, on)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
     await clock.advance(0) // the press starts the pipeline and returns
@@ -84,8 +91,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`${surface}: a failed fork shows the reason, the draft and Try again`, async ($: Engine, on: On) => {
     pipeline(on, { isAnswered: false, reason: 'api-error', status: 529, usage: {} })
-    const clock = await session($, on)
-    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    const { clock } = await session($, on)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
     await clock.advance(0) // the press starts the pipeline and returns
@@ -98,14 +104,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
 }
 
 test('Clear and continue runs /clear and sends the handoff as the first prompt', async ($: Engine, on: On) => {
-  const ran: string[] = []
-  const sent: string[] = []
   pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-  on('ui.toast', () => ({ value: undefined }) as never)
-  on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
-  on('prompt.submit', (_$: never, e: never) => (sent.push((e as { text: string }).text), { text: (e as { text: string }).text }) as never)
-  const clock = await session($, on)
-  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  const { clock, ran, sent } = await session($, on)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   await ui.press({ key: 'ck-ho-start' } as never)
   await clock.advance(0)
@@ -121,13 +121,8 @@ test('Clear and continue runs /clear and sends the handoff as the first prompt',
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a slow press returns before its work starts: the hook never waits for it`, async ($: Engine, on: On) => {
     let forks = 0
-    const ran: string[] = []
     pipeline(on, () => (forks++, { isAnswered: true, text: GOOD, usage: {} }))
-    on('ui.toast', () => ({ value: undefined }) as never)
-    on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
-    on('prompt.submit', (_$: never, e: never) => ({ text: (e as { text: string }).text }) as never)
-    const clock = await session($, on)
-    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    const { clock, ran } = await session($, on)
     await step($)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
@@ -151,13 +146,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   test(`${surface}: the band's clear and continue returns before it clears`, async ($: Engine, on: On) => {
-    const ran: string[] = []
     pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-    on('ui.toast', () => ({ value: undefined }) as never)
-    on('command.run', (_$: never, e: never) => (ran.push((e as { command: string }).command), {}) as never)
-    on('prompt.submit', (_$: never, e: never) => ({ text: (e as { text: string }).text }) as never)
-    const clock = await session($, on)
-    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    const { clock, ran } = await session($, on)
     await step($)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
@@ -174,9 +164,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('a Start pressed twice writes one handoff: the second runs on a card that is gone', async ($: Engine, on: On) => {
   let forks = 0
   pipeline(on, () => (forks++, { isAnswered: true, text: GOOD, usage: {} }))
-  on('ui.toast', () => ({ value: undefined }) as never)
-  const clock = await session($, on)
-  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  const { clock } = await session($, on)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   await Promise.all([ui.press({ key: 'ck-ho-start' } as never), ui.press({ key: 'ck-ho-start' } as never)])
   await clock.advance(0)
@@ -187,9 +175,7 @@ test('a Start pressed twice writes one handoff: the second runs on a card that i
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: Keep chat takes "clear and continue" off the band until a new handoff is saved`, async ($: Engine, on: On) => {
     pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-    on('ui.toast', () => ({ value: undefined }) as never)
-    const clock = await session($, on)
-    await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+    const { clock } = await session($, on)
     await step($)
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
     await ui.press({ key: 'ck-ho-start' } as never)
@@ -211,10 +197,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 test('a plain /clear after Keep chat brings "clear and continue" back: the choice was about the old chat', async ($: Engine, on: On) => {
   pipeline(on, { isAnswered: true, text: GOOD, usage: {} })
-  on('ui.toast', () => ({ value: undefined }) as never)
-  on('classic.SessionStart', () => ({}) as never)
-  const clock = await session($, on)
-  await $.session.measure({ context: { tokens: 320000, window: 1000000 } } as never)
+  const { clock } = await session($, on)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
   await ui.press({ key: 'ck-ho-start' } as never)
   await clock.advance(0)
