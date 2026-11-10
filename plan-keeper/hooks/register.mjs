@@ -19,7 +19,7 @@ const PLAN_REF = { plugin: 'plan-keeper', key: 'plan' }
 const TASKS_REF = { plugin: 'plan-keeper', key: 'tasks' }
 const USED_REF = { plugin: 'plan-keeper', key: 'used' }
 const UNMATCHED_REF = { plugin: 'plan-keeper', key: 'unmatched' }
-const VIEW_REF = { plugin: 'plan-keeper', key: 'view' }
+const PREFS_REF = { plugin: 'plan-keeper', key: 'prefs' }
 const PANE = 'plan-keeper'
 const UNMATCHED_MAX = 20 // completed steps that named no item, newest kept
 const BAR = 18 // the band's bar, in cells
@@ -340,7 +340,7 @@ const savePlan = ($) => $.state.set(PLAN_REF, plan).catch(() => {})
 const saveTasks = ($) => $.state.set(TASKS_REF, tasks).catch(() => {})
 const saveUsed = ($) => $.state.set(USED_REF, [...used]).catch(() => {})
 const saveUnmatched = ($) => $.state.set(UNMATCHED_REF, unmatched).catch(() => {})
-const saveUi = ($) => $.state.set(VIEW_REF, ui).catch(() => {})
+const saveUi = ($) => $.state.set(PREFS_REF, ui).catch(() => {})
 
 // A chat the session did not start here (/clear, /resume, /branch): the old
 // chat's task list is gone, and with it what that list held
@@ -376,7 +376,7 @@ async function init($) {
     kept(() => $.state.get(TASKS_REF)),
     kept(() => $.state.get(USED_REF)),
     kept(() => $.state.get(UNMATCHED_REF)),
-    kept(() => $.state.get(VIEW_REF)),
+    kept(() => $.state.get(PREFS_REF)),
   ])
   if (p && p.path) plan = p
   if (Array.isArray(t)) tasks = t

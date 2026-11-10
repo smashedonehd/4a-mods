@@ -1,10 +1,22 @@
 {
   "name": "plan-keeper",
-  "version": "0.1.0",
-  "description": "Keeps a session's plan file honest: ticks a plan item once the task-list step of the same text is done, and lists the open items when a chat starts or clears",
+  "version": "0.2.0",
+  "description": "Keeps a session's plan file honest: ticks a plan item once the task-list step of the same text is done, shows the plan's progress in a band above the prompt and a pane (/plan-keeper), and tells Claude when a task list ends with plan items still open",
   "author": {
     "name": "4AM"
   },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "band": {
+      "type": "string",
+      "title": "Plan band above the prompt",
+      "description": "on: one row with the active plan, its progress and the next open item; off: no band, the pane and the ticks stay",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    }
+  }
 }

@@ -602,7 +602,7 @@ test('the closing note ticks first, comes again when the state changes, and neve
   await s.call('TodoWrite', { todos: [{ content: 'Write the parser', status: 'completed' }, { content: 'Test the parser', status: 'completed' }, { content: 'Task 2', status: 'completed' }] })
   assert.equal(await s.batch(), undefined, 'nothing open: no note')
   assert.match(flat(await s.band()), /✓ s/)
-  assert.match(flat(await s.band()), /3\/3\n· plan complete/)
+  assert.match(flat(await s.band()), /3\/3· plan complete/)
   assert.match(s.toasts.at(-1), /the plan is complete/)
 })
 
@@ -707,7 +707,7 @@ test('a complete plan is let go at the next prompt and not picked again', async 
   await s.start()
   await s.call('mcp__ccd_turn__update_plan', list('Ship it'))
   await s.call('mcp__ccd_turn__wrap_up', { recap: 'r' })
-  assert.match(flat(await s.band()), /1\/1\n· plan complete/)
+  assert.match(flat(await s.band()), /1\/1· plan complete/)
   assert.equal(await s.batch(), undefined)
   await s.prompt('next thing')
   assert.equal(await s.band(), null)
