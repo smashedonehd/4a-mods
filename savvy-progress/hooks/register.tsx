@@ -11,6 +11,8 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
+// When the current wave of subagents began: the band without a reported plan counts the runs started since
+const wave = atom({ plugin: 'savvy-progress', key: 'wave' } as const, 0)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -28,6 +30,10 @@ const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light'
 const MAX_TASKS = 200
 const MAX_AFTER = 20
 const MAX_TITLE = 120
+// Subagents in one wave before the band draws without a reported plan
+const AUTO_MIN = 2
+// A dismissed wave: no run starts this late, so the band stays away until the next wave
+const WAVE_DISMISSED = Number.MAX_SAFE_INTEGER
 const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
 
@@ -49,6 +55,7 @@ type Lang = 'en' | 'ru' | 'he'
 const STRINGS = {
   en: {
     pane: 'Agents',
+    auto: 'Subagents',
     cost: 'Cost',
     tokens: 'Tokens',
     time: 'Time',
@@ -80,6 +87,7 @@ const STRINGS = {
   },
   ru: {
     pane: 'Агенты',
+    auto: 'Субагенты',
     cost: 'Стоимость',
     tokens: 'Токены',
     time: 'Время',
@@ -111,6 +119,7 @@ const STRINGS = {
   },
   he: {
     pane: 'סוכנים',
+    auto: 'תת-סוכנים',
     cost: 'עלות',
     tokens: 'טוקנים',
     time: 'זמן',
@@ -476,6 +485,20 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   const started = new Set(list.map(a => norm(a.description)))
   return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
+
+// The band when nobody reported a plan: the runs of the current wave as a flow,
+// finished ones out of all of them. null below AUTO_MIN runs.
+const autoFlow = (list: AgentRun[], since: number): Flow | null => {
+  const crew = list.filter(a => a.startedAt >= since)
+  if (crew.length < AUTO_MIN) return null
+  const running = crew.filter(a => a.status === 'running').length
+  return { ...blank(), title: tr().auto, total: crew.length, done: crew.length - running, running, phase: 'delegate', isFinished: running === 0 }
+}
+
+// What the band draws: a reported plan still open, else a wave still running,
+// else whichever of the two finished (the reported one first)
+const bandFlow = (reported: Flow | null, auto: Flow | null): Flow | null =>
+  reported && !reported.isFinished ? reported : auto && !auto.isFinished ? auto : (reported ?? auto)
 
 const totals = (list: AgentRun[], at: number) => {
   const cost = list.reduce((s, a) => s + a.costUsd, 0)
@@ -928,6 +951,8 @@ export const register: Register = (on, options) => {
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
+    // A spawn while nothing runs begins a new wave
+    if (!(await read($, agents)).some(a => a.status === 'running')) await update($, wave, () => at)
     await update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
       const run: AgentRun = {
@@ -1203,7 +1228,8 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const f = await read($, flow)
+    const list = await read($, agents)
+    const f = bandFlow(await read($, flow), autoFlow(list, await read($, wave)))
     if (f === null || e.props.hasSurvey) return next(e)
     // Draw this row with the other mods' bands beneath it. Claude Code's own placeholder ({ type: 'engine' }) is
     // never nested: the desktop drops a band that nests it.
@@ -1212,7 +1238,6 @@ export const register: Register = (on, options) => {
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    const list = await read($, agents)
     const crew = list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
     const crewButton = (
@@ -1225,7 +1250,10 @@ export const register: Register = (on, options) => {
         label="✕"
         plain
         role="dismiss"
-        onPress={() => update($, flow, () => null)}
+        onPress={async () => {
+          await update($, flow, () => null)
+          await update($, wave, () => WAVE_DISMISSED)
+        }}
       />
     )
 
