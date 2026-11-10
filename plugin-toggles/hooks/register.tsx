@@ -8,12 +8,13 @@ const norm = (p: string) => p.split(BS).join('/')
 const query = atom({ plugin: 'plugin-toggles', key: 'q' } as const, '', {
   shape: 'q-1',
 })
-const TABS = ['profiles', 'plugins', 'skills', 'mcp'] as const
+const TABS = ['profiles', 'plugins', 'skills', 'mcp', 'mods'] as const
 const TAB_LABEL: Record<string, string> = {
   profiles: 'Profiles',
   plugins: 'Plugins',
   skills: 'Skills',
   mcp: 'MCP',
+  mods: 'Mods',
 }
 const TAB_HELP: Record<string, string> = {
   profiles: 'Saved sets of plugins and skills. Apply switches the whole set in one click.',
@@ -63,6 +64,8 @@ const PALETTE = [
   '#C08A5B',
   '#8C9BB0',
 ]
+// A switched-on mod's On and Shown.
+const GOOD = '#16a34a'
 // Chips drawn at most; the filter narrows the rest.
 const SHOWN = 200
 // Bumped after each write so the pane redraws.
@@ -127,6 +130,7 @@ async function paths($: any) {
   const home = norm(/^[A-Za-z]:[\\/]/.test(profile) ? profile : String(homeVar || profile))
   const dir = config ? norm(String(config)).replace(/\/+$/, '') : `${home}/.claude`
   return {
+    home,
     dir,
     settings: `${dir}/settings.json`,
     global: config ? `${dir}/.claude.json` : `${home}/.claude.json`,
@@ -716,6 +720,159 @@ async function deleteProfile($: any, name: string) {
   await update($, rev, n => n + 1)
 }
 
+// ---- Mods ----
+// The switch file other mods read on their own, every few seconds: `"<name>":
+// false` stops a mod, `"<name>:hidden": true` keeps it working without its
+// pane or band. No key means on and shown. It lives under the home folder's
+// .claude whatever CLAUDE_CONFIG_DIR says, as those mods look for it there.
+async function switchesFile($: any) {
+  return `${(await paths($)).home}/.claude/mods/switches.json`
+}
+
+type ModInfo = {
+  name: string
+  // The name in words: `cache-clock` is Cache Clock.
+  title: string
+  desc: string
+  // Its slash commands, as its code registers them.
+  tip: string
+  // Its hooks code reads switches.json, so the switch moves it.
+  switchable: boolean
+  // Its hooks code reads a `:hidden` key.
+  hideable: boolean
+  // Its code looks for an `.open-<name>-<session>` request: it has a pane to open.
+  pane: boolean
+  // The plugin id when it was installed from a marketplace.
+  id: string
+  dir: string
+}
+
+// Folders directly inside dir, a link to one counted as one.
+async function dirsIn($: any, dir: string) {
+  return (await listSafe($, dir))
+    .filter(x => !x.name.startsWith('.') && (x.kind === 'dir' || (x as any).isLink))
+    .map(x => `${dir}/${x.name}`)
+}
+
+// CLAUDE_CODE_PLUGIN_DIRS: split at ';', or at a ':' that does not start a
+// drive's path, `~` for the home folder.
+async function envDirs($: any, home: string) {
+  const raw = String((await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) || '')
+  return raw
+    .split(/;|:(?![\\/])/)
+    .map(x => norm(x.trim()).replace(/\/+$/, ''))
+    .filter(x => x !== '' && !/^[A-Za-z]$/.test(x))
+    .map(x => (x === '~' ? home : x.startsWith('~/') ? home + x.slice(1) : x))
+}
+
+// The hooks code of a plugin folder, tests left out, or undefined when it is
+// no mod: a mod has a hooks.json naming modules.
+async function hooksCode($: any, dir: string) {
+  const hooks = await readObject($, `${dir}/hooks/hooks.json`)
+  if (!Array.isArray(hooks?.modules) || hooks.modules.length === 0) return undefined
+  const files = (await listSafe($, `${dir}/hooks`)).filter(
+    x => x.kind === 'file' && /\.(tsx?|jsx?|mjs|cjs)$/.test(x.name) && !/\.test\./.test(x.name),
+  )
+  const texts = await Promise.all(files.map(x => readSafe($, `${dir}/hooks/${x.name}`)))
+  return texts.join(NL)
+}
+
+async function inspectMod($: any, dir: string, id: string): Promise<ModInfo | undefined> {
+  const manifest = await readObject($, `${dir}/.claude-plugin/plugin.json`)
+  if (manifest === undefined) return undefined
+  const code = await hooksCode($, dir)
+  if (code === undefined) return undefined
+  const name = String(manifest.name || dir.split('/').pop() || '')
+  if (name === '' || name === 'plugin-toggles') return undefined
+  const commands = [
+    ...new Set(
+      [...code.matchAll(/command\.register\(\s*\{\s*name:\s*['"`]([^'"`]+)['"`]/g)].map(m => `/${m[1]}`),
+    ),
+  ]
+  return {
+    name,
+    title: name
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' '),
+    desc: String(manifest.description ?? ''),
+    tip: commands.join(', '),
+    switchable: code.includes('switches.json'),
+    hideable: code.includes(':hidden'),
+    pane: code.includes('.open-'),
+    id,
+    dir,
+  }
+}
+
+// The last change, said under the list.
+const modNote = atom({ plugin: 'plugin-toggles', key: 'modNote' } as const, '', {
+  shape: 'modNote-1',
+})
+
+// Asks the mod, in this chat, to open its pane: it looks for the file every few seconds.
+async function openMod($: any, m: ModInfo) {
+  const json = await readJson($, await switchesFile($))
+  if (json[m.name] === false || json[`${m.name}:hidden`] === true) {
+    await update($, modNote, () => `${m.title} is ${json[m.name] === false ? 'off' : 'hidden'}. Turn it on and show it first.`)
+    return
+  }
+  const sid = String(await $.session.id())
+  await $.fs.write(`${(await paths($)).home}/.claude/mods/.open-${m.name}-${sid}`, '')
+  await update($, modNote, () => `${m.title} opens in this chat within a few seconds.`)
+}
+
+async function flipMod($: any, m: ModInfo, hide: boolean) {
+  const json = await readJson($, await switchesFile($))
+  const key = hide ? `${m.name}:hidden` : m.name
+  const was = hide ? json[key] === true : json[key] === false
+  if (hide && json[m.name] === false) {
+    await update($, modNote, () => `${m.title} is off. Turn it on first.`)
+    return
+  }
+  await writeModSwitch($, m.name, hide, was)
+  const now = hide ? (was ? 'shown' : 'hidden') : was ? 'on' : 'off'
+  await update($, modNote, () => `${m.title} is ${now} in every chat.`)
+}
+
+// Every mod on this computer: those installed from a marketplace, those in
+// ~/.claude/mods and those CLAUDE_CODE_PLUGIN_DIRS names. Kept ten seconds, as
+// drawing the pane reads it again on each change.
+let modsCache: { at: number; list: ModInfo[] } | undefined
+async function modsNow($: any) {
+  const at = Number(await $.clock.now())
+  if (modsCache && at - modsCache.at < 10_000) return modsCache.list
+  const { home, dir } = await paths($)
+  const reg = await readJson($, `${dir}/plugins/installed_plugins.json`)
+  const found: [string, string][] = []
+  for (const id of Object.keys(reg.plugins ?? {})) {
+    const path = (reg.plugins[id] ?? [])[0]?.installPath
+    if (path) found.push([norm(String(path)), id])
+  }
+  for (const d of await dirsIn($, `${home}/.claude/mods`)) found.push([d, ''])
+  for (const d of await envDirs($, home)) found.push([d, ''])
+  const seen = new Set<string>()
+  const list: ModInfo[] = []
+  for (const mod of await Promise.all(found.map(([d, id]) => inspectMod($, d, id))))
+    if (mod && !seen.has(mod.name)) {
+      seen.add(mod.name)
+      list.push(mod)
+    }
+  list.sort((a, b) => a.name.localeCompare(b.name))
+  modsCache = { at, list }
+  return list
+}
+
+async function writeModSwitch($: any, name: string, hide: boolean, toOn: boolean) {
+  const key = hide ? `${name}:hidden` : name
+  const wrote = await rewrite($, await switchesFile($), json => {
+    if (toOn) delete json[key]
+    else json[key] = hide ? true : false
+  })
+  if (wrote) await update($, rev, n => n + 1)
+}
+
 async function setMode($: any, kind: string, name: string, mode: Mode) {
   if (kind === 'mcp') return toggleMcp($, name, mode === 'on')
   const source = await outranking($, kind === 'plugins' ? 'enabledPlugins' : 'skillOverrides', name)
@@ -888,6 +1045,106 @@ export const register: Register = on => {
               </Box>
             )
           })}
+        </Box>
+      )
+    }
+    if (current === 'mods') {
+      const [mods, switches, plugins, said] = await Promise.all([
+        modsNow($),
+        switchesFile($).then(p => readJson($, p)),
+        switchesNow($).then(s => s.enabledPlugins as Record<string, boolean>),
+        read($, modNote),
+      ])
+      // Switchable mods first, A to Z within each part.
+      const list = [...mods.filter(m => m.switchable), ...mods.filter(m => !m.switchable)]
+      const terminal = e.surface === 'terminal'
+      const chrome = terminal ? { variant: 'secondary' as const } : {}
+      return (
+        <Box flexDirection="column" gap={1} padding={1}>
+          {tabs($, e, current)}
+          {list.length === 0 && <Text dimColor>No mods found.</Text>}
+          {list.map(m => {
+            const off = m.switchable && switches[m.name] === false
+            const hidden = switches[`${m.name}:hidden`] === true
+            const pluginOff = m.id !== '' && plugins[m.id] === false
+            return (
+              <Box key={`mod:${m.name}`} alignItems="flex-start" justifyContent="space-between" gap={1}>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Text bold dimColor={off} wrap="truncate-end">
+                    {m.title}
+                  </Text>
+                  {m.desc !== '' && (
+                    <Text dimColor wrap="truncate-end">
+                      {m.desc}
+                    </Text>
+                  )}
+                  {m.tip !== '' && (
+                    <Text dimColor italic wrap="truncate-end">
+                      {m.tip}
+                    </Text>
+                  )}
+                  {pluginOff && (
+                    <Text color="warning" wrap="truncate-end">
+                      Plugin off in the Plugins tab, so it does not run.
+                    </Text>
+                  )}
+                  {!m.switchable && (
+                    <Text dimColor wrap="wrap">
+                      No switch: its code does not read switches.json. Turn it off in the Plugins tab.
+                    </Text>
+                  )}
+                </Box>
+                {m.switchable && (
+                  <Box gap={1} flexShrink={0}>
+                    {m.pane &&
+                      (off || hidden ? (
+                        <Text dimColor>Open</Text>
+                      ) : (
+                        <Button key={`mods-open:${m.name}`} label="Open" {...chrome} onPress={() => openMod($, m)} />
+                      ))}
+                    {m.hideable &&
+                      (off ? (
+                        <Text dimColor>{hidden ? 'Hidden' : 'Shown'}</Text>
+                      ) : (
+                        <Box key={`mods-shown-box:${m.name}`} alignItems="center" gap={0}>
+                          {!hidden && <Text color={GOOD}>●</Text>}
+                          <Button
+                            key={`mods-shown:${m.name}`}
+                            label={hidden ? 'Hidden' : 'Shown'}
+                            dimColor={hidden}
+                            {...chrome}
+                            onPress={() => flipMod($, m, true)}
+                          />
+                        </Box>
+                      ))}
+                    <Box key={`mods-on-box:${m.name}`} alignItems="center" gap={0}>
+                      {!off && <Text color={GOOD}>●</Text>}
+                      <Button
+                        key={`mods:${m.name}`}
+                        label={off ? 'Off' : 'On'}
+                        dimColor={off}
+                        {...chrome}
+                        onPress={() => flipMod($, m, false)}
+                      />
+                    </Box>
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+          <Box flexDirection="column">
+            {said !== '' && (
+              <Text color={GOOD} wrap="truncate-end">
+                {said}
+              </Text>
+            )}
+            <Text dimColor wrap="wrap">
+              Off means off in every chat. Hidden keeps it on but out of sight. Changes apply within a few seconds.
+            </Text>
+            <Text dimColor wrap="wrap">
+              New mods appear here by themselves.
+            </Text>
+          </Box>
         </Box>
       )
     }
