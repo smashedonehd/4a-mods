@@ -485,6 +485,14 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
+// A finished run that works again (a follow-up sent to it) goes to the end of the
+// list: it joins the current wave. Left in its old place it would reopen its own
+// wave and pull every run since into it.
+const resumedLast = (list: AgentRun[], agentId: string): AgentRun[] => {
+  const i = list.findIndex(a => a.agentId === agentId && a.status !== 'running')
+  return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1), list[i]]
+}
+
 // The current wave: the runs since the last moment none was running. A run begins
 // a wave when every run before it had ended by its start; one still running never
 // has. Worked out from the list at each draw, so nothing is kept per run.
@@ -1001,7 +1009,7 @@ export const register: Register = (on, options) => {
 
     const model = usage.model || e.model
     await update($, agents, list =>
-      list.map((a): AgentRun =>
+      resumedLast(list, agentId).map((a): AgentRun =>
         a.agentId !== agentId
           ? a
           : {

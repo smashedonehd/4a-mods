@@ -17,6 +17,9 @@ function session(on: On) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('agent.spawn', (_$, e) => ({ model: 'claude-opus-5-5', agentId: (e as { tool_use_id: string }).tool_use_id }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
+  on('turn.step', async function* () {
+    return { turnId: 'turn', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
+  })
   return clock
 }
 
@@ -25,6 +28,12 @@ const spawn = ($: Engine, id: string, subagentType = 'general-purpose') =>
 
 const finish = ($: Engine, id: string, reason = 'answer') =>
   ($.turn.complete as (e: unknown) => Promise<unknown>)({ agentId: id, reason, answer: 'ok' })
+
+// One model request of a subagent: for a finished one, a follow-up sent to it
+const step = async ($: Engine, id: string) => {
+  const stream = ($.turn.step as (e: unknown) => AsyncIterable<unknown>)({ turnId: 'turn', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: id })
+  for await (const _ of stream) void _
+}
 
 const drawn = ($: Engine) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
 
@@ -69,10 +78,48 @@ test('auto band: a spawn while others run joins the wave', async ($, on) => {
   const clock = session(on)
   await spawn($, 'a')
   await spawn($, 'b')
-  await finish($, 'a')
+  // The run still working is not the last one of the list
+  await finish($, 'b')
   clock.now += 60_000
   await spawn($, 'c')
   expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
+})
+
+// The wave ends when its last run ends, not when that run started
+test('auto band: a spawn in the millisecond the wave ended still joins it', async ($, on) => {
+  const clock = session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  clock.now += 1000
+  await finish($, 'a')
+  await finish($, 'b')
+  await spawn($, 'c')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 2/3' })
+})
+
+test('auto band: a finished run that works again joins the current wave, not its old one', async ($, on) => {
+  const clock = session(on)
+  for (const id of ['a', 'b']) await spawn($, id)
+  for (const id of ['a', 'b']) await finish($, id)
+  clock.now += 1000
+  for (const id of ['c', 'd']) await spawn($, id)
+  for (const id of ['c', 'd']) await finish($, id)
+  expect(await shown($)).toMatchObject({ label: 'Done' })
+  clock.now += 1000
+  await step($, 'a')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 2/3' })
+})
+
+test('auto band: a follow-up to an old run does not bring a dismissed band back', async ($, on) => {
+  const clock = session(on)
+  for (const id of ['a', 'b']) await spawn($, id)
+  for (const id of ['a', 'b']) await finish($, id)
+  clock.now += 1000
+  for (const id of ['c', 'd']) await spawn($, id)
+  await dismiss(await drawn($))
+  clock.now += 1000
+  await step($, 'a')
+  expect(await shown($)).toBeNull()
 })
 
 test('auto band: a spawn after everything finished starts a new wave', async ($, on) => {
@@ -159,4 +206,18 @@ test('auto band: a dismiss hides the wave that runs now, not an earlier one', as
   await spawn($, 'd')
   await dismiss(ui)
   expect(await shown($)).toBeNull()
+})
+
+// Only a finished run moves: one that never stopped keeps its place, and its wave
+test('auto band: a run that never stopped keeps its wave together while it works', async ($, on) => {
+  const clock = session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  clock.now += 1000
+  await finish($, 'b')
+  clock.now += 1000
+  await spawn($, 'c')
+  await finish($, 'c')
+  await step($, 'a')
+  expect(await shown($)).toMatchObject({ label: 'Tasks 2/3' })
 })
