@@ -9,10 +9,11 @@ Claude Code mods by 4AM. Mods are plugins that run inside Claude Code: they can 
 | [Prompt Translate](#prompt-translate) | `/translate` | Translates the draft in the prompt box into English with one button, without sending it |
 | [Plan Keeper](#plan-keeper) | none | Ticks a plan file's checkbox items once the task-list step of the same text is done, and tells a fresh or cleared chat which items are still open |
 | [Savvy Progress](#savvy-progress) | `/agents-info` | A live panel of every subagent: model, effort, progress, context, estimated cost and time. By johnnyvizz |
+| [Filetree](#filetree) | `/filetree` | An IDE-style file tree pane: the files Claude reads, writes and commits, with git status, diffs, search, previews and guarded paths. By Kurt Buhler |
 
 ## Requirements
 
-- **Claude Code 2.1.287 or later.** Check with `claude --version`. The mods work in the terminal and in the Desktop app's Code tab.
+- **Claude Code 2.1.287 or later.** Check with `claude --version`. The mods work in the terminal and in the Desktop app's Code tab. Filetree needs 2.1.306 or later.
 - **Mods turned on for your account.** Run `claude plugin test` in any folder: "no hooks module to load" means mods can load, and "served off" means they can't yet.
 
 ## Install
@@ -27,6 +28,7 @@ claude plugin install plugin-toggles@4a-mods
 claude plugin install plan-keeper@4a-mods
 claude plugin install prompt-translate@4a-mods
 claude plugin install savvy-progress@4a-mods
+claude plugin install filetree@4a-mods
 ```
 
 Then open a new chat. A mod loads when a chat starts, and `/reload-plugins` does not reload it.
@@ -88,10 +90,20 @@ By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied unchanged from [john
 - Without savvy-flow, set `autoOpen` to `any` so the panel opens by itself, once per session, when the first subagent starts: `claude plugin install savvy-progress@4a-mods --config autoOpen=any`.
 - The cost is an estimate from token counts and a built-in price table, not your bill.
 
+## Filetree
+
+By [Kurt Buhler](https://github.com/data-goblin), MIT, copied unchanged from [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) (version 0.8.2). Details in [filetree/README.md](filetree/README.md).
+
+- **Tree pane** (`/filetree`): the chat's folder with git status, the branch, and a column of date, size or line count. The files Claude reads, writes and commits shimmer.
+- **Search, diff and preview**: by name or inside files, a diff of a changed file or folder against `HEAD`, and previews of code, Markdown, images and PDF.
+- **Guards**: files and folders Claude may not edit.
+- It needs Claude Code 2.1.306 or later.
+- Three defaults change where a chat works or what opens: the pane opens with every chat, and the chat moves with `/cd` when you jump to a folder or when Claude keeps working in another repository. To install with them off: `claude plugin install filetree@4a-mods --config start=off --config jump=tree --config work=off`.
+
 ## Where the data lives
 
 Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress writes no files of its own; it reads only Claude Code's settings and environment variables. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Savvy Progress is MIT by johnnyvizz, with its own [LICENSE](savvy-progress/LICENSE).
+MIT. See [LICENSE](LICENSE). Savvy Progress is MIT by johnnyvizz, with its own [LICENSE](savvy-progress/LICENSE). Filetree is MIT by Kurt Buhler, with its own [LICENSE](filetree/LICENSE).
