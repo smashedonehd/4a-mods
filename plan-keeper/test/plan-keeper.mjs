@@ -1004,6 +1004,65 @@ test('only the newest 20 unmatched steps are kept, and switch plan offers at mos
   assert.equal(flat(await s.pane()).match(/old\d+\.md \(1 open\)/g).length, 7, '8 newest, the active one left out')
 })
 
+test('a plugin\'s slash command (/name:sub) lets no finished plan go', async () => {
+  const s = await boot(makeFs({ [PLANS + '/one.md']: 'Work in D:\\work\\app.\n- [ ] Ship it\n', [CWD + '/src/x.js']: '' }))
+  await s.start()
+  await s.call('TodoWrite', done('Ship it'))
+  await s.turnEnd()
+  await s.prompt('/caveman:caveman-stats')
+  assert.match(flat(await s.band()), /plan complete/)
+})
+
+test('the note\'s rows: 8 open items one by one, more by heading without the finished ones, 15 rows at most', async () => {
+  const { openItems } = await import('../hooks/register.mjs')
+  const open = (n, from = 1) => Array.from({ length: n }, (_, k) => `- [ ] item ${from + k}\n`).join('')
+  assert.deepEqual(openItems(open(8)).rows, Array.from({ length: 8 }, (_, k) => `- [ ] item ${k + 1}`))
+  const grouped = openItems(open(2) + '## Done\n- [x] a\n- [x] b\n## Big\n' + open(7, 3))
+  assert.deepEqual(grouped.rows, ['- (before the first heading): 2 of 2 open', '- Big: 7 of 7 open'])
+  assert.deepEqual([grouped.open, grouped.total], [9, 11])
+  const sections = (n) => Array.from({ length: n }, (_, k) => `## S${k + 1}\n- [ ] x${k + 1}\n`).join('')
+  const fifteen = openItems(sections(15)).rows
+  assert.equal(fifteen.length, 15)
+  assert.equal(fifteen[14], '- S15: 1 of 1 open')
+  const sixteen = openItems(sections(16)).rows
+  assert.equal(sixteen.length, 15)
+  assert.equal(sixteen[14], '- and 2 more')
+})
+
+test('the same plan named again keeps its last tick', async () => {
+  const s = await boot(small())
+  await s.start()
+  await s.call('TodoWrite', done('Write the README'))
+  await s.turnEnd()
+  await s.cmd(PLANS + '/s.md')
+  assert.match(flat(await s.pane()), /last tick/)
+})
+
+test('tracking stopped and started with the same plan and list brings no second note; a reload still brings the first', async () => {
+  const state = new Map()
+  const disk = small()
+  const s = await boot(disk, { state })
+  await s.start()
+  await s.call('TodoWrite', done('Fix the lint'))
+  await s.turnEnd()
+  // Reloaded with the step already held and no note yet: the plan is read for it
+  const again = await boot(disk, { state })
+  assert.match(await again.batch(), /3 of 3 checkbox items open/)
+  await again.cmd('off')
+  assert.match(await again.cmd('on'), /s\.md/)
+  assert.equal(await again.batch(), undefined)
+})
+
+test('/resume with a plan tracked ticks nothing: the list of the chat left is gone first', async () => {
+  const disk = small()
+  const s = await boot(disk)
+  await s.start()
+  await s.call('TodoWrite', done('Write the README'))
+  await s.start('resume')
+  assert.deepEqual(disk.writes, [])
+  assert.equal(s.state.get('plan'), null)
+})
+
 let failed = 0
 for (const [name, fn] of tests) {
   try {
