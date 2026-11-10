@@ -1,0 +1,71 @@
+{
+  "name": "connector-trim",
+  "version": "0.1.0",
+  "description": "Makes big MCP (connector) results cheaper: trims them by code, has Haiku condense what is still big for the task, and saves the full result to a file",
+  "author": {
+    "name": "4AM"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "min_chars": {
+      "type": "number",
+      "title": "Trim results over (characters)",
+      "description": "A connector result shorter than this reaches Claude untouched",
+      "default": 16000,
+      "min": 1000
+    },
+    "trim_target_chars": {
+      "type": "number",
+      "title": "Ask Haiku over (characters, after trimming)",
+      "description": "A trimmed result shorter than this reaches Claude as trimmed, with no model call",
+      "default": 8000,
+      "min": 500
+    },
+    "skip": {
+      "type": "string",
+      "multiple": true,
+      "title": "Never trim",
+      "description": "Servers or tools (short or full name, * as a wildcard) whose results always reach Claude whole",
+      "default": [
+        "claude-in-chrome",
+        "Claude_Browser",
+        "camofox",
+        "computer-use",
+        "ccd_*",
+        "plugin-authoring",
+        "*screenshot*",
+        "*snapshot*",
+        "read_page",
+        "get_page_text",
+        "find"
+      ]
+    },
+    "only": {
+      "type": "string",
+      "multiple": true,
+      "title": "Only trim",
+      "description": "When set, only these servers or tools are trimmed (the never-trim list still wins)"
+    },
+    "keep_days": {
+      "type": "number",
+      "title": "Keep saved results (days)",
+      "description": "Saved full results older than this are cleared",
+      "default": 7,
+      "min": 1
+    },
+    "max_saved_mb": {
+      "type": "number",
+      "title": "Saved results cap (MB)",
+      "description": "The oldest saved results are cleared once the folder holds more than this",
+      "default": 200,
+      "min": 10
+    },
+    "helper_model": {
+      "type": "string",
+      "title": "Helper model",
+      "description": "The model that condenses a result still big after trimming",
+      "default": "haiku"
+    }
+  }
+}
