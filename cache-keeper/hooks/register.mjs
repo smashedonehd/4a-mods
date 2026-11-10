@@ -1028,14 +1028,14 @@ function continueButton($, Button, extra = {}) {
 
 // A card of the desktop band: a caption over one row of what it holds. Its
 // border takes a colour only while the card needs the person
-function bandCard({ Box, Text }, key, caption, children, { tone, grow } = {}) {
+function bandCard({ Box, Text }, key, caption, children, { tone } = {}) {
   return Box({
     key,
     flexDirection: 'column',
     borderStyle: 'round',
     ...(tone ? { borderColor: tone } : { borderDimColor: true }),
     paddingX: 1,
-    ...(grow ? { flexGrow: 1 } : {}),
+    flexShrink: 0,
     children: [
       Text({ dimColor: true, size: 'caption', children: [caption] }),
       Box({ key: key + '-value', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 2, children: children.filter(Boolean) }),
@@ -1048,32 +1048,64 @@ const LIMIT_CAPTION = { five_hour: '5h limit', seven_day: 'Week limit', spend_li
 const CTX_URGENT = 600000
 const LIMIT_URGENT = 80
 
+// The cards hug what they hold; when the row would not fit, only the context
+// gauge gives way, down to where its card is as wide as a limit card. The
+// engine measures nothing for a plugin, so widths are counted in character
+// cells: a card is its border and padding around the wider of its caption and
+// its row, a row its parts two cells apart, a gauge pixel an eighth of a cell.
+const CELL_PX = 8
+const GAUGE_PX = 64
+const CTX_GAUGE_PX = 200
+const CARD_CHROME = 4
+// A native control around its label: a Button's padding, a Select's label and arrow
+const BUTTON_CHROME = 2
+const SELECT_CHROME = 5
+const rowCells = (parts) => parts.filter((n) => n > 0).reduce((a, n) => a + n + 2, -2)
+const cardCells = (caption, parts) => CARD_CHROME + Math.max(caption.length, rowCells(parts))
+
+// How wide the context gauge is drawn, in pixels: `columns` of room, `others`
+// the cells the other cards and the gaps take, `limit` a limit card's cells
+function ctxGaugePx(columns, others, figure, limit) {
+  const fixed = CARD_CHROME + figure.length + 2
+  const floor = Math.max(1, (limit || fixed + GAUGE_PX / CELL_PX) - fixed)
+  const room = columns - others - fixed
+  return Math.round(Math.min(CTX_GAUGE_PX / CELL_PX, Math.max(floor, room)) * CELL_PX)
+}
+
 // The band on a surface with Select (desktop, editor): one row of captioned
 // cards (cache, rewrite cost, context, each limit, the next chat) that wraps
 // in a narrow window
 function deskBand($, e, els, { st, ttl, big }) {
   const { Box, Text, Button, Select, Svg } = els
-  const narrow = ((e.viewport && e.viewport.columns) || 200) < NARROW_COLUMNS
+  const columns = (e.viewport && e.viewport.columns) || 200
+  const narrow = columns < NARROW_COLUMNS
   const value = (text, extra = {}) => Text({ weight: 'semibold', tabular: true, ...extra, children: [text] })
   const coldBig = st.kind === 'cold' && big
+  // Every card but the context one, with the cells it takes
+  const cards = []
+  const widths = []
+  const card = (key, caption, children, parts, opts) => {
+    cards.push(bandCard(els, key, caption, children, opts))
+    widths.push(cardCells(caption, parts))
+  }
 
-  let cache, cacheNote, cacheTone
+  let cache, cacheText, cacheNote, cacheTone
   if (st.kind === 'kept') {
-    cache = value(`until ${clock(S.keepWarmUntil)}`, { color: 'cyan' })
+    cache = value((cacheText = `until ${clock(S.keepWarmUntil)}`), { color: 'cyan' })
     cacheNote = `kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd, true)}`
     cacheTone = HUE.cyan
   } else if (st.kind === 'warm') {
-    cache = value(`${minutes(st.left)} left`, { color: 'green' })
+    cache = value((cacheText = `${minutes(st.left)} left`), { color: 'green' })
     cacheNote = 'warm'
   } else if (st.kind === 'cooling') {
-    cache = value(`${minutes(st.left)} left`, { color: 'yellow' })
+    cache = value((cacheText = `${minutes(st.left)} left`), { color: 'yellow' })
     cacheNote = 'cools soon'
     cacheTone = HUE.yellow
   } else if (st.kind === 'cold') {
-    cache = value(`cold ${minutes(-st.left)}`, big ? { color: 'red' } : { dimColor: true })
+    cache = value((cacheText = `cold ${minutes(-st.left)}`), big ? { color: 'red' } : { dimColor: true })
     cacheNote = 'cold'
     if (big) cacheTone = HUE.red
-  } else cache = value('—', { dimColor: true })
+  } else cache = value((cacheText = '—'), { dimColor: true })
   // A run started elsewhere (the board, settings) may last hours the picks lack
   const picks = S.keepWarm && !KEEP_WARM_PICKS.includes(S.keepWarmHours) ? [...KEEP_WARM_PICKS, S.keepWarmHours].sort((a, b) => a - b) : KEEP_WARM_PICKS
   const keepWarm = Select({
@@ -1088,35 +1120,40 @@ function deskBand($, e, els, { st, ttl, big }) {
     },
   })
   // One press while the cache cools on a big context
-  const quick = st.kind === 'cooling' && big && Button({ key: 'keepwarm', label: `${settings.keepWarmHours} h`, plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) })
-  const cards = [bandCard(els, 'card-cache', narrow || !cacheNote ? 'Cache' : `Cache · ${cacheNote}`, [cache, keepWarm, quick], { tone: cacheTone })]
+  const quickLabel = `keep ${settings.keepWarmHours} h`
+  const quick = st.kind === 'cooling' && big && Button({ key: 'keepwarm', label: quickLabel, plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) })
+  card('card-cache', narrow || !cacheNote ? 'Cache' : `Cache · ${cacheNote}`, [cache, keepWarm, quick], [cacheText.length, 'keep warm off'.length + SELECT_CHROME, quick ? quickLabel.length + BUTTON_CHROME : 0], { tone: cacheTone })
 
   const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
-  const rewrite = coldBig ? Text({ color: 'red', weight: 'semibold', children: [`next send rewrites ≈ ${cost}`] }) : Text({ dimColor: true, children: [`if cold ≈ ${cost}`] })
-  const restarts = S.coldRestarts.length && Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}`] })
-  cards.push(bandCard(els, 'card-cost', narrow ? 'Rewrite' : 'Rewrite cost', [rewrite, restarts], { tone: coldBig && HUE.red }))
+  const rewriteText = coldBig ? `next send rewrites ≈ ${cost}` : `if cold ≈ ${cost}`
+  const rewrite = Text({ ...(coldBig ? { color: 'red', weight: 'semibold' } : { dimColor: true }), children: [rewriteText] })
+  const restartsText = S.coldRestarts.length ? `${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}` : ''
+  const restarts = restartsText && Text({ dimColor: true, children: [restartsText] })
+  card('card-cost', narrow ? 'Rewrite' : 'Rewrite cost', [rewrite, restarts], [rewriteText.length, restartsText.length], { tone: coldBig && HUE.red })
 
-  cards.push(bandCard(els, 'card-ctx', narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`, [
-    value(tokens(S.ctx), ctxTone(S.ctx)),
-    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${tokens(S.ctx)}`, [0.2, 0.4, 0.6, 0.8], narrow ? 96 : 200),
-  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true }))
-
+  // The context card goes third, after the others are counted
+  const ctxAt = cards.length
+  let limitCells = 0
   for (const l of S.rateLimits) {
     const p = l.percentUsed || 0
     const name = LIMIT_LABEL[l.kind] || l.kind
-    cards.push(bandCard(els, 'card-limit-' + l.kind, LIMIT_CAPTION[l.kind] || `${name} limit`, [
-      value(`${Math.round(p)}%`, p >= LIMIT_URGENT ? { color: limitHue(p) } : {}),
+    const percent = `${Math.round(p)}%`
+    card('card-limit-' + l.kind, narrow ? name : LIMIT_CAPTION[l.kind] || `${name} limit`, [
+      value(percent, p >= LIMIT_URGENT ? { color: limitHue(p) } : {}),
       Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`),
-    ], { tone: p >= LIMIT_URGENT && limitHue(p) }))
+    ], [percent.length, GAUGE_PX / CELL_PX], { tone: p >= LIMIT_URGENT && limitHue(p) })
+    limitCells = Math.max(limitCells, widths[widths.length - 1])
   }
 
   // Each tag says whether the fresh chat turns it on again; a click flips that.
   // A desktop draws a Button natively and drops its children's colors, so the
   // green dot stands beside the button, not inside it
+  let tagCells = -1
   const tags = REVIVE_ORDER.map((k) => {
     const on = revive.has(k)
     const level = k === 'caveman' && on && revive.get(k).args
     const name = k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
+    tagCells += 1 + name.length + BUTTON_CHROME + 1
     return Box({ key: 'tag-group-' + k, flexDirection: 'row', alignItems: 'center', children: [
       Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
       Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
@@ -1125,11 +1162,20 @@ function deskBand($, e, els, { st, ttl, big }) {
   // The handoff is the main action once the context is large or a send would
   // rewrite it; a plain Button would draw the same either way
   const urgent = !handoffInFlight() && (S.ctx >= CTX_URGENT || coldBig)
-  cards.push(bandCard(els, 'card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
+  const cont = continueButton($, Button)
+  card('card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
     Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
-    continueButton($, Button),
+    cont,
     Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ]))
+  ], [tagCells, cont ? 'clear and continue'.length + BUTTON_CHROME : 0, handoffLabel().length + BUTTON_CHROME])
+
+  const figure = tokens(S.ctx)
+  // The other cards and the gap after each of them
+  const others = widths.reduce((a, w) => a + w + 1, 0)
+  cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`, [
+    value(figure, ctxTone(S.ctx)),
+    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], ctxGaugePx(columns, others, figure, limitCells)),
+  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx) }))
   return [Box({ key: 'cards', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', width: '100%', columnGap: 1, rowGap: 'xs', children: cards })]
 }
 
@@ -1239,13 +1285,16 @@ function handoffCard($, e, els, Svg) {
     rowOf('ck-ho-buttons', failed),
   ].filter(Boolean)
   if (desk) {
-    // Ready, the steps have nothing left to say: one line, the title and its buttons
-    if (P.phase === 'ready') return framed('ck-ho-card', HUE.green, [rowOf('ck-ho-buttons', [title, Text({ dimColor: true, size: 'caption', children: [`Saved to ${P.file}`] }), ...(ready || [])])])
+    // Ready, the steps have nothing left to say: one line, the title and its buttons.
+    // A handoff queued over it keeps the steps and its "stop now"
+    if (P.phase === 'ready' && !waiting) return framed('ck-ho-card', HUE.green, [rowOf('ck-ho-buttons', [title, Text({ dimColor: true, size: 'caption', children: [`Saved to ${P.file}`] }), ...(ready || [])])])
     return framed('ck-ho-card', failed ? HUE.red : ACCENT, [
       rowOf('ck-ho-head', [title, stop]),
       Box({ key: 'ck-ho-steps', flexDirection: 'row', flexWrap: 'wrap', columnGap: 3, rowGap: 'xs', children: steps }),
       ...(failure || []),
-    ])
+      P.phase === 'ready' && Text({ dimColor: true, children: [`Saved to ${P.file}`] }),
+      ready && rowOf('ck-ho-buttons', ready),
+    ].filter(Boolean))
   }
   const rows = [title, ...steps]
   if (stop) rows.push(rowOf('ck-ho-buttons', [stop]))

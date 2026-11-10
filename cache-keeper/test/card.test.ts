@@ -236,8 +236,6 @@ test('desktop band: one row of captioned cards, each control inside its card', a
   const row = await ui.find({ key: 'cards' } as never)
   expect(row?.props.flexWrap).toBe('wrap')
   for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-next']) expect((await ui.find({ key } as never))?.props.borderStyle).toBe('round')
-  // The context card holds the figure and takes the room that is left
-  expect((await ui.find({ key: 'card-ctx' } as never))?.props.flexGrow).toBe(1)
   expect(await ui.find({ type: 'Text', text: '320k' } as never)).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^if cold ≈ / } as never)).toBeTruthy()
   for (const key of ['keep-warm', 'tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) expect(await ui.find({ key } as never)).toBeTruthy()
@@ -323,4 +321,102 @@ test('desktop card: ready, Clear and continue is the primary button of a green f
   expect((await ui.find({ key: 'ck-ho-clear' } as never))?.props.variant).toBe('primary')
   expect(await ui.find({ type: 'Text', text: /^Saved to / } as never)).toBeTruthy()
   await ui.unmount()
+})
+
+// ---- the cards hug what they hold; only the context gauge gives way --------
+
+// The cache window is 60 minutes; it cools for the last five
+const COOLING_AFTER = 56 * 60 * 1000
+
+const limits = ($: Engine, list: { kind: string; percentUsed: number }[]) => $.session.measure({ rateLimits: list } as never)
+
+// The width the context gauge is drawn at, in a window of that many columns
+async function ctxGauge($: Engine, columns?: number) {
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, ...(columns ? { viewport: { columns, rows: 40 } } : {}) } as never)
+  const svgs = await ui.findAll({ type: 'Svg' } as never)
+  const gauge = svgs.find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt)))
+  await ui.unmount()
+  return Number(gauge?.props.width)
+}
+
+test('desktop band: no card stretches or shrinks; with room the context gauge is drawn at its full width', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-limit-seven_day', 'card-next']) {
+    const card = await ui.find({ key } as never)
+    expect(card?.props.flexGrow).toBeUndefined()
+    expect(card?.props.flexShrink).toBe(0)
+    expect(card?.props.width).toBeUndefined()
+  }
+  // The context card stands third, between the cost and the limits
+  const drawn = (await ui.findAll({ type: 'Box' } as never)).map((b: { key?: string }) => String(b.key)).filter((k: string) => /^card-[a-z_-]+$/.test(k) && !k.endsWith('-value'))
+  expect(drawn).toEqual(['card-cache', 'card-cost', 'card-ctx', 'card-limit-seven_day', 'card-next'])
+  await ui.unmount()
+  expect(await ctxGauge($)).toBe(200)
+  expect(await ctxGauge($, 240)).toBe(200)
+})
+
+test('desktop band: a row that would not fit narrows the context gauge alone, never below a limit card', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
+  const wide = await ctxGauge($, 200)
+  const mid = await ctxGauge($, 140)
+  const tight = await ctxGauge($, 100)
+  expect(wide).toBe(200)
+  expect(mid).toBeLessThan(200)
+  expect(mid).toBeGreaterThan(tight)
+  // The floor: "320k" and its gauge are as wide as "34%" and the limit gauge (64 px)
+  expect(tight).toBe(56)
+  expect(await ctxGauge($, 60)).toBe(56)
+  // The limit gauges keep their width whatever the room
+  for (const columns of [200, 60]) {
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns, rows: 40 } } as never)
+    const svgs = await ui.findAll({ type: 'Svg' } as never)
+    expect(svgs.filter((x: { props: { alt?: string } }) => /limit/.test(String(x.props.alt))).map((x: { props: { width: number } }) => x.props.width)).toEqual([64])
+    await ui.unmount()
+  }
+})
+
+test('desktop band: with no limit card the context gauge stops at a limit gauge width', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  expect(await ctxGauge($, 60)).toBe(64)
+})
+
+test('desktop band: each plan limit has a card, coloured from 80%', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  await limits($, [{ kind: 'five_hour', percentUsed: 85 }, { kind: 'seven_day', percentUsed: 79 }])
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  const hot = await ui.find({ key: 'card-limit-five_hour' } as never)
+  expect(hot?.props.borderColor).toBe('#d29922')
+  expect(hot?.props.borderDimColor).toBeUndefined()
+  const calm = await ui.find({ key: 'card-limit-seven_day' } as never)
+  expect(calm?.props.borderDimColor).toBe(true)
+  expect(calm?.props.borderColor).toBeUndefined()
+  expect((await ui.findAll({ type: 'Text', text: /^(5h|Week) limit$/ } as never)).map((x: { text: string }) => x.text)).toEqual(['5h limit', 'Week limit'])
+  expect((await ui.findAll({ type: 'Text', text: /^\d+%$/ } as never)).map((x: { text: string }) => x.text)).toEqual(['85%', '79%'])
+  await ui.unmount()
+  // A narrow window names them as the terminal does
+  const narrow = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns: 80, rows: 40 } } as never)
+  expect((await narrow.findAll({ type: 'Text', text: /^(5h|week)$/ } as never)).map((x: { text: string }) => x.text)).toEqual(['5h', 'week'])
+  await narrow.unmount()
+})
+
+test('desktop band: a cache cooling on a big context turns its card yellow and offers one press to keep it warm, then cyan', async ($: Engine, on: On) => {
+  const { clock } = await sized($, on, 320000)
+  const warm = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect(await warm.find({ key: 'keepwarm' } as never)).toBeFalsy()
+  await warm.unmount()
+  await clock.advance(COOLING_AFTER)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect(await captions(ui)).toContain('Cache · cools soon')
+  expect((await ui.find({ key: 'card-cache' } as never))?.props.borderColor).toBe('#d29922')
+  expect((await ui.find({ key: 'keepwarm' } as never))?.text).toBe('keep 4 h')
+  await ui.press({ key: 'keepwarm' } as never)
+  await ui.unmount()
+  const kept = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
+  expect((await captions(kept))[0]).toMatch(/^Cache · kept warm · /)
+  expect((await kept.find({ key: 'card-cache' } as never))?.props.borderColor).toBe('#39c5cf')
+  expect(await kept.find({ key: 'keepwarm' } as never)).toBeFalsy()
+  await kept.unmount()
 })

@@ -744,6 +744,24 @@ await check('soft landing: the running turn is told once to wind down, then offe
   assert.equal(s.prompts.length, 1, 'the stopped turn starts the handoff')
 })
 
+await check('desktop: a queued handoff offers stop now in the card head and keeps the band button plain past 600k', async () => {
+  const s = await boot('/w/land2', 'land0002-0', { working: true, select: true })
+  await s.step('busy', 650000)
+  await s.render('desktop')
+  assert.equal(s.buttons.get('handoff').variant, 'primary', 'nothing in flight: the main action')
+  await s.run('handoff')
+  await s.fire('classic.PostToolBatch', {}, (h) => h.name === 'classic.PostToolBatch', { additionalContext: [] })
+  for (let i = 0; i < 3; i++) await s.step('busy', 650000)
+  const band = await s.render('desktop')
+  assert.ok(keys(band).has('ck-ho-head') && keys(band).has('ck-ho-steps'))
+  assert.ok(s.buttons.has('ck-ho-stop'))
+  const handoff = s.buttons.get('handoff')
+  assert.equal(handoff.label, 'handoff queued')
+  assert.equal(handoff.variant, undefined)
+  assert.equal(handoff.plain, true)
+  assert.equal(handoff.dimColor, true)
+})
+
 // ======================= the band, revive, live git, pruning =======================
 
 await check('clear and continue turns the marked plugins on again before the handoff', async () => {
