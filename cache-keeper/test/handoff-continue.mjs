@@ -195,6 +195,18 @@ const keys = (t, out = new Set()) => {
   }
   return out
 }
+// The drawn node with this key, or null
+const subtree = (t, key) => {
+  if (!t || typeof t !== 'object') return null
+  if (Array.isArray(t)) {
+    for (const c of t) {
+      const f = subtree(c, key)
+      if (f) return f
+    }
+    return null
+  }
+  return t.key === key ? t : subtree(t.children, key)
+}
 const latestKey = () => [...files.keys()].filter((k) => k.includes('/latest-')).pop()
 const handoffs = () => [...files.keys()].filter((k) => k.includes('/handoffs/') && k.endsWith('.md') && !k.endsWith('.draft.md'))
 const drafts = () => [...files.keys()].filter((k) => k.endsWith('.draft.md'))
@@ -377,7 +389,7 @@ await check('/handoff keep: five steps, draft first, the handoff saved and check
   assert.equal(JSON.parse(files.get(latestKey())).text, GOOD.trim())
   const card = await s.render()
   const t = texts(card)
-  assert.match(t, /Handoff ready: \d+ words/)
+  assert.match(t, /Handoff ready · [\d,]+ words/)
   assert.ok(t.includes('Saved to ' + saved))
   for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 's', 'words']) assert.ok(t.includes(d), d)
   assert.equal((t.match(/✓/g) || []).length, 5)
@@ -570,7 +582,7 @@ await check('desktop: the offer has a Select for the threshold; the band has one
   assert.ok(s.selects.has('ck-ho-at-pick'))
   assert.ok(!s.selects.has('handoff-after'), 'the split button is gone')
   assert.ok(s.buttons.has('handoff') && !s.buttons.has('ck-ho-at'))
-  assert.ok(keys(band).has('ck-ho-offer') && keys(band).has('state'))
+  assert.ok(keys(band).has('ck-ho-offer') && keys(band).has('ck-ho-offer-card') && keys(band).has('cards'))
   s.selects.get('ck-ho-at-pick').onSelect('400k')
   await settle()
   assert.deepEqual(s.configSets.at(-1), { key: 'cache-keeper.handoffOfferAt', value: '400k' })
@@ -744,6 +756,353 @@ await check('soft landing: the running turn is told once to wind down, then offe
   assert.equal(s.prompts.length, 1, 'the stopped turn starts the handoff')
 })
 
+await check('desktop: a queued handoff offers stop now in the card head and keeps the band button plain past 600k', async () => {
+  const s = await boot('/w/land2', 'land0002-0', { working: true, select: true })
+  await s.step('busy', 650000)
+  await s.render('desktop')
+  assert.equal(s.buttons.get('handoff').variant, 'primary', 'nothing in flight: the main action')
+  await s.run('handoff')
+  await s.fire('classic.PostToolBatch', {}, (h) => h.name === 'classic.PostToolBatch', { additionalContext: [] })
+  for (let i = 0; i < 3; i++) await s.step('busy', 650000)
+  const band = await s.render('desktop')
+  assert.ok(keys(band).has('ck-ho-head') && keys(band).has('ck-ho-steps'))
+  // In the drawn card head, not only built
+  assert.ok(keys(subtree(band, 'ck-ho-head')).has('ck-ho-stop'))
+  const handoff = s.buttons.get('handoff')
+  assert.equal(handoff.label, 'handoff queued')
+  assert.equal(handoff.variant, undefined)
+  assert.equal(handoff.plain, true)
+  assert.equal(handoff.dimColor, true)
+})
+
+// ======================= auto clear =======================
+
+// Runs the collected $.clock.after callbacks, also the ones they add
+const flush = async (timers) => {
+  while (timers.length) {
+    await timers.shift()()
+    await settle()
+  }
+}
+// A handoff started from the card, as the band's offer starts it; the pipeline
+// runs off the press hook, so its timer is the first after the press
+const startFromCard = async (s, timers) => {
+  timers.length = 0 // the start's own: pruning old handoffs
+  await s.press('ck-ho-start')
+  await timers.shift()()
+  await settle()
+  await settle()
+}
+
+await check('auto clear off (the default): the ready card waits for a press, no countdown', async () => {
+  store.delete('settings')
+  const timers = []
+  const s = await boot('/w/ac0', 'ac000000-0', { timers })
+  await startFromCard(s, timers)
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  assert.equal(s.sent.length, 0)
+  const t = texts(await s.render())
+  assert.match(t, /Handoff ready/)
+  assert.ok(!t.includes('Clearing in'))
+  assert.equal(s.buttons.get('ck-ho-clear').label, 'Clear and continue')
+  assert.ok(!keys(await s.render()).has('ck-ho-countdown'))
+})
+
+await check('auto clear: the band tag turns it on and it is kept for the next chat', async () => {
+  store.delete('settings')
+  let s = await boot('/w/ac1', 'ac000001-0', { select: true })
+  await s.step()
+  await s.render('desktop')
+  const tag = s.buttons.get('tag-autoclear')
+  assert.ok(tag, 'desktop band has the tag')
+  assert.equal(tag.dimColor, true, 'off: dim')
+  await tag.onPress()
+  assert.equal(store.get('settings').autoClear, true)
+  await s.render('desktop')
+  assert.equal(s.buttons.get('tag-autoclear').dimColor, false)
+  s = await boot('/w/ac1', 'ac000002-0', {})
+  await s.step()
+  const band = await s.render()
+  assert.ok(s.buttons.has('tag-autoclear'), 'terminal band has the tag too')
+  assert.ok(texts(band).includes('●'))
+  assert.match((await s.run('cache')).text, /Auto clear: on/)
+  assert.match((await s.run('cache', 'autoclear off')).text, /Auto clear: off/)
+  assert.equal(store.get('settings').autoClear, false)
+  assert.match((await s.run('cache', 'autoclear maybe')).text, /Pick one of: on, off/)
+  store.delete('settings')
+})
+
+await check('auto clear on: the ready card counts down with Keep chat, then clears and continues', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac2', 'ac000003-0', { timers })
+  await startFromCard(s, timers)
+  assert.ok(!cleared(s.log), 'not before the countdown ends')
+  const card = await s.render()
+  assert.ok(texts(card).includes('Clearing in 5 s'))
+  assert.ok(keys(card).has('ck-ho-countdown'))
+  assert.equal(s.buttons.get('ck-ho-clear').label, 'Clear now')
+  assert.ok(s.buttons.has('ck-ho-keep'), 'Keep chat stays pressable')
+  T += 2000
+  assert.ok(texts(await s.render()).includes('Clearing in 3 s'))
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 1)
+  assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
+  store.delete('settings')
+})
+
+await check('auto clear on: Keep chat or Close in the countdown stops it; /handoff keep never counts down', async () => {
+  store.set('settings', { autoClear: true })
+  for (const [i, key] of ['ck-ho-keep', 'ck-ho-close'].entries()) {
+    const timers = []
+    const s = await boot('/w/ac3', `ac00004${i}-0`, { timers })
+    await startFromCard(s, timers)
+    await s.press(key)
+    await flush(timers)
+    assert.ok(!cleared(s.log), key)
+    assert.equal(s.sent.length, 0, key)
+  }
+  const timers = []
+  const s = await boot('/w/ac3', 'ac000050-0', { timers })
+  await s.run('handoff', 'keep')
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  assert.ok(!texts(await s.render()).includes('Clearing in'))
+  // A message typed in the countdown makes the handoff out of date: no clear
+  const t1 = []
+  const s1 = await boot('/w/ac3', 'ac000052-0', { timers: t1 })
+  await startFromCard(s1, t1)
+  await s1.fire('prompt.submit', { text: 'one more thing', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  await flush(t1)
+  assert.ok(!cleared(s1.log))
+  // Turned off from the band while it counts down: stopped too
+  const t2 = []
+  const s2 = await boot('/w/ac3', 'ac000051-0', { timers: t2 })
+  await startFromCard(s2, t2)
+  await s2.run('cache', 'autoclear off')
+  await flush(t2)
+  assert.ok(!cleared(s2.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: a turn in the countdown is waited for, then one fresh handoff and the clear', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac4', 'ac000060-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't9' })
+  await flush(timers)
+  assert.ok(!cleared(s.log), 'never inside a turn')
+  await s.end({ turnId: 't9' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 2, 'the turn made the first handoff out of date')
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 1)
+  store.delete('settings')
+})
+
+// A countdown that ends inside a turn, held armed until the turn's end
+const armed = async (id) => {
+  const timers = []
+  const s = await boot('/w/ac5', id, { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await flush(timers)
+  return { s, timers }
+}
+
+await check('auto clear on: armed through a turn, the card says so and Keep chat, Close, Open file or the toggle still stop it', async () => {
+  store.set('settings', { autoClear: true })
+  let { s, timers } = await armed('ac000070-0')
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
+  assert.ok(s.buttons.has('ck-ho-keep'))
+  assert.ok(!cleared(s.log))
+  for (const [i, stop] of ['ck-ho-keep', 'ck-ho-close', 'ck-ho-open', 'off'].entries()) {
+    ;({ s, timers } = await armed(`ac00008${i}-0`))
+    if (stop === 'off') await s.run('cache', 'autoclear off')
+    else await s.press(stop)
+    await flush(timers)
+    await s.end({ turnId: 't7' })
+    await flush(timers)
+    assert.ok(!cleared(s.log), stop)
+    assert.equal(s.prompts.length, 1, stop + ': no fresh handoff either')
+    store.set('settings', { autoClear: true })
+  }
+  store.delete('settings')
+})
+
+await check('auto clear on: armed, Clear now is gone, and its key press keeps the clear for the turn end', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000120-0')
+  await s.render()
+  assert.ok(!s.buttons.has('ck-ho-clear'), 'no button to clear sooner')
+  await s.press('ck-ho-clear')
+  await flush(timers)
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'), 'still armed')
+  assert.ok(!cleared(s.log))
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.prompts.length, 2)
+  store.delete('settings')
+})
+
+await check('auto clear on: Clear now in a countdown during a turn arms it; one handled after that turn writes a fresh handoff', async () => {
+  store.set('settings', { autoClear: true })
+  let timers = []
+  let s = await boot('/w/ac8', 'ac000150-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await s.press('ck-ho-clear')
+  await timers.pop()() // the press, before the countdown ends
+  await settle()
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.prompts.length, 2)
+  // A click from a drawing made in the turn, handled once the turn has ended
+  timers = []
+  s = await boot('/w/ac8', 'ac000151-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await s.press('ck-ho-clear')
+  const press = timers.pop()
+  await s.end({ turnId: 't7' })
+  await press()
+  await settle()
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.prompts.length, 2, 'the turn made the first handoff out of date')
+  assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
+  store.delete('settings')
+})
+
+await check('auto clear on: armed, an overlapped turn end waits for the turn that follows', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000130-0')
+  await s.fire('turn.start', { turnId: 't8' })
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(!cleared(s.log), 'not while t8 runs')
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
+  await s.end({ turnId: 't8' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: a /handoff keep queued over an armed card keeps the chat, also after later turns', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000140-0')
+  await s.run('handoff', 'keep')
+  await flush(timers)
+  assert.match(texts(await s.render()), /Handoff queued/)
+  assert.ok(!texts(await s.render()).includes('Clearing when'), 'the queued keep decides what follows')
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 2)
+  await s.fire('turn.start', { turnId: 't9' })
+  await s.end({ turnId: 't9' })
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: a message typed while it is armed, or one from Remote Control in the countdown, stops it', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000090-0')
+  const r = await s.fire('prompt.submit', { text: 'wait, one more thing', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(!(r && r.drop), 'not held: no clear is due')
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  const t2 = []
+  const s2 = await boot('/w/ac5', 'ac000091-0', { timers: t2 })
+  await startFromCard(s2, t2)
+  await s2.fire('prompt.submit', { text: 'from the phone', origin: { kind: 'bridge' } }, (h) => h.name === 'prompt.submit')
+  await flush(t2)
+  assert.ok(!cleared(s2.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: a turn that starts and ends inside the countdown still gets a fresh handoff first', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac6', 'ac000100-0', { timers })
+  await startFromCard(s, timers)
+  T += 2500
+  assert.ok(texts(await s.render()).includes('Clearing in 3 s'), 'seconds are rounded up')
+  await s.fire('turn.start', { turnId: 't8' })
+  await s.end({ turnId: 't8' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 2)
+  assert.ok(cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: Try again after a failed /handoff keep, or a band press while it is written, keeps the chat', async () => {
+  store.set('settings', { autoClear: true })
+  let n = 0
+  const timers = []
+  const s = await boot('/w/ac7', 'ac000110-0', { timers, fork: async () => (++n === 1 ? { isAnswered: false, reason: 'api-error', status: 500 } : { isAnswered: true, text: GOOD }) })
+  timers.length = 0
+  await s.run('handoff', 'keep')
+  await flush(timers)
+  assert.match(texts(await s.render()), /did not finish/)
+  await s.press('ck-ho-retry')
+  await flush(timers)
+  assert.match(texts(await s.render()), /Handoff ready/)
+  assert.ok(!texts(await s.render()).includes('Clearing'))
+  assert.ok(!cleared(s.log))
+  let release
+  const gate = new Promise((r) => (release = r))
+  const t2 = []
+  const s2 = await boot('/w/ac7', 'ac000111-0', { timers: t2, fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await s2.step() // the band draws once a request has run
+  t2.length = 0
+  await s2.run('handoff', 'keep')
+  // The keep is being written; the band's handoff button only asks
+  await t2.shift()()
+  await settle()
+  await s2.render()
+  await s2.buttons.get('handoff').onPress()
+  release()
+  await flush(t2)
+  assert.ok(!cleared(s2.log), 'the keep stands')
+  store.delete('settings')
+})
+
+await check('desktop: the ready title reads "Handoff ready · 1,234 words" and never breaks', async () => {
+  const long = GOOD + '\n\n' + 'word '.repeat(1300)
+  const s = await boot('/w/rt', 'rt000001-0', { select: true, fork: async () => ({ isAnswered: true, text: long }) })
+  await s.run('handoff', 'keep')
+  const card = subtree(await s.render('desktop'), 'ck-ho-card')
+  assert.match(texts(card), /Handoff ready · 1,\d{3} words/)
+  const box = subtree(card, 'ck-ho-title')
+  assert.equal(box.flexShrink, 0, 'the title keeps its width')
+  assert.match(texts(box).trim(), /^Handoff ready · /)
+})
+
+await check('desktop: a handoff queued over a ready one keeps the steps, stop now, the saved path and the ready buttons', async () => {
+  const s = await boot('/w/rq', 'rq000001-0', { select: true })
+  await s.run('handoff', 'keep')
+  await s.fire('turn.start', { turnId: 'busy' })
+  await s.fire('tool.call', { tool: 'Skill', skill: 'session-handoff', args: 'keep' })
+  await s.fire('classic.PostToolBatch', {}, (h) => h.name === 'classic.PostToolBatch', { additionalContext: [] })
+  for (let i = 0; i < 3; i++) await s.step('busy', 650000)
+  const band = await s.render('desktop')
+  const card = subtree(band, 'ck-ho-card')
+  const k = keys(card)
+  assert.ok(k.has('ck-ho-steps') && k.has('ck-ho-head'), 'not the one-line ready card')
+  assert.ok(keys(subtree(card, 'ck-ho-head')).has('ck-ho-stop'))
+  assert.match(texts(card), /Saved to .*rq000001/)
+  const buttons = keys(subtree(card, 'ck-ho-buttons'))
+  for (const b of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open']) assert.ok(buttons.has(b), b)
+})
+
 // ======================= the band, revive, live git, pruning =======================
 
 await check('clear and continue turns the marked plugins on again before the handoff', async () => {
@@ -760,7 +1119,7 @@ await check('the desktop band keeps its tags and keep-warm Select', async () => 
   const band = await s.render('desktop')
   assert.ok(s.selects.has('keep-warm'))
   for (const k of ['tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) assert.ok(s.buttons.has(k), k)
-  assert.ok(keys(band).has('handoff-line'))
+  assert.ok(keys(band).has('card-next'))
   await s.buttons.get('handoff').onPress()
   await settle()
   assert.equal(s.prompts.length, 1)

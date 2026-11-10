@@ -53,7 +53,9 @@ const S = {
   rateLimits: [],
 }
 
-const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4 }
+// autoClear: a handoff the card would ask about clears and continues on its
+// own after a short countdown the person can stop
+const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: false }
 const names = { cache: 'cache', keepwarm: 'keepwarm', board: 'board', handoff: 'handoff' }
 
 let now = 0
@@ -175,7 +177,11 @@ const P = {
   draft: '', // the model-free draft
   words: 0,
   error: '',
+  autoAt: 0, // auto clear: when the ready card's countdown ends (0: none runs)
+  autoStale: false, // a turn started during the countdown
+  autoWait: false, // the countdown ended in a turn: the clear waits for its end
 }
+const AUTO_CLEAR_MS = 5000
 let ticker = null
 let offerChoice = OFFER_DEFAULT // the offer's threshold as picked ('300k', 'off')
 let snoozeTo = 0 // a hidden offer stays away below this context size
@@ -479,10 +485,14 @@ function forkFailure(r) {
   return 'the model step failed' + (r.reason ? ` (${r.reason})` : '')
 }
 
+// What follows a handoff, by strength: an earlier choice holds against a weaker one
+const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
+
 // Runs the five steps now, or once the running turn ends. after: see P.after.
 async function runPipeline($, after = 'ask') {
-  // A later press that only asks never cancels a clear asked for earlier
-  const merged = (prev) => (prev === 'clear' ? 'clear' : after)
+  // A later press that only asks never overrides a choice made earlier: a clear
+  // or a keep (so auto clear cannot clear a chat /handoff keep was for)
+  const merged = (prev) => (AFTER_RANK[prev] > AFTER_RANK[after] ? prev : after)
   if (P.phase === 'working') {
     P.after = merged(P.after)
     $.ui.toast(`The handoff is already being written.${P.after === 'clear' ? ' The chat clears and continues once it is in.' : ''}`)
@@ -497,6 +507,7 @@ async function runPipeline($, after = 'ask') {
     return
   }
   // Claimed before the first await: two presses must not both get past the check
+  cancelAutoClear()
   Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
   H.clearDue = false
   startTicker($)
@@ -540,6 +551,8 @@ async function runPipeline($, after = 'ask') {
       clearAndContinueLater($, 300, true)
     } else {
       if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
+      // 'none' (keep) was an explicit choice: only a card that asks counts down
+      if (P.after === 'ask' && settings.autoClear) startAutoClear($)
       await settleHold($)
     }
   } catch (err) {
@@ -548,7 +561,8 @@ async function runPipeline($, after = 'ask') {
     Object.assign(P, { phase: 'failed', error: errText(err, 160) })
     await settleHold($)
   } finally {
-    stopTicker()
+    // The countdown keeps the ticker for its seconds
+    if (!P.autoAt) stopTicker()
     $.ui.invalidate('ui.render')
   }
 }
@@ -746,6 +760,66 @@ function clearAndContinueLater($, ms, due = false) {
   })
 }
 
+// Auto clear: the ready card counts down, then the chat clears and continues
+// the way a due clear does. A turn running when the seconds are up keeps it
+// armed ("Clearing when this turn ends") until the turn ends; a turn that ran
+// meanwhile gets one fresh handoff first. Until the clear starts, Keep chat,
+// Close, Open file, a typed message or the toggle turned off stop it.
+function startAutoClear($) {
+  const at = now + AUTO_CLEAR_MS
+  P.autoAt = at
+  startTicker($)
+  $.clock.after(AUTO_CLEAR_MS, () => autoClearDue($, at))
+}
+
+// Stops it; true when a turn ran during the countdown (its handoff is out of date)
+function cancelAutoClear() {
+  if (!autoClearArmed()) return false
+  const stale = P.autoStale
+  P.autoAt = 0
+  P.autoWait = false
+  P.autoStale = false
+  stopTicker()
+  return stale
+}
+
+// Counting down, or waiting for the running turn to end
+function autoClearArmed() {
+  return !!(P.autoAt || P.autoWait)
+}
+
+function autoClearDue($, at) {
+  // Stopped, or a newer countdown owns the clear
+  if (P.autoAt !== at) return
+  const stale = cancelAutoClear()
+  // A safety net: what closes the card stops the countdown first, and the
+  // clear itself refuses without a handoff
+  if (P.phase !== 'ready' || H.continuing) return
+  // Still armed, and still stoppable, until the running turn ends (turn.complete)
+  if (S.working) P.autoWait = true
+  else autoClearGo($, stale)
+  $.ui.invalidate('ui.render')
+}
+
+// The armed clear starts: from here the prompts are held and the card's
+// buttons give way to the clear's own steps
+function autoClearGo($, stale) {
+  H.clearDue = stale ? 'stale' : true
+  clearAndContinueLater($, 0, true)
+}
+
+// Seconds left on the ready card's countdown
+function autoClearLeft() {
+  return Math.max(1, Math.ceil((P.autoAt - now) / 1000))
+}
+
+async function setAutoClear($, on) {
+  settings.autoClear = !!on
+  if (!on) cancelAutoClear()
+  await $.store.set('settings', settings)
+  $.ui.invalidate('ui.render')
+}
+
 // The due clear, once a turn ran since its handoff: sent now, that handoff
 // would leave out what the turn did. One fresh handoff is written for the
 // clear, never a second: overtaken again, the chat stays as it is.
@@ -844,7 +918,7 @@ async function cardAction($, key) {
     case 'ck-ho-start':
       return P.phase === '' ? runPipeline($, 'ask') : undefined
     case 'ck-ho-retry':
-      return P.phase === 'failed' ? runPipeline($, P.after === 'clear' ? 'clear' : 'ask') : undefined
+      return P.phase === 'failed' ? runPipeline($, P.after) : undefined
     case 'ck-ho-hide':
       snoozeTo = S.ctx + SNOOZE
       $.ui.toast(`Handoff offer hidden until the context reaches ${tokens(snoozeTo)}. /${names.handoff} runs it any time.`, { timeoutMs: 8000 })
@@ -852,16 +926,31 @@ async function cardAction($, key) {
     case 'ck-ho-at':
       return setOfferAt($, OFFER_CHOICES[(OFFER_CHOICES.indexOf(offerChoice) + 1) % OFFER_CHOICES.length])
     case 'ck-ho-clear':
+      // Armed (or counting down) inside a turn: the clear already comes at its end
+      if (S.working && autoClearArmed()) {
+        cancelAutoClear()
+        P.autoWait = true
+        $.ui.toast('The chat clears and continues when this turn ends.', { timeoutMs: 8000 })
+        return
+      }
+      // A clear already due goes its own way (a fresh handoff first when stale)
+      if (H.clearDue) return
+      // A turn ran during the countdown: a fresh handoff first
+      if (cancelAutoClear()) return autoClearGo($, true)
       return clearAndContinue($)
     case 'ck-ho-keep':
+      cancelAutoClear()
       P.phase = ''
       H.kept = true
       snoozeTo = S.ctx + SNOOZE
       $.ui.toast(`Handoff kept. /${names.handoff} continue clears this chat and continues with it later.`, { timeoutMs: 10000 })
       return
     case 'ck-ho-open':
+      // Opened to be read: the chat it came from stays until a press says otherwise
+      cancelAutoClear()
       return openFile($, P.phase === 'failed' ? P.draft : P.file)
     case 'ck-ho-close':
+      cancelAutoClear()
       if (P.phase === 'ready') snoozeTo = S.ctx + SNOOZE
       P.phase = ''
       return
@@ -947,8 +1036,8 @@ function ctxHue(n) {
 function limitHue(p) {
   return p >= 95 ? HUE.red : p >= 80 ? HUE.yellow : p >= 50 ? HUE.cyan : HUE.green
 }
-function gaugeSvg(Svg, frac, fill, alt, ticks = []) {
-  const w = 64, h = 8
+function gaugeSvg(Svg, frac, fill, alt, ticks = [], w = 64) {
+  const h = 8
   const f = Math.max(0, Math.min(1, frac))
   const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
   if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(6, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
@@ -998,6 +1087,24 @@ async function toggleRevive($, k) {
   $.ui.invalidate('ui.render')
 }
 
+// Whether a handoff the card asks about clears on its own, drawn like the
+// revive tags: a dot and a label, a click flips it. It sits by the handoff
+// button, whose ending it decides.
+const AUTO_CLEAR_LABEL = 'auto clear'
+function autoClearTag(els, $, label = AUTO_CLEAR_LABEL) {
+  return dotTag(els, 'autoclear', label, settings.autoClear, () => setAutoClear($, !settings.autoClear))
+}
+
+// A tag: a dot (green when on) beside a plain Button that flips it. A desktop
+// draws a Button natively and drops its children's colors, so the dot stands
+// beside the button, not inside it
+function dotTag({ Box, Text, Button }, k, label, on, onPress) {
+  return Box({ key: 'tag-group-' + k, flexDirection: 'row', alignItems: 'center', children: [
+    Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
+    Button({ key: 'tag-' + k, label, plain: true, dimColor: !on, onPress }),
+  ] })
+}
+
 // Below this many columns the desktop band shortens its labels
 const NARROW_COLUMNS = 96
 
@@ -1026,25 +1133,143 @@ function continueButton($, Button, extra = {}) {
   return Button({ key: 'continue', label: H.continuing ? 'clearing' : 'clear and continue', plain: true, ...extra, onPress: () => clearAndContinueLater($, 0) })
 }
 
-// The band on a surface with Select (desktop, editor): row one is the cache and
-// the limits, row two the rewrite cost, the tags and the handoff
-function deskBand($, e, els, { st, ttl, big }) {
-  const { Box, Text, Button, Select, Svg } = els
-  const narrow = ((e.viewport && e.viewport.columns) || 200) < NARROW_COLUMNS
-  const row = (key, children, gap = 3) => Box({ key, flexDirection: 'row', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
-  const line = (key, left, right) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 3, rowGap: 1, children: [left, right] })
+// A card of the desktop band: a caption over one row of what it holds. Its
+// border takes a colour only while the card needs the person
+function bandCard({ Box, Text }, key, caption, children, { tone, grow, squeeze, gap = 2 } = {}) {
+  return Box({
+    key,
+    flexDirection: 'column',
+    borderStyle: 'round',
+    ...(tone ? { borderColor: tone } : { borderDimColor: true }),
+    paddingX: 1,
+    // Squeezed (see deskBand), a card shrinks and wraps its row rather than being cut off
+    flexShrink: squeeze ? 1 : 0,
+    // The context card takes what the row has left, so the row ends flush right
+    ...(grow ? { flexGrow: 1 } : {}),
+    children: [
+      Text({ dimColor: true, size: 'caption', children: [caption] }),
+      Box({ key: key + '-value', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) }),
+    ],
+  })
+}
 
-  let cache
-  if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [narrow ? `◆ until ${clock(S.keepWarmUntil)}` : `◆ kept warm until ${clock(S.keepWarmUntil)}`] })
-  else if (st.kind === 'warm') cache = Text({ color: 'green', children: [narrow ? `● ${minutes(st.left)}` : `● cache warm ${minutes(st.left)}`] })
-  else if (st.kind === 'cooling') cache = Text({ color: 'yellow', bold: true, children: [narrow ? `◐ ${minutes(st.left)}` : `◐ cache cools in ${minutes(st.left)}`] })
-  else if (st.kind === 'cold') cache = Text({ ...(big ? { color: 'red', bold: true } : { dimColor: true }), children: [narrow ? `○ ${minutes(-st.left)}` : `○ cache cold ${minutes(-st.left)}`] })
-  else cache = Text({ dimColor: true, children: ['○ cache'] })
+const LIMIT_CAPTION = { five_hour: '5h limit', seven_day: 'Week limit', spend_limit: 'Spend limit' }
+// From here the context card and the handoff button ask for attention
+const CTX_URGENT = 600000
+const LIMIT_URGENT = 80
+
+// Every card but the context one hugs what it holds. The context card takes
+// the rest of the row, and its gauge follows the window: long in a wide one,
+// short in a narrow one, never below where its card is as wide as a limit
+// card (a window narrower still wraps the row). The engine measures nothing
+// for a plugin, so widths are counted in character cells: a card is its
+// border and padding around the wider of its caption and its row, a row its
+// parts two cells apart, a gauge pixel an eighth of a cell.
+const CELL_PX = 8
+const GAUGE_PX = 64
+const CARD_CHROME = 4
+// A native control around its label: a Button's padding, a Select's label and arrow
+const BUTTON_CHROME = 2
+const SELECT_CHROME = 5
+const rowCells = (parts, gap) => parts.filter((n) => n > 0).reduce((a, n) => a + n + gap, -gap)
+const cardCells = (caption, parts, gap) => CARD_CHROME + Math.max(caption.length, rowCells(parts, gap))
+// A tag: its dot and its button
+const tagCells = (label) => 1 + label.length + BUTTON_CHROME
+
+// The context card's row without its gauge (fixed), and the narrowest its
+// gauge gets (floor): as wide as a limit card, else a limit gauge's width
+function ctxFloor(figure, limit, gauge, gap) {
+  const fixed = CARD_CHROME + figure.length + gap
+  return { fixed, floor: Math.max(1, limit ? limit - fixed : gauge) }
+}
+
+// How wide the context gauge is drawn, in pixels: `columns` of room, `others`
+// the cells the other cards and the gaps take, `limit` a limit card's cells,
+// `gauge` a limit gauge's cells (the floor when there is no limit card)
+function ctxGaugePx(columns, others, figure, limit, gauge, gap) {
+  const { fixed, floor } = ctxFloor(figure, limit, gauge, gap)
+  const room = columns - others - fixed
+  return Math.round(Math.max(floor, room) * CELL_PX)
+}
+
+// How the desktop band gives way when its row would not fit, in order: the
+// context gauge narrows down to a limit card's width; then the captions and
+// the tags take their short form (also below NARROW_COLUMNS); then the
+// compact form: half-width limit gauges, short values and control labels,
+// one cell between the parts of a card. A window too narrow even for that
+// wraps the row onto more lines; a card wider than the window itself may then
+// shrink, so its own row wraps instead of being cut off.
+const BAND_FULL = 0
+const BAND_NARROW = 1
+const BAND_COMPACT = 2
+const COMPACT_GAUGE_PX = 32
+
+// The band on a surface with Select (desktop, editor): one row of captioned
+// cards (cache, rewrite cost, context, each limit, the next chat)
+function deskBand($, e, els, state) {
+  // The cells the band's tree is laid out in: its column less the engine's
+  // margin (bodyColumns), narrower than the window beside a docked pane
+  const columns = (e.props && e.props.bodyColumns) || (e.viewport && e.viewport.columns) || 200
+  let band
+  for (let level = columns < NARROW_COLUMNS ? BAND_NARROW : BAND_FULL; level <= BAND_COMPACT; level++) {
+    band = deskCards($, els, state, columns, level, false)
+    if (band.need <= columns) return band.rows
+  }
+  return band.widest > columns ? deskCards($, els, state, columns, BAND_COMPACT, true).rows : band.rows
+}
+
+// The cards at one level of compaction; need: the cells one row of them
+// takes with the context card at its narrowest, widest: the widest card's
+// cells. squeeze: the cards may shrink.
+function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
+  const { Box, Text, Button, Select, Svg } = els
+  const narrow = level >= BAND_NARROW
+  const compact = level >= BAND_COMPACT
+  const limitGauge = (compact ? COMPACT_GAUGE_PX : GAUGE_PX) / CELL_PX
+  const gap = compact ? 1 : 2
+  const value = (text, extra = {}) => Text({ weight: 'semibold', tabular: true, ...extra, children: [text] })
+  const coldBig = st.kind === 'cold' && big
+  // Every card but the context one, with the cells it takes
+  const cards = []
+  const widths = []
+  const card = (key, caption, children, parts, opts) => {
+    cards.push(bandCard(els, key, caption, children, { ...opts, squeeze, gap }))
+    widths.push(cardCells(caption, parts, gap))
+  }
+
+  let cacheText, cacheStyle, cacheNote, cacheTone
+  if (st.kind === 'kept') {
+    cacheText = `until ${clock(S.keepWarmUntil)}`
+    cacheStyle = { color: 'cyan' }
+    cacheNote = `kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd, true)}`
+    cacheTone = HUE.cyan
+  } else if (st.kind === 'warm') {
+    cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`
+    cacheStyle = { color: 'green' }
+    cacheNote = 'warm'
+  } else if (st.kind === 'cooling') {
+    cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`
+    cacheStyle = { color: 'yellow' }
+    cacheNote = 'cools soon'
+    cacheTone = HUE.yellow
+  } else if (st.kind === 'cold') {
+    cacheText = `cold ${minutes(-st.left)}`
+    cacheStyle = big ? { color: 'red' } : { dimColor: true }
+    cacheNote = 'cold'
+    if (big) cacheTone = HUE.red
+  } else {
+    cacheText = '—'
+    cacheStyle = { dimColor: true }
+  }
+  const cache = value(cacheText, cacheStyle)
   // A run started elsewhere (the board, settings) may last hours the picks lack
   const picks = S.keepWarm && !KEEP_WARM_PICKS.includes(S.keepWarmHours) ? [...KEEP_WARM_PICKS, S.keepWarmHours].sort((a, b) => a - b) : KEEP_WARM_PICKS
+  const warmLabel = compact ? 'warm' : 'keep warm'
+  // What the Select shows: its label and the picked option's
+  const warmValue = S.keepWarm ? `${S.keepWarmHours} h` : 'off'
   const keepWarm = Select({
     key: 'keep-warm',
-    label: 'keep warm',
+    label: warmLabel,
     value: S.keepWarm ? String(S.keepWarmHours) : 'off',
     options: [{ value: 'off', label: 'off' }, ...picks.map((h) => ({ value: String(h), label: `${h} h` }))],
     onSelect: (v) => {
@@ -1053,39 +1278,68 @@ function deskBand($, e, els, { st, ttl, big }) {
       if (v === 'off' || (Number.isFinite(hours) && hours > 0)) keepWarmPress($, () => (v === 'off' ? stopKeepWarm($, 'turned off') : startKeepWarm($, hours)))()
     },
   })
-  const figures = [ctxFigure(els, Svg)]
+  // One press while the cache cools on a big context
+  const quickLabel = compact ? `${settings.keepWarmHours} h` : `keep ${settings.keepWarmHours} h`
+  const quick = st.kind === 'cooling' && big && Button({ key: 'keepwarm', label: quickLabel, plain: true, onPress: keepWarmPress($, () => startKeepWarm($, settings.keepWarmHours)) })
+  card('card-cache', narrow || !cacheNote ? 'Cache' : `Cache · ${cacheNote}`, [cache, keepWarm, quick], [cacheText.length, `${warmLabel} ${warmValue}`.length + SELECT_CHROME, quick ? quickLabel.length + BUTTON_CHROME : 0], { tone: cacheTone })
+
+  const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
+  const rewriteText = coldBig ? `${compact ? 'next send' : 'next send rewrites'} ≈ ${cost}` : `${compact ? 'cold' : 'if cold'} ≈ ${cost}`
+  const rewrite = Text({ ...(coldBig ? { color: 'red', weight: 'semibold' } : { dimColor: true }), children: [rewriteText] })
+  const restartsText = S.coldRestarts.length ? `${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}` : ''
+  const restarts = restartsText && Text({ dimColor: true, children: [restartsText] })
+  card('card-cost', narrow ? 'Rewrite' : 'Rewrite cost', [rewrite, restarts], [rewriteText.length, restartsText.length], { tone: coldBig && HUE.red })
+
+  // The context card goes third, after the others are counted
+  const ctxAt = cards.length
+  let limitCells = 0
   for (const l of S.rateLimits) {
     const p = l.percentUsed || 0
     const name = LIMIT_LABEL[l.kind] || l.kind
-    const shown = narrow && name === 'week' ? 'wk' : name
-    figures.push(figure(Box, Text(limitTone([l], { children: [`${shown} ${Math.round(p)}%`] })), Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`)))
+    const percent = `${Math.round(p)}%`
+    card('card-limit-' + l.kind, narrow ? name : LIMIT_CAPTION[l.kind] || `${name} limit`, [
+      value(percent, p >= LIMIT_URGENT ? { color: limitHue(p) } : {}),
+      Svg && gaugeSvg(Svg, p / 100, limitHue(p), `${name} limit ${Math.round(p)}% used`, [], limitGauge * CELL_PX),
+    ], [percent.length, limitGauge], { tone: p >= LIMIT_URGENT && limitHue(p) })
+    limitCells = Math.max(limitCells, widths[widths.length - 1])
   }
 
-  const cost = money(rewriteCost(S.ctx, S.model, ttl), narrow)
-  const rewrite = st.kind === 'cold' && big ? Text({ color: 'red', children: [`next send rewrites ≈ ${cost}`] }) : Text({ dimColor: true, children: [`rewrite ≈ ${cost}`] })
-  const restarts = S.coldRestarts.length && Text({ dimColor: true, children: [`${S.coldRestarts.length} cold restart${S.coldRestarts.length === 1 ? '' : 's'} ${money(S.coldRestarts.reduce((a, c) => a + c.usd, 0), narrow)}`] })
-
-  // Each tag says whether the fresh chat turns it on again; a click flips that.
-  // A desktop draws a Button natively and drops its children's colors, so the
-  // green dot stands beside the button, not inside it
-  const tags = REVIVE_ORDER.map((k) => {
-    const on = revive.has(k)
-    const level = k === 'caveman' && on && revive.get(k).args
-    const name = k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
-    return row('tag-group-' + k, [
-      Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
-      Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
-    ], 0)
+  // Each tag says whether the fresh chat turns it on again; a click flips that
+  const names = REVIVE_ORDER.map((k) => {
+    const level = k === 'caveman' && revive.has(k) && revive.get(k).args
+    return k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
   })
-  const actions = row('actions', [
-    row('tags', [!narrow && Text({ dimColor: true, children: ['after clear'] }), ...tags], 2),
-    continueButton($, Button),
-    Button({ key: 'handoff', label: handoffLabel(), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ])
-  return [
-    line('state', row('cache-group', [cache, keepWarm], 2), row('figures', figures)),
-    line('handoff-line', row('costs', [rewrite, restarts]), actions),
-  ]
+  const tags = REVIVE_ORDER.map((k, i) => dotTag(els, k, names[i], revive.has(k), () => toggleRevive($, k)))
+  // The handoff is the main action once the context is large or a send would
+  // rewrite it; a plain Button would draw the same either way
+  const urgent = !handoffInFlight() && (S.ctx >= CTX_URGENT || coldBig)
+  const contLabel = H.continuing ? 'clearing' : compact ? 'continue' : 'clear and continue'
+  const cont = continueButton($, Button, { label: contLabel })
+  const autoLabel = compact ? 'auto' : AUTO_CLEAR_LABEL
+  card('card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
+    Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
+    cont,
+    autoClearTag(els, $, autoLabel),
+    Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
+  ], [rowCells(names.map(tagCells), 1), cont ? contLabel.length + BUTTON_CHROME : 0, tagCells(autoLabel), handoffLabel().length + BUTTON_CHROME])
+
+  const figure = tokens(S.ctx)
+  const ctxCaption = narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`
+  // The other cards and the gap after each of them
+  const others = widths.reduce((a, w) => a + w + 1, 0)
+  const gauge = ctxGaugePx(columns, others, figure, limitCells, limitGauge, gap)
+  // The context card at its narrowest: its gauge at the floor
+  const { fixed, floor } = ctxFloor(figure, limitCells, limitGauge, gap)
+  const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
+  cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
+    value(figure, ctxTone(S.ctx)),
+    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
+  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true, squeeze, gap }))
+  return {
+    need: others + ctxMin,
+    widest: Math.max(ctxMin, ...widths),
+    rows: [Box({ key: 'cards', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', width: '100%', columnGap: 1, rowGap: 'xs', children: cards })],
+  }
 }
 
 // ---- the handoff card -----------------------------------------------------
@@ -1134,6 +1388,8 @@ function handoffCard($, e, els, Svg) {
   const desk = e.surface !== 'terminal' && !!els.Select
   const rowOf = (key, children, gap = 2) => Box({ key, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) })
   const hot = (k) => (desk ? {} : { hotkey: k })
+  // The desktop card: a frame in the colour of what it says
+  const framed = (key, tone, children) => Box({ key, flexDirection: 'column', borderStyle: 'round', borderColor: tone, paddingX: 1, children })
   if (offerShown()) {
     const at = desk
       ? els.Select({
@@ -1144,50 +1400,82 @@ function handoffCard($, e, els, Svg) {
           onSelect: (v) => void setOfferAt($, v).catch(() => {}),
         })
       : cardButton(Button, 'ck-ho-at', `offer at ${offerChoice}`, { dimColor: true })
-    return rowOf('ck-ho-offer', [
+    const offer = rowOf('ck-ho-offer', [
       Text({ color: ACCENT, children: ['◆'] }),
       Text({ children: [`Context ${tokens(S.ctx)}: hand this chat off to a fresh one?`] }),
       cardButton(Button, 'ck-ho-start', 'Start handoff', hot('h')),
       cardButton(Button, 'ck-ho-hide', 'Hide', { dimColor: true }),
       at,
     ])
+    return desk ? framed('ck-ho-offer-card', ACCENT, [offer]) : offer
   }
   if (!P.pending && !P.phase) return null
   const waiting = !!P.pending && P.phase !== 'working'
   let title
+  // The ready title alone, and what clear and continue is doing beside it
+  const readyText = `Handoff ready · ${P.words.toLocaleString('en-US')} words`
+  const doing = H.continuing && H.phase
   if (waiting) title = Text({ color: ACCENT, bold: true, children: [`Handoff queued: it starts when this turn ends · ${minutes(now - L.at)} · +${tokens(landingGrowth())}`] })
   else if (P.phase === 'working') title = Text({ color: ACCENT, bold: true, children: [`Writing the handoff${P.after === 'clear' ? ', then clearing this chat' : ''}`] })
-  else if (P.phase === 'ready') title = Text({ color: HUE.green, bold: true, children: [`Handoff ready: ${P.words} words${H.continuing && H.phase ? ' · ' + H.phase : ''}`] })
+  else if (P.phase === 'ready') title = Text({ color: HUE.green, bold: true, children: [readyText + (doing ? ' · ' + doing : '')] })
   else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
+  // Auto clear: the seconds before the chat clears, ahead of the buttons
+  // A handoff queued over the card decides what follows instead
+  const countdown = autoClearArmed() && !P.pending && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [P.autoWait ? 'Clearing when this turn ends' : `Clearing in ${autoClearLeft()} s`] })
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
+    const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
+    const bar = stepBar(els, Svg, stepProgress(i, s), s.status)
+    const detail = Text({ dimColor: true, ...(desk ? { size: 'caption' } : {}), children: [stepDetail(s) || ''] })
+    // Desktop: the five steps stand side by side, each a small column
+    if (desk) return Box({ key: 'ck-ho-step-' + i, flexDirection: 'column', children: [rowOf('ck-ho-step-head-' + i, [icon, label], 1), bar, detail] })
     return Box({ key: 'ck-ho-step-' + i, flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [
       Box({ width: 2, children: [icon] }),
-      Box({ width: 32, children: [Text({ dimColor: s.status === 'wait', children: [`${i + 1}. ${STEP_LABELS[i]}`] })] }),
-      stepBar(els, Svg, stepProgress(i, s), s.status),
-      Text({ dimColor: true, children: [stepDetail(s) || ''] }),
+      Box({ width: 32, children: [label] }),
+      bar,
+      detail,
     ] })
   })
+  const stop = waiting && landingOverdue() && colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))
+  const clearLabel = countdown ? 'Clear now' : 'Clear and continue'
+  const ready = P.phase === 'ready' && !H.continuing && [
+    countdown,
+    // Armed, the clear comes when the turn ends: no button to ask for it sooner
+    !P.autoWait && (desk ? Button({ key: 'ck-ho-clear', label: clearLabel, variant: 'primary', onPress: () => {} }) : cardButton(Button, 'ck-ho-clear', clearLabel, hot('c'))),
+    cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
+    cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
+    cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+  ]
+  const failed = P.phase === 'failed' && [
+    cardButton(Button, 'ck-ho-retry', 'Try again', hot('r')),
+    P.draft && cardButton(Button, 'ck-ho-open', 'Open draft', hot('o')),
+    cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
+  ]
+  const failure = failed && [
+    Text({ color: HUE.red, children: [P.error || 'unknown error'] }),
+    P.draft && Text({ dimColor: true, children: [`Draft saved to ${P.draft}`] }),
+    rowOf('ck-ho-buttons', failed),
+  ].filter(Boolean)
+  if (desk) {
+    // Ready, the steps have nothing left to say: one line, the title and its buttons.
+    // The title never breaks: the row wraps between its parts instead.
+    // A handoff queued over it keeps the steps and its "stop now"
+    if (P.phase === 'ready' && !waiting) return framed('ck-ho-card', HUE.green, [rowOf('ck-ho-buttons', [Box({ key: 'ck-ho-title', flexShrink: 0, children: [Text({ color: HUE.green, bold: true, children: [readyText] })] }), doing && Text({ color: HUE.green, children: [doing] }), Text({ dimColor: true, size: 'caption', children: [`Saved to ${P.file}`] }), ...(ready || [])])])
+    return framed('ck-ho-card', failed ? HUE.red : ACCENT, [
+      rowOf('ck-ho-head', [title, stop]),
+      Box({ key: 'ck-ho-steps', flexDirection: 'row', flexWrap: 'wrap', columnGap: 3, rowGap: 'xs', children: steps }),
+      ...(failure || []),
+      P.phase === 'ready' && Text({ dimColor: true, children: [`Saved to ${P.file}`] }),
+      ready && rowOf('ck-ho-buttons', ready),
+    ].filter(Boolean))
+  }
   const rows = [title, ...steps]
-  if (waiting && landingOverdue()) rows.push(rowOf('ck-ho-buttons', [colourButton(els, 'ck-ho-stop', 'stop now', 'yellow', hot('s'))]))
+  if (stop) rows.push(rowOf('ck-ho-buttons', [stop]))
   if (P.phase === 'ready') {
     rows.push(Text({ dimColor: true, children: [`Saved to ${P.file}`] }))
-    if (!H.continuing) rows.push(rowOf('ck-ho-buttons', [
-      cardButton(Button, 'ck-ho-clear', 'Clear and continue', hot('c')),
-      cardButton(Button, 'ck-ho-keep', 'Keep chat', hot('k')),
-      cardButton(Button, 'ck-ho-open', 'Open file', hot('o')),
-      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
-    ]))
+    if (ready) rows.push(rowOf('ck-ho-buttons', ready))
   }
-  if (P.phase === 'failed') {
-    rows.push(Text({ color: HUE.red, children: [P.error || 'unknown error'] }))
-    if (P.draft) rows.push(Text({ dimColor: true, children: [`Draft saved to ${P.draft}`] }))
-    rows.push(rowOf('ck-ho-buttons', [
-      cardButton(Button, 'ck-ho-retry', 'Try again', hot('r')),
-      P.draft && cardButton(Button, 'ck-ho-open', 'Open draft', hot('o')),
-      cardButton(Button, 'ck-ho-close', 'Close', { dimColor: true }),
-    ]))
-  }
+  if (failure) rows.push(...failure)
   return Box({ key: 'ck-ho-card', flexDirection: 'column', children: rows })
 }
 
@@ -1481,7 +1769,8 @@ function statusText() {
   lines.push(calText())
   lines.push(`Cold-send guard: ${settings.guard ? 'on' : 'off'} for contexts over ${tokens(settings.bigTokens)} tokens. Alerts: ${settings.alerts ? 'on' : 'off'}.`)
   lines.push(`Handoff offer: ${offerAt() ? `at ${tokens(offerAt())} tokens of context` : 'off'}${snoozeTo > offerAt() ? ` (hidden in this chat until ${tokens(snoozeTo)})` : ''}.`)
-  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}. Board: /${names.board}.`)
+  lines.push(`Auto clear: ${settings.autoClear ? `on (a handoff from the band or the offer clears this chat ${AUTO_CLEAR_MS / 1000} s after it is in, unless you press Keep chat)` : 'off (the ready card waits for Clear and continue)'}.`)
+  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}, /${names.cache} autoclear on|off. Board: /${names.board}.`)
   return lines.join('\n')
 }
 
@@ -1508,7 +1797,7 @@ export function register(on, options) {
     await loadSettings($)
     await loadRevive($)
     await readRecording($)
-    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off]')) || names.cache
+    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off] [autoclear on|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
     names.board = (await registerCommand($, 'board', 'Every local Claude Code session: state, context, cache, cost', '', true)) || names.board
     names.handoff = (await registerCommand($, 'handoff', 'Write a session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
@@ -1527,6 +1816,7 @@ export function register(on, options) {
     // A new chat: a hidden offer and a closed card start over; a handoff being
     // written for the old chat goes on and shows when it is in
     snoozeTo = 0
+    cancelAutoClear()
     if (P.phase !== 'working') P.phase = ''
     // "Keep chat" was about the old chat
     H.kept = false
@@ -1583,11 +1873,12 @@ export function register(on, options) {
     // dated file stays, the latest copy is marked used. A handoff loaded from a
     // previous chat waits for its "continue" instead, and so does one this chat
     // is about to clear for.
-    if (H.text && !H.fromDisk && !H.continuing && !holdsPrompts() && e.origin && e.origin.kind === 'composer' && !String(e.text || '').trim().startsWith('/')) {
+    if (H.text && !H.fromDisk && !H.continuing && !holdsPrompts() && fromUser && !String(e.text || '').trim().startsWith('/')) {
       const fid = H.fid
       H.text = ''
       H.path = ''
       H.fid = ''
+      cancelAutoClear()
       if (P.phase === 'ready') P.phase = ''
       await dropLatestHandoff($, fid)
       $.ui.invalidate('ui.render')
@@ -1629,6 +1920,8 @@ export function register(on, options) {
     // A turn before the due clear: what it does is not in the handoff the chat
     // would clear with
     if (H.clearDue) H.clearDue = 'stale'
+    // Likewise for a turn during the auto clear's countdown
+    if (P.autoAt) P.autoStale = true
     await heartbeat($, true)
     return next(e)
   })
@@ -1694,7 +1987,11 @@ export function register(on, options) {
     // A handoff queued behind this turn starts now, off this hook (the fork
     // needs the turn's end). An interrupted turn starts it too: "stop now".
     if (!overlapped && P.pending) offHook($, () => runPipeline($, P.pending || 'ask'), 50)
-    else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
+    else if (!overlapped && P.autoWait) {
+      // The armed auto clear: the turn just ended, so its handoff is out of date
+      cancelAutoClear()
+      if (P.phase === 'ready' && !H.continuing) autoClearGo($, true)
+    } else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
     return r
@@ -1799,6 +2096,10 @@ export function register(on, options) {
     } else if (key === 'handoff') {
       if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}.` }
       return { text: statusText() }
+    } else if (key === 'autoclear') {
+      if (value !== 'on' && value !== 'off') return { text: 'Pick one of: on, off.' }
+      await setAutoClear($, value === 'on')
+      return { text: statusText() }
     }
     if (key) {
       await $.store.set('settings', settings)
@@ -1847,15 +2148,15 @@ export function register(on, options) {
     const Svg = e.surface !== 'terminal' ? els.Svg : null
     // The handoff card stands above the band, also before the band has figures;
     // its running step counts seconds from now
-    if (P.phase === 'working' || P.pending) now = await $.clock.now()
+    if (P.phase === 'working' || P.pending || P.autoAt) now = await $.clock.now()
     const card = handoffCard($, e, els, Svg)
     if (!S.lastActivity && !S.keepWarm) return card ? Box({ flexDirection: 'column', children: [card, below].filter(Boolean) }) : below
     const hb = myHeartbeat()
     const st = cacheState(hb)
     const ttl = ttlMin()
     const big = S.ctx >= settings.bigTokens
-    // A desktop or editor band: two fixed rows, native Selects, no hotkeys
-    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 1, children: [card, ...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
+    // A desktop or editor band: a row of cards, native Selects, no hotkeys
+    if (e.surface !== 'terminal' && els.Select) return Box({ flexDirection: 'column', rowGap: 'xs', children: [card, ...deskBand($, e, els, { st, ttl, big }), below].filter(Boolean) })
     let cache
     if (st.kind === 'kept') cache = Text({ color: 'cyan', children: [`◆ kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd)} · until ${clock(S.keepWarmUntil)}`] })
     else if (st.kind === 'warm') cache = Text({ color: 'green', children: [`● cache warm ${minutes(st.left)}`] })
@@ -1887,7 +2188,7 @@ export function register(on, options) {
     // the card no longer shows. The offer's own Start takes h while it is up.
     const handoff = Button({ key: 'handoff', label: handoffLabel(), ...(offerShown() ? {} : { hotkey: 'h' }), plain: true, dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) })
     const cont = continueButton($, Button, { hotkey: 'c' })
-    const right = cont ? Box({ flexDirection: 'row', columnGap: 2, children: [cont, handoff] }) : handoff
+    const right = Box({ flexDirection: 'row', alignItems: 'center', columnGap: 2, children: [cont, autoClearTag(els, $), handoff].filter(Boolean) })
     const mine = Box({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', width: '100%', columnGap: 2, children: [left, right] })
     const rows = card ? [card, mine] : [mine]
     if (cacheMenu) rows.push(cacheMenuRow($, els))
