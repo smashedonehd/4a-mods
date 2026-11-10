@@ -698,6 +698,8 @@ test('text: strong names take any 6+ value, weak names a token-shaped one with a
     'max_tokens: 4096000000',
     'Password: reset it in settings',
     'signature: John Smith 3rd',
+    'auth: requiredtwofactor',
+    'password=undefined',
     'passwords: 12345678 found',
     'password: 2024-11-10',
     'secret: none',

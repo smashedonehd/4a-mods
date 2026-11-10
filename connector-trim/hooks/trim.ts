@@ -155,9 +155,9 @@ export const isTokenShaped = (v: string) =>
   v.length >= 8 && !/\s/.test(v) && !/^\d+$/.test(v) && !DATE.test(v) && !URL_START.test(v)
 
 // Whether this value under this key is a secret: any text under a strong key
-// (`pwd` unless a path), a token-shaped value under a weak one.
+// (`pwd` unless a path), a token-shaped value under a weak one. The caller
+// skips empty and already redacted values.
 export function isSecretValue(key: string, value: string) {
-  if (value === '' || value.startsWith('[REDACTED')) return false
   const kind = secretKind(key)
   if (kind === 'strong') return norm(key) !== 'pwd' || !isPath(value)
   return kind === 'weak' && isTokenShaped(value)
@@ -258,8 +258,9 @@ const QUOTED = new RegExp(`${NAME}(["']?[ \\t]{0,8}(?::=|=>|[:=])[ \\t]{0,8})(?:
 const EQUALS = new RegExp(`${NAME}([ \\t]{0,8}=[ \\t]{0,8})(?![=>])([^\\s"',;&<>()\\[\\]{}]+)`, 'g')
 // `x-api-key: abc123…`: header style, one word.
 const COLON = new RegExp(`${NAME}(["']?:[ \\t]{0,8})(?!["'\\[])([^\\s"',;]+)`, 'g')
-// Values beside a secret name that are code or empties, not secrets.
-const NOT_A_VALUE = /^(?:none|null|nil|undefined|true|false)$/i
+// Values beside a secret name that are code, not secrets. (`None`, `null`,
+// `true` and `false` are shorter than any value the rules take.)
+const NOT_A_VALUE = /^undefined$/i
 const CAPS_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|^[A-Z]+$/
 const DOTTED_NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 const isCode = (v: string, next: string | undefined) =>
