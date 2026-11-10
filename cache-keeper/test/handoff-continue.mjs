@@ -855,9 +855,9 @@ await check('auto clear on: the ready card counts down with Keep chat, then clea
 
 await check('auto clear on: Keep chat or Close in the countdown stops it; /handoff keep never counts down', async () => {
   store.set('settings', { autoClear: true })
-  for (const key of ['ck-ho-keep', 'ck-ho-close']) {
+  for (const [i, key] of ['ck-ho-keep', 'ck-ho-close'].entries()) {
     const timers = []
-    const s = await boot('/w/ac3', 'ac00004' + key.length + '-0', { timers })
+    const s = await boot('/w/ac3', `ac00004${i}-0`, { timers })
     await startFromCard(s, timers)
     await s.press(key)
     await flush(timers)
@@ -919,8 +919,8 @@ await check('auto clear on: armed through a turn, the card says so and Keep chat
   assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
   assert.ok(s.buttons.has('ck-ho-keep'))
   assert.ok(!cleared(s.log))
-  for (const stop of ['ck-ho-keep', 'ck-ho-close', 'ck-ho-open', 'off']) {
-    ;({ s, timers } = await armed('ac00008' + stop.length + '-0'))
+  for (const [i, stop] of ['ck-ho-keep', 'ck-ho-close', 'ck-ho-open', 'off'].entries()) {
+    ;({ s, timers } = await armed(`ac00008${i}-0`))
     if (stop === 'off') await s.run('cache', 'autoclear off')
     else await s.press(stop)
     await flush(timers)

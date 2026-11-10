@@ -485,11 +485,14 @@ function forkFailure(r) {
   return 'the model step failed' + (r.reason ? ` (${r.reason})` : '')
 }
 
+// What follows a handoff, by strength: an earlier choice holds against a weaker one
+const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
+
 // Runs the five steps now, or once the running turn ends. after: see P.after.
 async function runPipeline($, after = 'ask') {
   // A later press that only asks never overrides a choice made earlier: a clear
   // or a keep (so auto clear cannot clear a chat /handoff keep was for)
-  const merged = (prev) => (prev === 'clear' ? 'clear' : prev === 'none' && after === 'ask' ? 'none' : after)
+  const merged = (prev) => (AFTER_RANK[prev] > AFTER_RANK[after] ? prev : after)
   if (P.phase === 'working') {
     P.after = merged(P.after)
     $.ui.toast(`The handoff is already being written.${P.after === 'clear' ? ' The chat clears and continues once it is in.' : ''}`)
@@ -504,7 +507,8 @@ async function runPipeline($, after = 'ask') {
     return
   }
   // Claimed before the first await: two presses must not both get past the check
-  Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '', autoAt: 0, autoStale: false, autoWait: false })
+  cancelAutoClear()
+  Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
   H.clearDue = false
   startTicker($)
   try {
@@ -764,24 +768,30 @@ function clearAndContinueLater($, ms, due = false) {
 function startAutoClear($) {
   const at = now + AUTO_CLEAR_MS
   P.autoAt = at
-  P.autoStale = false
   startTicker($)
   $.clock.after(AUTO_CLEAR_MS, () => autoClearDue($, at))
 }
 
+// Stops it; true when a turn ran during the countdown (its handoff is out of date)
 function cancelAutoClear() {
-  if (!P.autoAt && !P.autoWait) return
+  if (!autoClearArmed()) return false
+  const stale = P.autoStale
   P.autoAt = 0
   P.autoWait = false
   P.autoStale = false
   stopTicker()
+  return stale
+}
+
+// Counting down, or waiting for the running turn to end
+function autoClearArmed() {
+  return !!(P.autoAt || P.autoWait)
 }
 
 function autoClearDue($, at) {
   // Stopped, or a newer countdown owns the clear
   if (P.autoAt !== at) return
-  const stale = P.autoStale
-  cancelAutoClear()
+  const stale = cancelAutoClear()
   // A safety net: what closes the card stops the countdown first, and the
   // clear itself refuses without a handoff
   if (P.phase !== 'ready' || H.continuing) return
@@ -917,7 +927,7 @@ async function cardAction($, key) {
       return setOfferAt($, OFFER_CHOICES[(OFFER_CHOICES.indexOf(offerChoice) + 1) % OFFER_CHOICES.length])
     case 'ck-ho-clear':
       // Armed (or counting down) inside a turn: the clear already comes at its end
-      if (S.working && (P.autoAt || P.autoWait)) {
+      if (S.working && autoClearArmed()) {
         cancelAutoClear()
         P.autoWait = true
         $.ui.toast('The chat clears and continues when this turn ends.', { timeoutMs: 8000 })
@@ -925,12 +935,8 @@ async function cardAction($, key) {
       }
       // A clear already due goes its own way (a fresh handoff first when stale)
       if (H.clearDue) return
-      {
-        // A turn ran during the countdown: its handoff is out of date
-        const stale = P.autoStale
-        cancelAutoClear()
-        if (stale) return autoClearGo($, true)
-      }
+      // A turn ran during the countdown: a fresh handoff first
+      if (cancelAutoClear()) return autoClearGo($, true)
       return clearAndContinue($)
     case 'ck-ho-keep':
       cancelAutoClear()
@@ -1085,11 +1091,17 @@ async function toggleRevive($, k) {
 // revive tags: a dot and a label, a click flips it. It sits by the handoff
 // button, whose ending it decides.
 const AUTO_CLEAR_LABEL = 'auto clear'
-function autoClearTag({ Box, Text, Button }, $, extra = {}) {
-  const on = settings.autoClear
-  return Box({ key: 'tag-group-autoclear', flexDirection: 'row', alignItems: 'center', children: [
+function autoClearTag(els, $, label = AUTO_CLEAR_LABEL) {
+  return dotTag(els, 'autoclear', label, settings.autoClear, () => setAutoClear($, !settings.autoClear))
+}
+
+// A tag: a dot (green when on) beside a plain Button that flips it. A desktop
+// draws a Button natively and drops its children's colors, so the dot stands
+// beside the button, not inside it
+function dotTag({ Box, Text, Button }, k, label, on, onPress) {
+  return Box({ key: 'tag-group-' + k, flexDirection: 'row', alignItems: 'center', children: [
     Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
-    Button({ key: 'tag-autoclear', label: AUTO_CLEAR_LABEL, plain: true, dimColor: !on, ...extra, onPress: () => setAutoClear($, !settings.autoClear) }),
+    Button({ key: 'tag-' + k, label, plain: true, dimColor: !on, onPress }),
   ] })
 }
 
@@ -1159,15 +1171,23 @@ const CARD_CHROME = 4
 // A native control around its label: a Button's padding, a Select's label and arrow
 const BUTTON_CHROME = 2
 const SELECT_CHROME = 5
-const rowCells = (parts, gap = 2) => parts.filter((n) => n > 0).reduce((a, n) => a + n + gap, -gap)
-const cardCells = (caption, parts, gap = 2) => CARD_CHROME + Math.max(caption.length, rowCells(parts, gap))
+const rowCells = (parts, gap) => parts.filter((n) => n > 0).reduce((a, n) => a + n + gap, -gap)
+const cardCells = (caption, parts, gap) => CARD_CHROME + Math.max(caption.length, rowCells(parts, gap))
+// A tag: its dot and its button
+const tagCells = (label) => 1 + label.length + BUTTON_CHROME
+
+// The context card's row without its gauge (fixed), and the narrowest its
+// gauge gets (floor): as wide as a limit card, else a limit gauge's width
+function ctxFloor(figure, limit, gauge, gap) {
+  const fixed = CARD_CHROME + figure.length + gap
+  return { fixed, floor: Math.max(1, limit ? limit - fixed : gauge) }
+}
 
 // How wide the context gauge is drawn, in pixels: `columns` of room, `others`
 // the cells the other cards and the gaps take, `limit` a limit card's cells,
 // `gauge` a limit gauge's cells (the floor when there is no limit card)
-function ctxGaugePx(columns, others, figure, limit, gauge = GAUGE_PX / CELL_PX, gap = 2) {
-  const fixed = CARD_CHROME + figure.length + gap
-  const floor = Math.max(1, (limit || fixed + gauge) - fixed)
+function ctxGaugePx(columns, others, figure, limit, gauge, gap) {
+  const { fixed, floor } = ctxFloor(figure, limit, gauge, gap)
   const room = columns - others - fixed
   return Math.round(Math.max(floor, room) * CELL_PX)
 }
@@ -1217,23 +1237,31 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
     widths.push(cardCells(caption, parts, gap))
   }
 
-  let cache, cacheText, cacheNote, cacheTone
+  let cacheText, cacheStyle, cacheNote, cacheTone
   if (st.kind === 'kept') {
-    cache = value((cacheText = `until ${clock(S.keepWarmUntil)}`), { color: 'cyan' })
+    cacheText = `until ${clock(S.keepWarmUntil)}`
+    cacheStyle = { color: 'cyan' }
     cacheNote = `kept warm · ${S.pings} ping${S.pings === 1 ? '' : 's'} ${money(S.pingUsd, true)}`
     cacheTone = HUE.cyan
   } else if (st.kind === 'warm') {
-    cache = value((cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`), { color: 'green' })
+    cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`
+    cacheStyle = { color: 'green' }
     cacheNote = 'warm'
   } else if (st.kind === 'cooling') {
-    cache = value((cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`), { color: 'yellow' })
+    cacheText = `${minutes(st.left)}${compact ? '' : ' left'}`
+    cacheStyle = { color: 'yellow' }
     cacheNote = 'cools soon'
     cacheTone = HUE.yellow
   } else if (st.kind === 'cold') {
-    cache = value((cacheText = `cold ${minutes(-st.left)}`), big ? { color: 'red' } : { dimColor: true })
+    cacheText = `cold ${minutes(-st.left)}`
+    cacheStyle = big ? { color: 'red' } : { dimColor: true }
     cacheNote = 'cold'
     if (big) cacheTone = HUE.red
-  } else cache = value((cacheText = '—'), { dimColor: true })
+  } else {
+    cacheText = '—'
+    cacheStyle = { dimColor: true }
+  }
+  const cache = value(cacheText, cacheStyle)
   // A run started elsewhere (the board, settings) may last hours the picks lack
   const picks = S.keepWarm && !KEEP_WARM_PICKS.includes(S.keepWarmHours) ? [...KEEP_WARM_PICKS, S.keepWarmHours].sort((a, b) => a - b) : KEEP_WARM_PICKS
   const warmLabel = compact ? 'warm' : 'keep warm'
@@ -1276,20 +1304,12 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
     limitCells = Math.max(limitCells, widths[widths.length - 1])
   }
 
-  // Each tag says whether the fresh chat turns it on again; a click flips that.
-  // A desktop draws a Button natively and drops its children's colors, so the
-  // green dot stands beside the button, not inside it
-  let tagCells = -1
-  const tags = REVIVE_ORDER.map((k) => {
-    const on = revive.has(k)
-    const level = k === 'caveman' && on && revive.get(k).args
-    const name = k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
-    tagCells += 1 + name.length + BUTTON_CHROME + 1
-    return Box({ key: 'tag-group-' + k, flexDirection: 'row', alignItems: 'center', children: [
-      Text(on ? { color: 'green', children: ['●'] } : { dimColor: true, children: ['○'] }),
-      Button({ key: 'tag-' + k, label: name, plain: true, dimColor: !on, onPress: () => toggleRevive($, k) }),
-    ] })
+  // Each tag says whether the fresh chat turns it on again; a click flips that
+  const names = REVIVE_ORDER.map((k) => {
+    const level = k === 'caveman' && revive.has(k) && revive.get(k).args
+    return k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
   })
+  const tags = REVIVE_ORDER.map((k, i) => dotTag(els, k, names[i], revive.has(k), () => toggleRevive($, k)))
   // The handoff is the main action once the context is large or a send would
   // rewrite it; a plain Button would draw the same either way
   const urgent = !handoffInFlight() && (S.ctx >= CTX_URGENT || coldBig)
@@ -1299,9 +1319,9 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   card('card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
     Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
     cont,
-    autoClearTag(els, $, { label: autoLabel }),
+    autoClearTag(els, $, autoLabel),
     Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ], [tagCells, cont ? contLabel.length + BUTTON_CHROME : 0, 1 + autoLabel.length + BUTTON_CHROME, handoffLabel().length + BUTTON_CHROME])
+  ], [rowCells(names.map(tagCells), 1), cont ? contLabel.length + BUTTON_CHROME : 0, tagCells(autoLabel), handoffLabel().length + BUTTON_CHROME])
 
   const figure = tokens(S.ctx)
   const ctxCaption = narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`
@@ -1309,8 +1329,8 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   const others = widths.reduce((a, w) => a + w + 1, 0)
   const gauge = ctxGaugePx(columns, others, figure, limitCells, limitGauge, gap)
   // The context card at its narrowest: its gauge at the floor
-  const fixed = CARD_CHROME + figure.length + gap
-  const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + Math.max(1, (limitCells || fixed + limitGauge) - fixed))
+  const { fixed, floor } = ctxFloor(figure, limitCells, limitGauge, gap)
+  const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
     Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
@@ -1401,7 +1421,7 @@ function handoffCard($, e, els, Svg) {
   else title = Text({ color: HUE.red, bold: true, children: ['The handoff did not finish'] })
   // Auto clear: the seconds before the chat clears, ahead of the buttons
   // A handoff queued over the card decides what follows instead
-  const countdown = P.phase === 'ready' && !!(P.autoAt || P.autoWait) && !H.continuing && !P.pending && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [P.autoWait ? 'Clearing when this turn ends' : `Clearing in ${autoClearLeft()} s`] })
+  const countdown = autoClearArmed() && !P.pending && Text({ key: 'ck-ho-countdown', color: ACCENT, bold: true, children: [P.autoWait ? 'Clearing when this turn ends' : `Clearing in ${autoClearLeft()} s`] })
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
     const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
