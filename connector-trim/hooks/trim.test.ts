@@ -415,8 +415,8 @@ const KEY_TABLE: Record<KeyClass, string[]> = {
     'scroll_id', 'LastEvaluatedKey', 'ExclusiveStartKey', 'starting_after', 'ending_before', 'has_more', 'hasNextPage',
     'IsTruncated', 'total', 'totalCount', 'page', 'per_page', 'offset', 'limit', 'skip', 'next', 'prev', 'previous', 'after',
     'before', 'last_page', 'lastpage', 'first_url', 'search_after', 'since_id', 'page2', 'next_offset', 'nextoffset',
-    // An acronym run before a word; `previous` read before `prev`.
-    'NEXTLink', 'previoustoken',
+    // An acronym glued to a word; `previous` read before `prev`.
+    'NEXTLink', 'previoustoken', 'previouspagetoken',
     // Paging by name whatever else is in it: kept as returned when paging-shaped.
     'next_auth_token', 'cursor_secret', 'last_token',
     // The longest key read as a name: 200 characters.

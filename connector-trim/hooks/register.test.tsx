@@ -897,7 +897,11 @@ test('a log over 3 MB is cut to its last lines, not started again', async ($, on
   expect(old.length).toBeGreaterThan(3_000_000)
   const { files } = world(on, { result: block(PROSE), files: { [LOG]: old } })
   await call($)
-  expect(files[LOG]).toContain(`old 299 ${'x'.repeat(10_400)}`)
+  // Compared by line: a 10,000-character needle in 3 MB is slow for toContain.
+  const lines = files[LOG]!.split('\n')
+  expect(lines.length).toBe(301)
+  expect(lines[298] === `old 299 ${'x'.repeat(10_400)}`).toBe(true)
+  expect(lines[299]).toMatch(/not JSON/)
   expect(Object.keys(files).filter(p => p.includes('/mods-logs/'))).toEqual([LOG])
 })
 

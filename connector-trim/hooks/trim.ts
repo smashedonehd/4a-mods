@@ -104,8 +104,7 @@ export function textsOf(result: unknown): { texts: string[] } | { skip: string }
 // ---------- keys ----------
 //
 // A key is read as words: `nextPageToken`, `next_page_token` and
-// `NEXT-PAGE-TOKEN` are next, page, token; `APIKey` is api, key; a digit run
-// is no word. Page words glued to `token` are split (`$skiptoken`,
+// `NEXT-PAGE-TOKEN` are next, page, token; a digit run is no word. Page words glued to `token` are split (`$skiptoken`,
 // `nextpagetoken`), and so is a link name (`nextlink`). Each key is in one
 // class:
 //   paging: the way to the next page; kept as returned when its value is
@@ -158,11 +157,9 @@ export function keyWords(key: string): string[] {
     const k = i < key.length ? charKind(key.charCodeAt(i)) : 0
     if (start >= 0) {
       const p = charKind(key.charCodeAt(i - 1))
-      const next = i + 1 < key.length ? charKind(key.charCodeAt(i + 1)) : 0
-      // A word ends at a separator, at aB, between letters and digits, and
-      // before the last capital of a run that a lower-case letter follows.
+      // A word ends at a separator, at aB and between letters and digits.
       // A run of digits is no word: `page2` is page.
-      if (k === 0 || (p === 1 && k === 2) || (p === 3) !== (k === 3) || (p === 2 && k === 2 && next === 1)) {
+      if (k === 0 || (p === 1 && k === 2) || (p === 3) !== (k === 3)) {
         if (p !== 3) out.push(...unglue(key.slice(start, i).toLowerCase()))
         start = -1
       }
