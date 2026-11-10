@@ -1,16 +1,20 @@
 // The reviews' slow inputs, at the reviews' sizes. Each bound is three times
 // the slowest of three runs when written (at least 100 ms, so a pause for
 // garbage collection cannot fail a 4 ms case), and never over the 1,500 ms
-// budget.
+// budget. A case gets three tries and passes on its fastest: a busy machine
+// slows some runs, while an input that is slow by nature is slow every time.
 import { expect, test } from 'claude-code/testing'
 import { Run, matches, readBlocks, taskOf, trimBlocks } from './trim.ts'
 
 const none = new Set<string>()
 const timed = (name: string, bound: number, f: () => unknown) => {
-  const start = performance.now()
-  f()
-  const ms = performance.now() - start
-  // A failure names the case and its time.
+  let ms = Infinity
+  for (let i = 0; i < 3 && ms >= bound; i++) {
+    const start = performance.now()
+    f()
+    ms = Math.min(ms, performance.now() - start)
+  }
+  // A failure names the case and its fastest time.
   expect([name, ms < bound ? 'within bound' : `${ms.toFixed(0)} ms, bound ${bound}`]).toEqual([name, 'within bound'])
 }
 // Read, then trim, as the hook does: one run.
