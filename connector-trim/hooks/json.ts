@@ -47,11 +47,21 @@ const NOT_PLAIN = /[\\\u0000-\u001f]/
 // Thrown for text that is not JSON: one object, since building an error and
 // its stack for each of many small strings costs more than reading them.
 const NOT_JSON = new SyntaxError('not JSON')
+// Thrown when objects and lists nest deeper than the reader was allowed.
+export class TooDeep extends Error {}
 
 // The value of `text`, which must be one JSON value; throws when it is not.
-// `tick` is called once per value, so a caller can stop a long read.
-export function readJson(text: string, visit?: Visit, tick?: () => void): unknown {
+// `tick` is called once per value, so a caller can stop a long read; past
+// `maxDepth` nested objects and lists it throws TooDeep.
+export function readJson(
+  text: string,
+  visit?: Visit,
+  tick?: () => void,
+  maxDepth = Infinity,
+  seen?: { depth: number },
+): unknown {
   let i = 0
+  let depth = 0
   let frame: Frame | undefined
   const fail = (): never => {
     throw NOT_JSON
@@ -82,12 +92,14 @@ export function readJson(text: string, visit?: Visit, tick?: () => void): unknow
     ws()
     const c = text[i]
     if (c === '{') {
+      if (++depth > maxDepth) throw new TooDeep()
+      if (seen && depth > seen.depth) seen.depth = depth
       i++
       const o: Json = {}
       const outer = frame
       if (visit) frame = { key, holder: o, parent: outer }
       ws()
-      if (text[i] === '}') return (i++, (frame = outer), o)
+      if (text[i] === '}') return (i++, depth--, (frame = outer), o)
       for (;;) {
         ws()
         if (text[i] !== '"') fail()
@@ -98,22 +110,24 @@ export function readJson(text: string, visit?: Visit, tick?: () => void): unknow
         put(o, k, value(k))
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === '}') return (i++, (frame = outer), o)
+        else if (text[i] === '}') return (i++, depth--, (frame = outer), o)
         else fail()
       }
     }
     if (c === '[') {
+      if (++depth > maxDepth) throw new TooDeep()
+      if (seen && depth > seen.depth) seen.depth = depth
       i++
       const a: unknown[] = []
       const outer = frame
       if (visit) frame = { key, holder: a, parent: outer }
       ws()
-      if (text[i] === ']') return (i++, (frame = outer), a)
+      if (text[i] === ']') return (i++, depth--, (frame = outer), a)
       for (;;) {
         a.push(value(key))
         ws()
         if (text[i] === ',') i++
-        else if (text[i] === ']') return (i++, (frame = outer), a)
+        else if (text[i] === ']') return (i++, depth--, (frame = outer), a)
         else fail()
       }
     }
@@ -140,15 +154,20 @@ export function readJson(text: string, visit?: Visit, tick?: () => void): unknow
 }
 
 // The object or array a text holds, or undefined for anything else. A
-// TooSlow from `tick` goes through.
-export function parseJson(text: string, tick?: () => void): unknown {
+// TooSlow from `tick`, or a TooDeep past `maxDepth`, goes through.
+export function parseJson(text: string, tick?: () => void, maxDepth?: number): unknown {
   if (!/^\s*[[{]/.test(text)) return undefined
   try {
-    return readJson(text, undefined, tick)
+    return readJson(text, undefined, tick, maxDepth)
   } catch (e) {
-    if (e instanceof TooSlow) throw e
+    if (e instanceof TooSlow || e instanceof TooDeep) throw e
     return undefined
   }
+}
+
+const isPlainFlat = (x: object) => {
+  for (const v of Array.isArray(x) ? x : Object.values(x)) if (v !== null && typeof v === 'object') return false
+  return true
 }
 
 // Compact JSON, exact numbers written as they came. Written into one list of
@@ -156,7 +175,9 @@ export function parseJson(text: string, tick?: () => void): unknown {
 export function ser(v: unknown): string {
   const out: string[] = []
   const write = (x: unknown) => {
-    if (x instanceof Exact) out.push(x.raw)
+    // A list or object of plain single values: JSON.stringify writes it as is.
+    if (typeof x === 'object' && x !== null && !(x instanceof Exact) && isPlainFlat(x)) out.push(JSON.stringify(x))
+    else if (x instanceof Exact) out.push(x.raw)
     else if (Array.isArray(x)) {
       out.push('[')
       for (let i = 0; i < x.length; i++) {

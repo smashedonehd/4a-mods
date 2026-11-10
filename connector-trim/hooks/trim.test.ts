@@ -409,7 +409,8 @@ test('JSON inside a string is redacted by key: an array of strings under a secre
 
 test('a value already redacted is neither changed nor counted', () => {
   const text = '{"password":"[REDACTED]","rows":["password=[REDACTED]"]}'
-  expect(redactJson(text)).toEqual({ text, found: [] })
+  const r = redactJson(text)!
+  expect([r.text, r.found]).toEqual([text, []])
 })
 
 test('a bookkeeping field the task names is kept', () => {
@@ -893,7 +894,8 @@ test('redaction is idempotent on JSON written inside a secret-named object', () 
   const s = JSON.stringify({ credentials: { blob: JSON.stringify({ password: 'p w', n: 1 }) } })
   const once = redactJson(s)!.text
   expect(JSON.parse(JSON.parse(once).credentials.blob)).toEqual({ password: '[REDACTED]', n: 1 })
-  expect(redactJson(once)).toEqual({ text: once, found: [] })
+  const twice = redactJson(once)!
+  expect([twice.text, twice.found]).toEqual([once, []])
 })
 
 test('empty paging containers stay; a HAL link counts as one value', () => {

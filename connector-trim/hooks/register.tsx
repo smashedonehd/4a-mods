@@ -416,7 +416,7 @@ async function shorten(
     run.deadline?.checkNow()
 
     stage = 'trimming'
-    const trimmed = isJson ? trimJsonWhy(texts, words, { run, maxChars: raw.length }) : undefined
+    const trimmed = isJson ? trimJsonWhy(texts, words, { run, maxChars: raw.length, read: asJson }) : undefined
     if (typeof trimmed === 'string') return await whole(trimmed)
     const body = trimmed?.text ?? trimPlain(texts)
 

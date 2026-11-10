@@ -1,7 +1,7 @@
 // Connector Trim's pure helpers: reading a tool result, redacting secrets,
 // the deterministic trim, the task words, the note's header and retention.
 // Nothing here calls the engine, so the tests reach every rule directly.
-import { Exact, TooSlow, isObject, isScalar, parseJson, put, readJson, ser } from './json.ts'
+import { Exact, TooDeep, TooSlow, isObject, isScalar, parseJson, put, readJson, ser } from './json.ts'
 import type { Frame, Json } from './json.ts'
 
 export { TooSlow, isObject, parseJson, ser }
@@ -542,19 +542,24 @@ const looksLikeJson = (s: string) => /^\s*[[{]/.test(s)
 //     or the value is JSON (read as JSON below);
 //   in a paging group or a paging field: only credential `name=value` pairs;
 //   anything else: the text patterns, and JSON inside it the same way.
-export function redactJson(text: string, run?: Run): { text: string; found: string[] } | undefined {
+// When nothing changed, `tree` is the value read and `depth` how deep it
+// nests, so the trim need not read the same text again.
+export type Redacted = { text: string; found: string[]; tree?: unknown; depth?: number }
+export function redactJson(text: string, run?: Run): Redacted | undefined {
   return inRun(run, () => redactJsonIn(text))
 }
 
-function redactJsonIn(text: string): { text: string; found: string[] } | undefined {
+function redactJsonIn(text: string): Redacted | undefined {
   // Parallel lists, not one small array per string.
   const starts: number[] = []
   const ends: number[] = []
   const values: string[] = []
   const keys: (string | undefined)[] = []
   const frames: (Frame | undefined)[] = []
+  const seen = { depth: 0 }
+  let tree: unknown
   try {
-    readJson(
+    tree = readJson(
       text,
       (start, end, value, key, frame) => {
         starts.push(start)
@@ -564,6 +569,8 @@ function redactJsonIn(text: string): { text: string; found: string[] } | undefin
         frames.push(frame)
       },
       tick,
+      Infinity,
+      seen,
     )
   } catch (e) {
     if (e instanceof TooSlow) throw e
@@ -604,7 +611,7 @@ function redactJsonIn(text: string): { text: string; found: string[] } | undefin
     parts.push(text.slice(at, starts[n]), JSON.stringify(next))
     at = ends[n]!
   }
-  if (at === 0) return { text, found }
+  if (at === 0) return { text, found, tree, depth: seen.depth }
   parts.push(text.slice(at))
   return { text: parts.join(''), found }
 }
@@ -719,8 +726,9 @@ export function pagingOf(data: unknown, prefix = '') {
     for (const k of Object.keys(v)) {
       tick()
       const x = v[k]
-      if ((group || isPagingField(k, x)) && isScalar(x)) out.push([`${prefix}${path}${k}`, ser(x)])
-      else walk(x, `${path}${k}.`, group || isPagingGroup(k, x))
+      const info = infoOf(k)
+      if ((group || (info.paging && isPagingShaped(x))) && isScalar(x)) out.push([`${prefix}${path}${k}`, ser(x)])
+      else if (!isScalar(x)) walk(x, `${path}${k}.`, group || (info.group && isPagingShaped(x)))
     }
   }
   walk(data, '', false)
@@ -822,7 +830,8 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
   for (const k of Object.keys(v)) {
     const x = v[k]
     const named = isNamed(k, words)
-    const paging = group || isPagingField(k, x)
+    const info = infoOf(k)
+    const paging = group || (info.paging && isPagingShaped(x))
     // Paging, cursors and single values the task names travel as returned.
     if ((paging || named) && isScalar(x)) {
       put(out, k, x)
@@ -832,11 +841,11 @@ function trimValue(v: unknown, words: ReadonlySet<string>, t: TrimStats, group: 
       t.noise.add(k)
       continue
     }
-    const y = trimValue(x, words, t, group || isPagingGroup(k, x), inList)
+    const y = trimValue(x, words, t, group || (info.group && isPagingShaped(x)), inList)
     if (y === DROPPED) t.blobs.add(k)
     // An empty paging container (`LastEvaluatedKey: {}`) says there is no
     // next page: it stays.
-    else if (isEmpty(y) && !named && !isGroupName(k)) t.empty.add(k)
+    else if (isEmpty(y) && !named && !info.group) t.empty.add(k)
     else put(out, k, y)
   }
   return out
@@ -903,7 +912,20 @@ export function layout(v: unknown, max = Infinity): string {
     }
     if (isObject(x)) {
       const keys = Object.keys(x)
-      if (keys.every(k => isFlat(x[k]))) return push(ser(x))
+      let flat = true
+      let plain = true
+      for (const k of keys) {
+        const y = x[k]
+        if (y !== null && typeof y === 'object') {
+          plain = false
+          if (!(y instanceof Exact)) {
+            flat = false
+            break
+          }
+        }
+      }
+      if (plain) return push(JSON.stringify(x))
+      if (flat) return push(ser(x))
       push(`{${NL}`)
       for (let i = 0; i < keys.length; i++) {
         push(`${pad(depth + 1)}${JSON.stringify(keys[i])}: `)
@@ -916,14 +938,6 @@ export function layout(v: unknown, max = Infinity): string {
   }
   write(v, 0)
   return out.join('')
-}
-
-// Whether a value nests deeper than `limit`; it stops at the limit.
-function tooDeep(v: unknown, limit: number): boolean {
-  if (limit < 0) return true
-  tick()
-  const xs = Array.isArray(v) ? v : isObject(v) ? Object.values(v) : undefined
-  return xs !== undefined && xs.some(x => tooDeep(x, limit - 1))
 }
 
 export type Trimmed = { text: string; paging: string; stats: TrimStats }
@@ -939,16 +953,28 @@ export const NOT_SHORTER = 'the trimmed JSON would be longer than the result'
 export function trimJsonWhy(
   texts: readonly string[],
   words: ReadonlySet<string>,
-  opts: { run?: Run; maxChars?: number } = {},
+  opts: { run?: Run; maxChars?: number; read?: readonly (Redacted | undefined)[] } = {},
 ): Trimmed | string {
   return inRun(opts.run, () => {
     if (current) {
       current.named.clear()
       current.namedFor = words
     }
-    const data = texts.map(t => parseJson(t, tick))
+    let data: unknown[]
+    try {
+      // Depth is checked while reading: more than MAX_DEPTH nested lists and objects is too deep.
+      data = texts.map((t, i) => {
+        // The redaction's own reading, when it changed nothing.
+        const r = opts.read?.[i]
+        if (r?.tree === undefined || r.text !== t) return parseJson(t, tick, MAX_DEPTH)
+        if ((r.depth ?? 0) > MAX_DEPTH) throw new TooDeep()
+        return isObject(r.tree) || Array.isArray(r.tree) ? r.tree : undefined
+      })
+    } catch (e) {
+      if (e instanceof TooDeep) return TOO_DEEP
+      throw e
+    }
     if (data.some(d => d === undefined)) return NOT_RECORDS
-    if (data.some(d => tooDeep(d, MAX_DEPTH))) return TOO_DEEP
     try {
       const t = newStats()
       const many = data.length > 1
@@ -971,7 +997,7 @@ export function trimJsonWhy(
 }
 
 // The trim, or undefined when the JSON is passed whole.
-export function trimJson(texts: readonly string[], words: ReadonlySet<string>, opts: { run?: Run; maxChars?: number } = {}) {
+export function trimJson(texts: readonly string[], words: ReadonlySet<string>, opts: Parameters<typeof trimJsonWhy>[2] = {}) {
   const r = trimJsonWhy(texts, words, opts)
   return typeof r === 'string' ? undefined : r
 }
