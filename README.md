@@ -85,12 +85,12 @@ By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied unchanged from [john
 
 - **Agents panel** (`/agents-info`): running, finished and planned subagents with model, effort, task progress, context fill, estimated cost and time.
 - **Progress bar** above the prompt, for the [savvy-flow](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-flow) skill. That skill and its `savvy-*` agents are not part of 4A-Mods.
-- Without savvy-flow, set `autoOpen` to `any` so the panel opens by itself when a subagent starts: `claude plugin install savvy-progress@4a-mods --config autoOpen=any`.
+- Without savvy-flow, set `autoOpen` to `any` so the panel opens by itself, once per session, when the first subagent starts: `claude plugin install savvy-progress@4a-mods --config autoOpen=any`.
 - The cost is an estimate from token counts and a built-in price table, not your bill.
 
 ## Where the data lives
 
-Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress keeps nothing and reads no files. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
+Everything stays on your machine, under `~/.claude/mods-data/`: Cache Keeper's session heartbeats and saved handoffs. Toggles writes its switches where Claude Code reads them (`enabledPlugins` and `skillOverrides` in `~/.claude/settings.json`, `disabledMcpServers` in `~/.claude.json`), its profiles to `~/.claude/mods-data/plugin-toggles-profiles.json`, and the Mods tab's switches to `~/.claude/mods/switches.json`. Plan Keeper writes only the `[x]` of the active plan file and keeps nothing else. Prompt Translate keeps nothing; it sends your draft to Haiku through Claude Code's own client, only when you press `🌐 EN` or run `/translate`. Savvy Progress keeps nothing on disk; it reads only Claude Code's settings and environment variables. None of the others makes network calls of its own. Cache Keeper's keep-warm pings are small model requests, sent only while `/keepwarm` is on.
 
 ## License
 
