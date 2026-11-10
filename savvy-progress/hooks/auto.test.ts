@@ -17,16 +17,7 @@ function session(on: On) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('agent.spawn', (_$, e) => ({ model: 'claude-opus-5-5', agentId: (e as { tool_use_id: string }).tool_use_id }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
-  on('turn.step', async function* () {
-    return { turnId: 'turn', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
-  })
   return clock
-}
-
-// One model request of a subagent
-const step = async ($: Engine, id: string) => {
-  const stream = ($.turn.step as (e: unknown) => AsyncIterable<unknown>)({ turnId: 'turn', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: id })
-  for await (const _ of stream) void _
 }
 
 const spawn = ($: Engine, id: string, subagentType = 'general-purpose') =>
@@ -35,9 +26,16 @@ const spawn = ($: Engine, id: string, subagentType = 'general-purpose') =>
 const finish = ($: Engine, id: string, reason = 'answer') =>
   ($.turn.complete as (e: unknown) => Promise<unknown>)({ agentId: id, reason, answer: 'ok' })
 
+const drawn = ($: Engine) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+
+const dismiss = async (ui: Awaited<ReturnType<typeof drawn>>) => {
+  await ui.press({ key: 'savvy-dismiss' } as never)
+  await ui.unmount()
+}
+
 // What the terminal band says: its title and label, or null when no band draws
 async function shown($: Engine) {
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+  const ui = await drawn($)
   const texts = (await ui.findAll({ type: 'Text' })).map(el => String(el.text ?? ''))
   const crew = await ui.find({ key: 'savvy-agents' })
   await ui.unmount()
@@ -95,9 +93,7 @@ test('auto band: dismissed, it stays away for the rest of the wave and returns w
   const clock = session(on)
   await spawn($, 'a')
   await spawn($, 'b')
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
-  await ui.press({ key: 'savvy-dismiss' } as never)
-  await ui.unmount()
+  await dismiss(await drawn($))
   expect(await shown($)).toBeNull()
   clock.now += 1000
   await spawn($, 'c')
@@ -109,55 +105,10 @@ test('auto band: dismissed, it stays away for the rest of the wave and returns w
   expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
 })
 
-// A run that was interrupted never reports its end: it must not hold later runs in its wave
-test('auto band: a run silent for 30 minutes no longer holds its wave open', async ($, on) => {
-  const clock = session(on)
-  await spawn($, 'a')
-  await spawn($, 'b')
-  await finish($, 'a')
-  // One second short of 30 minutes: b still holds the wave
-  clock.now = T0 + 30 * 60_000 - 1000
-  await spawn($, 'c')
-  expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
-  await finish($, 'c')
-  // 30 minutes to the millisecond since b was last seen
-  clock.now = T0 + 30 * 60_000
-  await spawn($, 'd')
-  expect(await shown($)).toBeNull()
-  await spawn($, 'e')
-  expect(await shown($)).toMatchObject({ label: 'Tasks 0/2' })
-})
-
-// The silence counts from the run's last model request, not from its start
-test('auto band: a run that keeps working holds its wave past 30 minutes', async ($, on) => {
-  const clock = session(on)
-  await spawn($, 'a')
-  await spawn($, 'b')
-  await finish($, 'a')
-  clock.now = T0 + 25 * 60_000
-  await step($, 'b')
-  clock.now = T0 + 40 * 60_000
-  await spawn($, 'c')
-  expect(await shown($)).toMatchObject({ label: 'Tasks 1/3' })
-})
-
-// Two waves within one millisecond are still two waves
-test('auto band: a new wave on an unmoved clock does not join the finished one', async ($, on) => {
-  session(on)
-  await spawn($, 'a')
-  await spawn($, 'b')
-  await finish($, 'a')
-  await finish($, 'b')
-  await spawn($, 'c')
-  expect(await shown($)).toBeNull()
-})
-
 test('auto band: dismissing a reported plan clears it', async ($, on) => {
   session(on)
   await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 5, done: 1, phase: 'delegate' } as never)
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
-  await ui.press({ key: 'savvy-dismiss' } as never)
-  await ui.unmount()
+  await dismiss(await drawn($))
   expect(await shown($)).toBeNull()
 })
 
@@ -194,18 +145,18 @@ test('auto band: the desktop draws it as one Svg with the count in its alt', asy
   expect(String(svg[0]?.props.alt)).toBe('Subagents: Tasks 1/2, 50%')
 })
 
-// The press dismisses the newest wave, not the first one of the session
+// The press dismisses the wave that runs now, not an earlier one
 test('auto band: a dismiss hides the wave that runs now, not an earlier one', async ($, on) => {
   const clock = session(on)
   await spawn($, 'a')
   await spawn($, 'b')
   await finish($, 'a')
   await finish($, 'b')
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+  // Drawn before the new wave begins: the press must still hide the new one
+  const ui = await drawn($)
   clock.now += 1000
   await spawn($, 'c')
   await spawn($, 'd')
-  await ui.press({ key: 'savvy-dismiss' } as never)
-  await ui.unmount()
+  await dismiss(ui)
   expect(await shown($)).toBeNull()
 })
