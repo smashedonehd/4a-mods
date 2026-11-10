@@ -100,7 +100,9 @@ test('auto band: a spawn in the millisecond the wave ended still joins it', asyn
 test('auto band: a finished run that works again joins the current wave, not its old one', async ($, on) => {
   const clock = session(on)
   for (const id of ['a', 'b']) await spawn($, id)
-  for (const id of ['a', 'b']) await finish($, id)
+  // A failed run moves as a finished one does
+  await finish($, 'a', 'error')
+  await finish($, 'b')
   clock.now += 1000
   for (const id of ['c', 'd']) await spawn($, id)
   for (const id of ['c', 'd']) await finish($, id)
@@ -220,4 +222,15 @@ test('auto band: a run that never stopped keeps its wave together while it works
   await finish($, 'c')
   await step($, 'a')
   expect(await shown($)).toMatchObject({ label: 'Tasks 2/3' })
+})
+
+// The dismissed wave is named by a run, and a follow-up moves that run: the wave stays hidden
+test('auto band: a follow-up to the first run of a dismissed wave keeps it hidden', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await finish($, 'a')
+  await dismiss(await drawn($))
+  await step($, 'a')
+  expect(await shown($)).toBeNull()
 })

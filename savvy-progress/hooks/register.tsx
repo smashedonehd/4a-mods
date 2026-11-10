@@ -11,8 +11,8 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
-// The wave whose band was dismissed, by the id of its first run: the band without
-// a reported plan stays away until the next wave
+// The wave whose band was dismissed, by the id of the run that was its first: the
+// band without a reported plan stays away from every wave that run is in
 const dismissed = atom({ plugin: 'savvy-progress', key: 'dismissed' } as const, '')
 
 const TOOL = 'mcp__savvy-progress__progress'
@@ -507,10 +507,10 @@ const waveOf = (list: AgentRun[]): AgentRun[] => {
 }
 
 // The band when nobody reported a plan: the current wave as a flow, finished runs
-// out of all of them. null below AUTO_MIN runs, or for the wave `hidden` names.
+// out of all of them. null below AUTO_MIN runs, or for a wave the run `hidden` is in.
 const autoFlow = (list: AgentRun[], hidden: string): Flow | null => {
   const crew = waveOf(list)
-  if (crew.length < AUTO_MIN || crew[0]?.id === hidden) return null
+  if (crew.length < AUTO_MIN || crew.some(a => a.id === hidden)) return null
   const running = crew.filter(a => a.status === 'running').length
   return { ...blank(), title: tr().auto, total: crew.length, done: crew.length - running, running, phase: 'delegate', isFinished: running === 0 }
 }
