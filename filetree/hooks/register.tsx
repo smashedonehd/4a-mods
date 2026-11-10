@@ -213,7 +213,9 @@ const WATCH_MS = 150
 let noDock = false
 // The pane an open at session start could not place: the desktop app attaches
 // its surface after session.start, and an open before that is refused with
-// no-surface. session.attach opens it again.
+// no-surface. session.attach opens it again. An engine workaround: the engine
+// types say such an open resolves { isPlaced: false } and the pane waits by
+// itself; drop this once the runtime does that instead of rejecting.
 let waitingPane: { title: string; focus: boolean } | null = null
 
 async function openPane($: EngineInterface, title: string, focus = false): Promise<void> {
@@ -221,7 +223,7 @@ async function openPane($: EngineInterface, title: string, focus = false): Promi
     await $.ui.open(focus ? { id: PANE, title, focus: true } : { id: PANE, title })
     waitingPane = null
   } catch (err) {
-    if (!/no-surface/.test(String((err as Error)?.message ?? err))) throw err
+    if (!/no-surface/.test(messageOf(err))) throw err
     waitingPane = { title, focus }
   }
 }
@@ -3537,8 +3539,8 @@ export const register: Register = (on, options) => {
 
   on('session.attach', async ($, e, next) => {
     const result = await next(e)
-    const pane = waitingPane
-    if (pane && (pane.focus || !noDock)) await openPane($, pane.title, pane.focus).catch(() => undefined)
+    // noDock is checked again: /filetree off may have run before the app attached
+    if (waitingPane && (waitingPane.focus || !noDock)) void openPane($, waitingPane.title, waitingPane.focus).catch(() => undefined)
     return result
   })
 
