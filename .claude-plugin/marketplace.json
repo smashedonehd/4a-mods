@@ -28,7 +28,7 @@
     {
       "name": "connector-trim",
       "source": "./connector-trim",
-      "description": "Trims big JSON results of MCP connectors by code, has Haiku condense what is still big for the task, and saves the full result to a file (/connector-trim)"
+      "description": "Trims big JSON results of MCP connectors by code and saves the full result, as returned, to a file (/connector-trim). Redacts nothing; a helper model is called only if you turn use_helper on"
     }
   ]
 }
