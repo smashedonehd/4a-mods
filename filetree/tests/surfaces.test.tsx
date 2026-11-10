@@ -14,6 +14,7 @@ import { age, ancestorsOf, badPattern, stamp, formatSize, replaceChildren, toNod
 
 type World = {
   os: 'darwin' | 'linux' | 'win32'
+  refuseOpen?: () => boolean
   env: Record<string, string>
   cwd: string
   top: string
@@ -77,6 +78,7 @@ function world(on: On, w: World, ran: Ran) {
     return { value: { command: e.name } }
   })
   on('ui.open', (_$, e) => {
+    if (w.refuseOpen?.()) return { deny: 'no-surface: no surface is attached ($.session.surfaces() is empty)' }
     opens.push(e)
     return { value: { isPlaced: true } }
   })
@@ -379,6 +381,53 @@ const hostTool = (input: { tool: 'PowerShell' | 'Grep' | 'Glob'; [field: string]
 
 const STAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/
 const NERD = /[\u{e000}-\u{f8ff}\u{f0000}-\u{fffff}]/u
+
+test('desktop app: a pane refused with no-surface at start opens once the app attaches', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  let attached = false
+  let refused = 0
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root,
+    dirs: { [root]: [['README.md', 'file']] }, status: '## main ', numstat: '',
+    refuseOpen: () => !attached && ++refused > 0,
+  }, ran)
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
+  const before = opens.length
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  expect(refused).toBeGreaterThan(0)
+  expect(opens.length).toBe(before)
+  attached = true
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  expect(opens.length).toBe(before + 1)
+  expect(JSON.stringify(opens[opens.length - 1])).toContain('"id":"filetree"')
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:second' })
+  await clock.settle()
+  expect(opens.length).toBe(before + 1)
+})
+
+test('desktop app with start off: the app attaching opens nothing', { timeoutMs: 20_000, options: { start: 'off' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  let attached = false
+  let refused = 0
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root,
+    dirs: { [root]: [['README.md', 'file']] }, status: '## main ', numstat: '',
+    refuseOpen: () => !attached && ++refused > 0,
+  }, ran)
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
+  const before = opens.length
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  attached = true
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  expect(refused).toBe(0)
+  expect(opens.length).toBe(before)
+})
 
 test('macOS Claude Code app: desktop pane draws, selects, opens with open', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
