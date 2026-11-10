@@ -825,7 +825,8 @@ test('a plan let go as finished does not stop tracking: the next plan of the fol
   await s.start()
   await s.call('TodoWrite', done('Ship it'))
   await s.turnEnd()
-  await s.prompt('next thing')
+  // A path at the start of a prompt is no slash command
+  await s.prompt('/home/u/notes.txt has the logs')
   assert.match(flat(await s.pane()), /No plan is active in this chat/)
   await disk.fs.write(PLANS + '/two.md', 'Work in D:\\work\\app.\n- [ ] More\n')
   assert.match(await s.start('clear'), /two\.md/)
@@ -837,6 +838,9 @@ test('a plan file that is gone: no band, the pane says so, and a draw asks for n
   const s = await boot(disk, { state })
   await s.start()
   state.set('plan', { path: CWD + '/docs/plans/gone.md', why: 'written' })
+  let reads = 0
+  const read = disk.fs.read
+  disk.fs.read = (p) => (/gone\.md$/.test(p) && reads++, read(p))
   const again = await boot(disk, { state })
   const before = again.draws()
   assert.equal(await again.band(), null)
@@ -845,6 +849,12 @@ test('a plan file that is gone: no band, the pane says so, and a draw asks for n
   assert.match(pane, /The plan file cannot be read \(moved or deleted\):D:\/work\/app\/docs\/plans\/gone\.md/)
   assert.doesNotMatch(pane, /No plan is active/)
   assert.equal(again.draws(), before, 'a draw that reads the file does not invalidate')
+  assert.equal(reads, 1, 'and the file that is gone is read once, not at every draw')
+  // The pane drawn first reads it too, and asks for no draw either
+  const third = await boot(disk, { state })
+  const start = third.draws()
+  assert.match(flat(await third.pane()), /cannot be read/)
+  assert.equal(third.draws(), start)
 })
 
 test('a draw that throws falls back to what lies below; another pane is not ours', async () => {
@@ -873,9 +883,11 @@ test('the last tick belongs to its plan: another plan starts without one', async
 test('/resume starts another chat: the band is shown and tracking is on again', async () => {
   const s = await boot(small())
   await s.start()
+  await s.call('TodoWrite', done('Fix the lint'))
   await s.cmd('hide')
   await s.cmd('off')
   await s.start('resume')
+  assert.deepEqual(s.state.get('tasks'), [], 'the other chat has its own task list')
   assert.match(flat(await s.pane()), /No plan is active in this chat/)
   assert.match(await s.start('clear'), /s\.md/, 'the resumed chat picks the folder\'s plan when it clears')
   assert.match(flat(await s.band()), /0\/3/)
@@ -888,6 +900,7 @@ test('tracking stopped by hand starts again with a plan this chat writes, and wi
   await s.cmd('off')
   await s.call('Write', { file_path: CWD + '/docs/plans/n.md' })
   assert.match(flat(await s.band()), /▣ n/)
+  assert.equal(s.state.get('prefs').off, false, 'a plan written turns tracking on')
   assert.match(await s.start('clear'), /n\.md/, 'tracking is on: the cleared chat is told')
 
   await s.cmd('off')
@@ -896,6 +909,46 @@ test('tracking stopped by hand starts again with a plan this chat writes, and wi
   await s.turnEnd()
   await s.prompt('next')
   assert.match(await s.start('clear'), /s\.md/, 'track again turned it on for later chats too')
+})
+
+test('/plan-keeper on with no plan of the folder still turns tracking on', async () => {
+  const s = await boot(makeFs({ [CWD + '/notes/todo.md']: '- [ ] a\n' }))
+  await s.start()
+  await s.cmd('notes/todo.md')
+  await s.cmd('off')
+  assert.match(flat(await s.pane()), /Tracking is stopped for this chat/)
+  assert.match(await s.cmd('on'), /No plan of this folder has open items/)
+  assert.match(flat(await s.pane()), /No plan is active in this chat/)
+})
+
+test('a plan written with no checkbox yet is kept at the next prompt', async () => {
+  const disk = makeFs({ [CWD + '/docs/plans/n.md']: '# Plan\n\nto be filled\n' })
+  const s = await boot(disk)
+  await s.start()
+  await s.call('Write', { file_path: CWD + '/docs/plans/n.md' })
+  await s.prompt('go on')
+  assert.equal(s.state.get('plan').path, CWD + '/docs/plans/n.md')
+})
+
+test('a plan picked for a cleared chat in place of one that is gone starts without the old last tick', async () => {
+  const state = new Map()
+  const disk = small()
+  const s = await boot(disk, { state })
+  await s.start()
+  await s.call('TodoWrite', done('Write the README'))
+  await s.turnEnd()
+  assert.match(flat(await s.pane()), /last tick/)
+  // The tracked plan was another file, deleted since
+  state.set('plan', { path: PLANS + '/gone.md', why: 'written' })
+  const again = await boot(disk, { state })
+  assert.match(await again.start('clear'), /s\.md/)
+  assert.doesNotMatch(flat(await again.pane()), /last tick/)
+
+  // Gone, and the folder has no other plan: none is active
+  const bare = new Map([['plan', { path: PLANS + '/gone.md', why: 'written' }]])
+  const none = await boot(makeFs({ [CWD + '/src/x.js']: '' }), { state: bare })
+  assert.equal(await none.start('clear'), undefined)
+  assert.match(flat(await none.pane()), /No plan is active in this chat/)
 })
 
 test('stopping tracking ticks what the list completed first', async () => {

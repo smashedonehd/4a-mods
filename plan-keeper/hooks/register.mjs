@@ -153,24 +153,16 @@ export function planView(text) {
 const clip = (s, max = 120) => (s.length > max ? s.slice(0, max - 1) + '…' : s)
 
 // The open items as note rows: one by one when few, else one row per heading
-export function openItems(text) {
-  const { items, heads } = parsePlan(text)
-  const open = items.filter((it) => !it.done)
-  if (!open.length) return null
+export const openItems = (text) => openRows(planView(text))
+
+// The same of a plan already read (planView), or null with nothing open
+function openRows(v) {
+  if (!v.open) return null
   let rows
-  if (open.length <= NOTE_ITEMS) rows = open.map((it) => '- [ ] ' + clip(it.text.trim()))
-  else {
-    const by = new Map() // heading index -> counts, in the plan's order
-    for (const it of items) {
-      const n = by.get(it.head) || { open: 0, total: 0 }
-      n.total++
-      if (!it.done) n.open++
-      by.set(it.head, n)
-    }
-    rows = [...by].filter(([, n]) => n.open).map(([h, n]) => `- ${h < 0 ? '(before the first heading)' : clip(heads[h].text)}: ${n.open} of ${n.total} open`)
-  }
+  if (v.open <= NOTE_ITEMS) rows = v.sections.flatMap((s) => s.items).map((it) => '- [ ] ' + clip(it))
+  else rows = v.sections.filter((s) => s.open).map((s) => `- ${s.title ? clip(s.title) : '(before the first heading)'}: ${s.open} of ${s.total} open`)
   if (rows.length > NOTE_ROWS) rows = [...rows.slice(0, NOTE_ROWS - 1), `- and ${rows.length - NOTE_ROWS + 1} more`]
-  return { open: open.length, total: items.length, rows }
+  return { open: v.open, total: v.total, rows }
 }
 
 // ---- which plan is the session's
@@ -302,11 +294,9 @@ async function setPlan($, path, why) {
   plan = { path: slash(path), why }
   await savePlan($)
   // A plan written or named is wanted: tracking stopped by hand starts again.
-  // Another plan was never ticked, and its task list has had no note.
-  if (ui.off || !same) {
-    ui = same ? { ...ui, off: false } : { ...ui, off: false, tickedAt: 0, noted: '' }
-    await saveUi($)
-  }
+  // Another plan was never ticked.
+  ui = { ...ui, off: false, ...(same ? {} : { tickedAt: 0 }) }
+  await saveUi($)
   choices = null
   await refresh($)
 }
@@ -318,7 +308,7 @@ async function dropPlan($, off) {
   await savePlan($)
   unmatched = []
   await saveUnmatched($)
-  ui = { ...ui, off, tickedAt: 0, noted: '' }
+  ui = { ...ui, off }
   await saveUi($)
   choices = null
   await refresh($)
@@ -507,9 +497,7 @@ async function closingNote($) {
   if (ui.noted === sign) return null
   ui = { ...ui, noted: sign }
   await saveUi($)
-  const text = await readOr($, plan.path)
-  const o = text !== null && openItems(text)
-  if (!o) return null
+  const o = openRows(view)
   return [
     `Plan Keeper: the task list is complete, the plan is not. Plan: ${plan.path}, ${o.open} of ${o.total} checkbox items open:`,
     ...o.rows,
@@ -534,8 +522,10 @@ async function startNote($, source) {
   }
   let text = plan ? await readOr($, plan.path) : null
   if (text === null && !ui.off) {
-    plan = await folderPlan($)
-    await savePlan($)
+    // Picked like any other plan: nothing of the one before goes with it
+    const found = await folderPlan($)
+    if (found) await setPlan($, found.path, found.why)
+    else if (plan) await dropPlan($, false)
     if (plan) text = await readOr($, plan.path)
   }
   await refresh($, text === null ? undefined : text)
@@ -786,13 +776,10 @@ export function register(on, options) {
   on('classic.SessionStart', { source: ['resume', 'fork'] }, async ($, e, next) => {
     try {
       await ready($)
-      plan = null
-      await savePlan($)
+      // The list goes first, so letting the plan go ticks nothing
       await forgetTasks($)
-      ui = { hidden: false, off: false, tickedAt: 0, noted: '' }
-      await saveUi($)
-      choices = null
-      await refresh($)
+      ui = { ...ui, hidden: false }
+      await dropPlan($, false)
     } catch {
       // kept as it was
     }
@@ -807,8 +794,8 @@ export function register(on, options) {
         await ready($)
         // A plan with nothing open is finished: let go, and not picked again.
         // Read now, since an item unticked by hand since the last turn keeps
-        // it; a slash command is no next prompt.
-        if (plan && !/^\s*\//.test(String(e.text || ''))) {
+        // it; a slash command (/name, not a path like /home/u/x) is no next prompt.
+        if (plan && !/^\s*\/[\w:.-]+(\s|$)/.test(String(e.text || ''))) {
           await load($)
           if (view && view.total && !view.open) await dropPlan($, false)
         }
