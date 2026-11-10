@@ -1213,3 +1213,36 @@ test('switches.json stays under home when CLAUDE_CONFIG_DIR moves the config', a
   expect(files['C:/cfg/mods/switches.json']).toBeUndefined()
   await ui.unmount()
 })
+
+test('on the desktop a switch is a pill and Shown an eye; the terminal keeps words', async ($, on) => {
+  modsSetup(on, {
+    [SWITCHES]: JSON.stringify({ 'clock:hidden': true, dev: false }),
+  })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'tab-mods' })
+    const power = await ui.find({ type: 'Button', key: 'mods:clock' })
+    const shown = await ui.find({ type: 'Button', key: 'mods-shown:clock' })
+    if (surface === 'desktop') {
+      // Clock is on: green, knob right. Dev is off: grey, knob left.
+      const pills = (await ui.findAll({ type: 'Svg' })).map((s: any) => [
+        s.props.alt,
+        s.props.source.includes('#16a34a'),
+        s.props.source.includes('cx="30"'),
+      ])
+      expect(pills).toEqual([
+        ['On', true, true],
+        ['Off', false, false],
+      ])
+      expect(power?.props.label).toBe('⠀⠀⠀')
+      expect(power?.props.plain).toBe(true)
+      expect(shown?.props.label).toBe('\u{1F441}')
+      expect(shown?.props.dimColor).toBe(true)
+    } else {
+      expect(await ui.find({ type: 'Svg' })).toBeFalsy()
+      expect(power?.props.label).toBe('On')
+      expect(shown?.props.label).toBe('Hidden')
+    }
+    await ui.unmount()
+  }
+})
