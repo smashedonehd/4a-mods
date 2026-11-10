@@ -228,21 +228,23 @@ const isPagingGroup = (key: string, v: unknown) => isGroupName(key) && isPagingS
 
 // ---------- secrets in text ----------
 
-// Fixed shapes. Each starts where no character of its own body stands before
-// it, so a long run of near misses is read once, not once per start.
+// Fixed shapes, all linear. Most succeed on any run long enough to read, so
+// a start inside a run never reads it again. The JWT can fail after a long
+// run (no second dot), so it starts only where none of its own characters
+// stands before it: each run is read once, not once per start.
 const PATTERNS: [RegExp, string][] = [
   [/(?<![\w.~+/-])bearer[ \t]{1,8}[A-Za-z0-9._~+/-]{16,}=*/gi, 'bearer token'],
   // `sk-ant-…` and `sk-proj-…`, or one unbroken run with a digit in it: a
   // slug such as `sk-suche-zachody` is no key.
-  [/(?<![\w-])sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|(?<![\w-])sk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
+  [/\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|\bsk-(?=[A-Za-z]*\d)[A-Za-z0-9]{32,}(?![\w-])/g, 'API key'],
   [/(?<!\w)(?:sk|rk)_live_[A-Za-z0-9]{20,}/g, 'Stripe key'],
   [/(?<!\w)gh[opsu]_[A-Za-z0-9]{30,}|(?<!\w)github_pat_[A-Za-z0-9_]{30,}/g, 'GitHub token'],
-  [/(?<![\w-])glpat-[A-Za-z0-9_-]{20,}/g, 'GitLab token'],
+  [/\bglpat-[A-Za-z0-9_-]{20,}/g, 'GitLab token'],
   [/(?<!\w)npm_[A-Za-z0-9]{36}(?!\w)/g, 'npm token'],
   [/\bAKIA[0-9A-Z]{16}\b/g, 'AWS key'],
-  [/(?<![\w-])AIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
-  [/(?<![\w.-])ya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
-  [/(?<![\w-])xox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
+  [/\bAIza[0-9A-Za-z_-]{35}/g, 'Google API key'],
+  [/\bya29\.[A-Za-z0-9._-]{20,}/g, 'Google access token'],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack token'],
   [/(?<![\w.-])eyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]{5,}/g, 'JWT'],
 ]
 // `Authorization: Basic …`, any case, any scheme: the scheme and credentials go.

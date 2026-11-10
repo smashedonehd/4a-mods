@@ -619,7 +619,8 @@ test('paging values are left to their own rules: no value patterns, only credent
       JSON.stringify({
         next_page: { offset: jwt, uri: `https://app.asana.com/api/1.0/tasks?limit=5&offset=${jwt}` },
         next_cursor: jwt,
-        pagination: { token: 'abc123def456', limit: 10 },
+        pagination: { token: 'abc123def456', limit: 10, meta: { token: 'abc123def457' } },
+        links: { next: 'https://x.io/a?token=CAESBAgCEAE12' },
         paging: { next: 'https://graph.facebook.com/v19.0/me/posts?access_token=EAAGm0PX4ZCpsBA&after=QVFIUk&limit=25' },
         '@odata.deltaLink': 'https://graph.microsoft.com/v1.0/me/messages/delta?$deltatoken=LztZwWjo5IivWBhyxw5rACKxf7mPm0oW6JZZ7fvdI',
         nextLink: 'https://x.io/a?page-token=CAESBAgCEAE12&sig=AbCd123456789',
@@ -631,7 +632,8 @@ test('paging values are left to their own rules: no value patterns, only credent
   expect(v.next_page.offset).toBe(jwt)
   expect(v.next_page.uri).toBe(`https://app.asana.com/api/1.0/tasks?limit=5&offset=${jwt}`)
   expect(v.next_cursor).toBe(jwt)
-  expect(v.pagination.token).toBe('abc123def456')
+  expect(v.pagination).toEqual({ token: 'abc123def456', limit: 10, meta: { token: 'abc123def457' } })
+  expect(v.links.next).toBe('https://x.io/a?token=CAESBAgCEAE12')
   expect(v.paging.next).toBe('https://graph.facebook.com/v19.0/me/posts?access_token=[REDACTED]&after=QVFIUk&limit=25')
   expect(v['@odata.deltaLink']).toContain('$deltatoken=LztZwWjo5IivWBhyxw5rACKxf7mPm0oW6JZZ7fvdI')
   expect(v.nextLink).toBe('https://x.io/a?page-token=CAESBAgCEAE12&sig=[REDACTED]')
@@ -658,6 +660,11 @@ test('a paging name holds paging only when its value is paging-shaped', () => {
   expect(t.value.marker.label).toMatch(/…\[cut: /)
   expect(t.value.rows[0].before).toMatch(/…\[cut: /)
   expect(t.value.links).toHaveLength(30)
+  // 30 values are more than a paging group holds: they are data, base64 left out.
+  const many = trimmed(JSON.stringify({ links: Array.from({ length: 30 }, () => b64(300)), rows: [] }))
+  expect(many.stats.blobItems).toBe(30)
+  // A secret name is never paging, whatever paging word is in it.
+  expect(trimmed('{"next_auth_token":"abc","cursor_secret":"x","rows":[]}').paging).toBe('')
 })
 
 test('the header lists paging values up to 4,000 characters, then only their names', () => {
@@ -678,6 +685,7 @@ test('text: strong names take any 6+ value, weak names a token-shaped one with a
     ["password=\"it's secret22\"", 'password="[REDACTED]"'],
     ["{'password': 'hunter22'}", "{'password': '[REDACTED]'}"],
     ['password := "hunter22"', 'password := "[REDACTED]"'],
+    [`password='say "hi" now22'`, `password='[REDACTED]'`],
     ['X-Auth-Token: abcdefgh12', 'X-Auth-Token: [REDACTED]'],
     ['the token:abc12345def', 'the token:[REDACTED]'],
     ['my_password_is=hunter22', 'my_password_is=[REDACTED]'],
@@ -700,6 +708,8 @@ test('text: strong names take any 6+ value, weak names a token-shaped one with a
     'signature: John Smith 3rd',
     'auth: requiredtwofactor',
     'password=undefined',
+    'password==hunter22',
+    'password => hunter22',
     'passwords: 12345678 found',
     'password: 2024-11-10',
     'secret: none',
@@ -768,6 +778,7 @@ test('null and bookkeeping fields inside a paging group are kept as returned', (
 
 test('the JSON reader refuses a missing colon', () => {
   expect(parseJson('{"a" 1}')).toBeUndefined()
+  expect(parseJson('{"a";1}')).toBeUndefined()
   expect(parseJson('{"a":1}')).toEqual({ a: 1 })
 })
 
