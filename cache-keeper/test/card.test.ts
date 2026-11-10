@@ -6,7 +6,10 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120 } as never } as const
+const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 200 } as never } as const
+// The band laid out in this many cells (bodyColumns); the window is the
+// engine's five cells wider
+const laidOut = (columns: number) => ({ ...BAND, props: { ...(BAND.props as object), bodyColumns: columns } as never, viewport: { columns: columns + 5, rows: 40 } })
 
 async function session($: Engine, on: On, ctx = 320000) {
   const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
@@ -285,7 +288,7 @@ test('desktop band: a cache gone cold on a big context colours the cache and cos
 
 test('desktop band: a narrow window shortens the captions and the tags', async ($: Engine, on: On) => {
   await sized($, on, 320000)
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns: 80, rows: 40 } } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(80) } as never)
   expect(await captions(ui)).toEqual(['Cache', 'Rewrite', 'Context', 'Next chat'])
   expect((await ui.find({ key: 'tag-caveman' } as never))?.text).toBe('cave')
   await ui.unmount()
@@ -332,7 +335,7 @@ const limits = ($: Engine, list: { kind: string; percentUsed: number }[]) => $.s
 
 // The width the context gauge is drawn at, in a window of that many columns
 async function ctxGauge($: Engine, columns?: number) {
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, ...(columns ? { viewport: { columns, rows: 40 } } : {}) } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...(columns ? laidOut(columns) : BAND) } as never)
   const svgs = await ui.findAll({ type: 'Svg' } as never)
   const gauge = svgs.find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt)))
   await ui.unmount()
@@ -366,8 +369,12 @@ test('desktop band: the context gauge follows the window, with no cap, down to a
   expect(huge - wide).toBe(800)
   expect(wide - mid).toBe(800)
   expect(mid).toBeGreaterThan(200)
-  // The band without a viewport is counted as 200 columns
+  // The band is laid out in bodyColumns, not in the window's columns
   expect(await ctxGauge($)).toBe(mid)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(150), viewport: { columns: 300, rows: 40 } } as never)
+  const gauge = (await ui.findAll({ type: 'Svg' } as never)).find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt)))
+  await ui.unmount()
+  expect(Number(gauge?.props.width)).toBe(await ctxGauge($, 150))
   // The limit gauges keep their width while the full form fits
   expect(await limitGauges($, 400)).toEqual([64])
 })
@@ -396,7 +403,7 @@ function cells(n: Drawn): number {
 // The band at one width: whether its cards fit one line, the widest card, and
 // whether the cards may shrink
 async function bandAt($: Engine, columns: number) {
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns, rows: 40 } } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(columns) } as never)
   const row = (await ui.find({ key: 'cards' } as never)) as unknown as { children: Drawn[] }
   await ui.unmount()
   const cards = row.children as { props: Record<string, unknown> }[]
@@ -405,15 +412,14 @@ async function bandAt($: Engine, columns: number) {
 }
 
 const limitGauges = async ($: Engine, columns: number) => {
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns, rows: 40 } } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(columns) } as never)
   const svgs = await ui.findAll({ type: 'Svg' } as never)
   await ui.unmount()
   return svgs.filter((x: { props: { alt?: string } }) => /limit/.test(String(x.props.alt))).map((x: { props: { width: number } }) => x.props.width)
 }
 
-test('desktop band: below the context floor the band compacts, then wraps; nothing is ever cut off', async ($: Engine, on: On) => {
-  await sized($, on, 320000)
-  await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
+// Every width from 200 down to 24: the widths that hold one line
+async function sweep($: Engine) {
   const oneLine: number[] = []
   for (let columns = 200; columns >= 24; columns -= 2) {
     const b = await bandAt($, columns)
@@ -430,6 +436,25 @@ test('desktop band: below the context floor the band compacts, then wraps; nothi
       expect(b.shrink).toBe(true)
     }
   }
+  return oneLine
+}
+
+test('desktop band: kept warm for 12 h, two limits and a cooling cache never overflow either', async ($: Engine, on: On) => {
+  const { clock } = await sized($, on, 320000)
+  await limits($, [{ kind: 'five_hour', percentUsed: 100 }, { kind: 'seven_day', percentUsed: 34 }])
+  await $.command.run({ command: 'keepwarm', args: '12' } as never)
+  const kept = await sweep($)
+  expect(kept[0]).toBe(200)
+  await $.command.run({ command: 'keepwarm', args: 'off' } as never)
+  await clock.advance(COOLING_AFTER)
+  const cooling = await sweep($)
+  expect(cooling[0]).toBe(200)
+})
+
+test('desktop band: below the context floor the band compacts, then wraps; nothing is ever cut off', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
+  const oneLine = await sweep($)
   // One line all the way down from a wide window, with no gap in between
   expect(oneLine[0]).toBe(200)
   expect(oneLine.every((c, i) => i === 0 || oneLine[i - 1] - c === 2)).toBe(true)
@@ -438,7 +463,7 @@ test('desktop band: below the context floor the band compacts, then wraps; nothi
   // The compact form: half-width limit gauges and short labels where the full form would not fit
   const last = oneLine.at(-1) as number
   expect(await limitGauges($, last)).toEqual([32])
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns: last, rows: 40 } } as never)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(last) } as never)
   expect((await ui.find({ key: 'keep-warm' } as never))?.props.label).toBe('warm')
   expect((await ui.find({ key: 'tag-autoclear' } as never))?.props.label).toBe('auto')
   expect(await captions(ui)).toEqual(['Cache', 'Rewrite', 'Context', 'Next chat'])
@@ -450,7 +475,7 @@ test('desktop band: with no limit card the context gauge stops at a limit gauge 
   // Never below a full limit gauge while the full form is drawn, then a compact one
   const full: number[] = []
   for (let columns = 160; columns >= 96; columns -= 2) {
-    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns, rows: 40 } } as never)
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(columns) } as never)
     const isFull = !!(await ui.find({ type: 'Text', text: 'Rewrite cost' } as never))
     await ui.unmount()
     if (isFull) full.push(await ctxGauge($, columns))
@@ -473,7 +498,7 @@ test('desktop band: each plan limit has a card, coloured from 80%', async ($: En
   expect((await ui.findAll({ type: 'Text', text: /^\d+%$/ } as never)).map((x: { text: string }) => x.text)).toEqual(['85%', '79%'])
   await ui.unmount()
   // A narrow window names them as the terminal does
-  const narrow = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, viewport: { columns: 80, rows: 40 } } as never)
+  const narrow = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(80) } as never)
   expect((await narrow.findAll({ type: 'Text', text: /^(5h|week)$/ } as never)).map((x: { text: string }) => x.text)).toEqual(['5h', 'week'])
   await narrow.unmount()
 })

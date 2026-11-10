@@ -903,6 +903,100 @@ await check('auto clear on: a turn in the countdown is waited for, then one fres
   store.delete('settings')
 })
 
+// A countdown that ends inside a turn, held armed until the turn's end
+const armed = async (id) => {
+  const timers = []
+  const s = await boot('/w/ac5', id, { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't7' })
+  await flush(timers)
+  return { s, timers }
+}
+
+await check('auto clear on: armed through a turn, the card says so and Keep chat, Close, Open file or the toggle still stop it', async () => {
+  store.set('settings', { autoClear: true })
+  let { s, timers } = await armed('ac000070-0')
+  assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
+  assert.ok(s.buttons.has('ck-ho-keep'))
+  assert.ok(!cleared(s.log))
+  for (const stop of ['ck-ho-keep', 'ck-ho-close', 'ck-ho-open', 'off']) {
+    ;({ s, timers } = await armed('ac00008' + stop.length + '-0'))
+    if (stop === 'off') await s.run('cache', 'autoclear off')
+    else await s.press(stop)
+    await flush(timers)
+    await s.end({ turnId: 't7' })
+    await flush(timers)
+    assert.ok(!cleared(s.log), stop)
+    assert.equal(s.prompts.length, 1, stop + ': no fresh handoff either')
+    store.set('settings', { autoClear: true })
+  }
+  store.delete('settings')
+})
+
+await check('auto clear on: a message typed while it is armed, or one from Remote Control in the countdown, stops it', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000090-0')
+  const r = await s.fire('prompt.submit', { text: 'wait, one more thing', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(!(r && r.drop), 'not held: no clear is due')
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  const t2 = []
+  const s2 = await boot('/w/ac5', 'ac000091-0', { timers: t2 })
+  await startFromCard(s2, t2)
+  await s2.fire('prompt.submit', { text: 'from the phone', origin: { kind: 'bridge' } }, (h) => h.name === 'prompt.submit')
+  await flush(t2)
+  assert.ok(!cleared(s2.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: a turn that starts and ends inside the countdown still gets a fresh handoff first', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac6', 'ac000100-0', { timers })
+  await startFromCard(s, timers)
+  T += 2500
+  assert.ok(texts(await s.render()).includes('Clearing in 3 s'), 'seconds are rounded up')
+  await s.fire('turn.start', { turnId: 't8' })
+  await s.end({ turnId: 't8' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 2)
+  assert.ok(cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: Try again after a failed /handoff keep, or a band press while it is written, keeps the chat', async () => {
+  store.set('settings', { autoClear: true })
+  let n = 0
+  const timers = []
+  const s = await boot('/w/ac7', 'ac000110-0', { timers, fork: async () => (++n === 1 ? { isAnswered: false, reason: 'api-error', status: 500 } : { isAnswered: true, text: GOOD }) })
+  timers.length = 0
+  await s.run('handoff', 'keep')
+  await flush(timers)
+  assert.match(texts(await s.render()), /did not finish/)
+  await s.press('ck-ho-retry')
+  await flush(timers)
+  assert.match(texts(await s.render()), /Handoff ready/)
+  assert.ok(!texts(await s.render()).includes('Clearing'))
+  assert.ok(!cleared(s.log))
+  let release
+  const gate = new Promise((r) => (release = r))
+  const t2 = []
+  const s2 = await boot('/w/ac7', 'ac000111-0', { timers: t2, fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await s2.step() // the band draws once a request has run
+  t2.length = 0
+  await s2.run('handoff', 'keep')
+  // The keep is being written; the band's handoff button only asks
+  await t2.shift()()
+  await settle()
+  await s2.render()
+  await s2.buttons.get('handoff').onPress()
+  release()
+  await flush(t2)
+  assert.ok(!cleared(s2.log), 'the keep stands')
+  store.delete('settings')
+})
+
 await check('desktop: the ready title reads "Handoff ready · 1,234 words" and never breaks', async () => {
   const long = GOOD + '\n\n' + 'word '.repeat(1300)
   const s = await boot('/w/rt', 'rt000001-0', { select: true, fork: async () => ({ isAnswered: true, text: long }) })
