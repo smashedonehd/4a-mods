@@ -973,6 +973,13 @@ const INSTALLED = 'C:/Users/x/.claude/plugins/installed_plugins.json'
 
 // Three mods: clock reads switches.json and a :hidden key, plain reads none,
 // and dev sits in ~/.claude/mods with a switch but no hidden key.
+// A mod folder: its manifest, a hooks.json naming one module, and that module.
+const modAt = (dir: string, name: string, code = "'switches.json'", module = 'register.tsx') => ({
+  [`${dir}/.claude-plugin/plugin.json`]: JSON.stringify({ name }),
+  [`${dir}/hooks/hooks.json`]: JSON.stringify({ modules: [`./${module}`] }),
+  [`${dir}/hooks/${module}`]: code,
+})
+
 const modFiles = (): Record<string, string> => ({
   [INSTALLED]: JSON.stringify({
     plugins: {
@@ -991,9 +998,7 @@ const modFiles = (): Record<string, string> => ({
   'C:/p/toggles/.claude-plugin/plugin.json': JSON.stringify({ name: 'plugin-toggles' }),
   'C:/p/toggles/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
   'C:/p/toggles/hooks/register.tsx': 'switches.json',
-  'C:/Users/x/.claude/mods/dev/.claude-plugin/plugin.json': JSON.stringify({ name: 'dev' }),
-  'C:/Users/x/.claude/mods/dev/hooks/hooks.json': JSON.stringify({ modules: ['./register.mts'] }),
-  'C:/Users/x/.claude/mods/dev/hooks/register.mts': 'switches.json',
+  ...modAt('C:/Users/x/.claude/mods/dev', 'dev', 'switches.json', 'register.mts'),
 })
 
 // fs.list over the files: the entries directly inside a folder.
@@ -1166,12 +1171,8 @@ for (const [label, list] of [
 ] as const)
   test(`CLAUDE_CODE_PLUGIN_DIRS is split as a ${label} list`, async ($, on) => {
     const root = label === 'POSIX' ? 'C:/Users/x/env' : 'C:/env'
-    const mod = (n: string) => ({
-      [`${root}/${n}/.claude-plugin/plugin.json`]: JSON.stringify({ name: `env-${n}` }),
-      [`${root}/${n}/hooks/hooks.json`]: JSON.stringify({ modules: ['./register.tsx'] }),
-      [`${root}/${n}/hooks/register.tsx`]: "'switches.json'",
-    })
-    modsSetup(on, { ...mod('one'), ...mod('two') }, {}, { CLAUDE_CODE_PLUGIN_DIRS: list })
+    const extra = { ...modAt(`${root}/one`, 'env-one'), ...modAt(`${root}/two`, 'env-two') }
+    modsSetup(on, extra, {}, { CLAUDE_CODE_PLUGIN_DIRS: list })
     const ui = await $.ui.mount(PANE)
     await ui.press({ key: 'tab-mods' })
     expect(await ui.find({ type: 'Button', key: 'mods:env-one' })).toBeTruthy()
@@ -1182,11 +1183,7 @@ for (const [label, list] of [
 test('the mod list is kept ten seconds, and a clock that went back reads it again', async ($, on) => {
   let now = 1_000_000
   const files = modsSetup(on, {}, {}, {}, () => now)
-  const fresh = (n: string) => {
-    files[`C:/Users/x/.claude/mods/${n}/.claude-plugin/plugin.json`] = JSON.stringify({ name: n })
-    files[`C:/Users/x/.claude/mods/${n}/hooks/hooks.json`] = JSON.stringify({ modules: ['./register.tsx'] })
-    files[`C:/Users/x/.claude/mods/${n}/hooks/register.tsx`] = 'switches.json'
-  }
+  const fresh = (n: string) => Object.assign(files, modAt(`C:/Users/x/.claude/mods/${n}`, n))
   const reopen = async (ui: any) => {
     await ui.press({ key: 'tab-skills' })
     await ui.press({ key: 'tab-mods' })

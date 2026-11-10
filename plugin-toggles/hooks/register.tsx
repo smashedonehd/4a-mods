@@ -132,16 +132,19 @@ async function paths($: any) {
   return {
     home,
     dir,
+    // Mods look for their switch file here whatever CLAUDE_CONFIG_DIR says.
+    mods: `${home}/.claude/mods`,
     settings: `${dir}/settings.json`,
     global: config ? `${dir}/.claude.json` : `${home}/.claude.json`,
   }
 }
 
-// Rewrites a JSON file through `change`, unless readStrict refuses it.
-async function rewrite($: any, path: string, change: (json: Record<string, any>) => void) {
+// Rewrites a JSON file through `change`, unless readStrict refuses it or
+// `change` returns false.
+async function rewrite($: any, path: string, change: (json: Record<string, any>) => void | false) {
   const json = await readStrict($, path)
   if (json === undefined) return false
-  change(json)
+  if (change(json) === false) return false
   await $.fs.write(path, JSON.stringify(json, null, 2) + NL)
   return true
 }
@@ -237,6 +240,17 @@ type Info = {
   hooks: string[]
 }
 const infoCache = new Map<string, Info | null>()
+
+// Where each installed plugin sits, by id.
+async function installRoots($: any) {
+  const reg = await readJson($, `${(await paths($)).dir}/plugins/installed_plugins.json`)
+  const roots = new Map<string, string>()
+  for (const id of Object.keys(reg.plugins ?? {})) {
+    const path = (reg.plugins[id] ?? [])[0]?.installPath
+    if (path) roots.set(id, norm(String(path)))
+  }
+  return roots
+}
 
 async function pluginInfo($: any, id: string): Promise<Info | null> {
   if (infoCache.has(id)) return infoCache.get(id) ?? null
@@ -726,7 +740,7 @@ async function deleteProfile($: any, name: string) {
 // pane or band. No key means on and shown. It lives under the home folder's
 // .claude whatever CLAUDE_CONFIG_DIR says, as those mods look for it there.
 async function switchesFile($: any) {
-  return `${(await paths($)).home}/.claude/mods/switches.json`
+  return `${(await paths($)).mods}/switches.json`
 }
 
 type ModInfo = {
@@ -801,10 +815,10 @@ async function hooksCode($: any, dir: string) {
 async function inspectMod($: any, dir: string, id: string): Promise<ModInfo | undefined> {
   const manifest = await readObject($, `${dir}/.claude-plugin/plugin.json`)
   if (manifest === undefined) return undefined
-  const code = await hooksCode($, dir)
-  if (code === undefined) return undefined
   const name = String(manifest.name || dir.split('/').pop() || '')
   if (name === '' || name === 'plugin-toggles') return undefined
+  const code = await hooksCode($, dir)
+  if (code === undefined) return undefined
   const commands = [
     ...new Set(
       [...code.matchAll(/command\.register\(\s*\{\s*name:\s*['"`]([^'"`]+)['"`]/g)].map(m => `/${m[1]}`),
@@ -834,46 +848,60 @@ const modNote = atom({ plugin: 'plugin-toggles', key: 'modNote' } as const, '', 
 
 // Asks the mod, in this chat, to open its pane: it looks for the file every few seconds.
 async function openMod($: any, m: ModInfo) {
-  const json = await readJson($, await switchesFile($))
+  const { mods } = await paths($)
+  const json = await readJson($, `${mods}/switches.json`)
   if (json[m.name] === false || json[`${m.name}:hidden`] === true) {
     await update($, modNote, () => `${m.title} is ${json[m.name] === false ? 'off' : 'hidden'}. Turn it on and show it first.`)
     return
   }
   const sid = String(await $.session.id())
-  await $.fs.write(`${(await paths($)).home}/.claude/mods/.open-${m.name}-${sid}`, '')
+  await $.fs.write(`${mods}/.open-${m.name}-${sid}`, '')
   await update($, modNote, () => `${m.title} opens in this chat within a few seconds.`)
 }
 
+// Flips the mod's On or Shown key: a set key is deleted, a missing one set.
 async function flipMod($: any, m: ModInfo, hide: boolean) {
-  const json = await readJson($, await switchesFile($))
   const key = hide ? `${m.name}:hidden` : m.name
-  const was = hide ? json[key] === true : json[key] === false
-  if (hide && json[m.name] === false) {
-    await update($, modNote, () => `${m.title} is off. Turn it on first.`)
-    return
-  }
-  if (!(await writeModSwitch($, m.name, hide, was))) return
+  let was = false
+  let isOff = false
+  const wrote = await rewrite($, await switchesFile($), json => {
+    // Shown means nothing while the mod is off.
+    if (hide && json[m.name] === false) {
+      isOff = true
+      return false
+    }
+    was = hide ? json[key] === true : json[key] === false
+    if (was) delete json[key]
+    else json[key] = hide
+  })
+  if (isOff) await update($, modNote, () => `${m.title} is off. Turn it on first.`)
+  if (!wrote) return
+  await update($, rev, n => n + 1)
   const now = hide ? (was ? 'shown' : 'hidden') : was ? 'on' : 'off'
   await update($, modNote, () => `${m.title} is ${now} in every chat.`)
 }
 
 // Every mod on this computer: those installed from a marketplace, those in
-// ~/.claude/mods and those CLAUDE_CODE_PLUGIN_DIRS names. Kept ten seconds, as
-// drawing the pane reads it again on each change.
-let modsCache: { at: number; list: ModInfo[] } | undefined
+// ~/.claude/mods and those CLAUDE_CODE_PLUGIN_DIRS names, switchable ones
+// first, A to Z within each part. Kept ten seconds, as drawing the pane reads
+// it again on each change; draws that overlap share one scan.
+let modsCache: { at: number; list: Promise<ModInfo[]> } | undefined
 async function modsNow($: any) {
   const at = Number(await $.clock.now())
   // A clock that went back counts as stale too.
   if (modsCache && at >= modsCache.at && at - modsCache.at < 10_000) return modsCache.list
-  const { home, dir } = await paths($)
-  const reg = await readJson($, `${dir}/plugins/installed_plugins.json`)
-  const found: [string, string][] = []
-  for (const id of Object.keys(reg.plugins ?? {})) {
-    const path = (reg.plugins[id] ?? [])[0]?.installPath
-    if (path) found.push([norm(String(path)), id])
-  }
-  for (const d of await dirsIn($, `${home}/.claude/mods`)) found.push([d, ''])
-  for (const d of await envDirs($, home)) found.push([d, ''])
+  const list = scanMods($)
+  modsCache = { at, list }
+  return list
+}
+
+async function scanMods($: any) {
+  const { home, mods } = await paths($)
+  const [roots, local, env] = await Promise.all([installRoots($), dirsIn($, mods), envDirs($, home)])
+  const found: [string, string][] = [
+    ...[...roots].map(([id, d]): [string, string] => [d, id]),
+    ...[...local, ...env].map((d): [string, string] => [d, '']),
+  ]
   const seen = new Set<string>()
   const list: ModInfo[] = []
   for (const mod of await Promise.all(found.map(([d, id]) => inspectMod($, d, id))))
@@ -881,19 +909,7 @@ async function modsNow($: any) {
       seen.add(mod.name)
       list.push(mod)
     }
-  list.sort((a, b) => a.name.localeCompare(b.name))
-  modsCache = { at, list }
-  return list
-}
-
-async function writeModSwitch($: any, name: string, hide: boolean, toOn: boolean) {
-  const key = hide ? `${name}:hidden` : name
-  const wrote = await rewrite($, await switchesFile($), json => {
-    if (toOn) delete json[key]
-    else json[key] = hide ? true : false
-  })
-  if (wrote) await update($, rev, n => n + 1)
-  return wrote
+  return list.sort((a, b) => Number(b.switchable) - Number(a.switchable) || a.name.localeCompare(b.name))
 }
 
 async function setMode($: any, kind: string, name: string, mode: Mode) {
@@ -1078,15 +1094,25 @@ export const register: Register = on => {
         switchesNow($).then(s => s.enabledPlugins as Record<string, boolean>),
         read($, modNote),
       ])
-      // Switchable mods first, A to Z within each part.
-      const list = [...mods.filter(m => m.switchable), ...mods.filter(m => !m.switchable)]
-      const terminal = e.surface === 'terminal'
-      const chrome = terminal ? { variant: 'secondary' as const } : {}
+      const chrome = e.surface === 'terminal' ? { variant: 'secondary' as const } : {}
+      // A control that is a word while it cannot be pressed, else a button
+      // with a green dot when lit.
+      const control = (key: string, label: string, live: boolean, lit: boolean, press: () => unknown) =>
+        !live ? (
+          <Text key={key} dimColor>
+            {label}
+          </Text>
+        ) : (
+          <Box key={`${key}-box`} alignItems="center" gap={0}>
+            {lit && <Text color={GOOD}>●</Text>}
+            <Button key={key} label={label} dimColor={!lit} {...chrome} onPress={press} />
+          </Box>
+        )
       return (
         <Box flexDirection="column" gap={1} padding={1}>
           {tabs($, e, current)}
-          {list.length === 0 && <Text dimColor>No mods found.</Text>}
-          {list.map(m => {
+          {mods.length === 0 && <Text dimColor>No mods found.</Text>}
+          {mods.map(m => {
             const off = m.switchable && switches[m.name] === false
             const hidden = switches[`${m.name}:hidden`] === true
             const pluginOff = m.id !== '' && plugins[m.id] === false
@@ -1128,30 +1154,10 @@ export const register: Register = on => {
                         <Button key={`mods-open:${m.name}`} label="Open" {...chrome} onPress={() => openMod($, m)} />
                       ))}
                     {m.hideable &&
-                      (off ? (
-                        <Text dimColor>{hidden ? 'Hidden' : 'Shown'}</Text>
-                      ) : (
-                        <Box key={`mods-shown-box:${m.name}`} alignItems="center" gap={0}>
-                          {!hidden && <Text color={GOOD}>●</Text>}
-                          <Button
-                            key={`mods-shown:${m.name}`}
-                            label={hidden ? 'Hidden' : 'Shown'}
-                            dimColor={hidden}
-                            {...chrome}
-                            onPress={() => flipMod($, m, true)}
-                          />
-                        </Box>
-                      ))}
-                    <Box key={`mods-on-box:${m.name}`} alignItems="center" gap={0}>
-                      {!off && <Text color={GOOD}>●</Text>}
-                      <Button
-                        key={`mods:${m.name}`}
-                        label={off ? 'Off' : 'On'}
-                        dimColor={off}
-                        {...chrome}
-                        onPress={() => flipMod($, m, false)}
-                      />
-                    </Box>
+                      control(`mods-shown:${m.name}`, hidden ? 'Hidden' : 'Shown', !off, !hidden, () =>
+                        flipMod($, m, true),
+                      )}
+                    {control(`mods:${m.name}`, off ? 'Off' : 'On', true, !off, () => flipMod($, m, false))}
                   </Box>
                 )}
               </Box>
