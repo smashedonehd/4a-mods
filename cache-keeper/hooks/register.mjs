@@ -1344,7 +1344,7 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
   // Its gauge fills what its line leaves, so a wrapped row's card is not a
   // wide card around a stub of a gauge
-  const gauge = Math.round((ctxMin - fixed + ctxLineRoom(columns, widths, ctxAt, ctxMin)) * CELL_PX)
+  const gauge = (ctxMin - fixed + ctxLineRoom(columns, widths, ctxAt, ctxMin)) * CELL_PX
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
     Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
