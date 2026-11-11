@@ -901,11 +901,11 @@ const PERSONAS: Record<string, Persona> = {
     accent: '#2E8B57',
     dress: f => {
       stamp(f, 6, 5, ['.....hhhhhhhh.....', '...hhhhhhhhhhhh...', '..hhhhhlhhhhhhhh..', '.hhhhhllhhhhhhhhh.', '.hhhhh.....hhhhhh.', 'hhh............hhh', 'hhh.............hh', 'hh..............hh', 'hh..............hh', 'hhh............hhh', '.hh............hh.'], { h: '#4A2C1E', l: '#7A4A30' })
-      stamp(f, 8, 11, ['gggg......gggg', 'g..gggggggg..g', 'gggg......gggg'], { g: '#C9A24A' })
-      f(13, 14, 4, 1, '#C25A6E')
-      f(7, 16, 1, 1, '#E8C35A')
-      f(22, 16, 1, 1, '#E8C35A')
+      stamp(f, 8, 11, ['gggg......gggg', 'g..gggggggg..g', 'g..g......g..g', 'gggg......gggg'], { g: '#C9A24A' })
+      f(13, 15, 4, 1, '#C25A6E')
       jacket(f, '#1E6B52', '#F6F1E7', '#15503D', '#C9A24A')
+      f(7, 15, 1, 1, '#E8C35A')
+      f(22, 15, 1, 1, '#E8C35A')
       f(13, 16, 4, 1, '#E8C35A')
       f(14, 17, 2, 1, '#E8C35A')
     },
