@@ -107,13 +107,15 @@ const stop = (j: number, at: number, colour: string) => {
 const BLANK = String.fromCharCode(0x2003).repeat(8)
 // Rows drawn at most; the filter narrows the rest.
 const SHOWN = 200
-// A desktop draws no Pane tree past 262144 characters or 2000 nodes (each
-// element, and each string among an element's children): it keeps the old
-// drawing, and the press that asked for the new one seems to do nothing.
-// Rows go in, heaviest first, while the whole tree stays inside these, which
-// keep room for the rest of the pane.
+// A desktop draws no Pane tree of 2000 nodes or more (each element, and
+// each string among an element's children) or past 262144 characters of
+// prop names and text: it keeps the old drawing, and the press that asked
+// for the new one seems to do nothing. Rows go in, heaviest first, while the
+// whole tree stays inside these, which keep room for the rest of the pane.
+// Characters are counted here as JSON, which runs near twice the desktop's
+// own count. The terminal sets no such bounds.
 const MAX_NODES = 1900
-const MAX_CHARS = 230_000
+const MAX_CHARS = 400_000
 // What a drawn tree weighs against those bounds, counted as a desktop counts.
 // The runtime stamps each Button with where its press goes, which no
 // stringify here sees: PRESS characters apiece.
@@ -1555,14 +1557,21 @@ export const register: Register = on => {
           {section($, e, current, title, own, scopeOf, colour)}
           {section($, e, current, 'FROM PLUGINS', borrowed, scopeOf, colour)}
           {shown.length > visible.length && (
-            <Text dimColor>... {shown.length - visible.length} more, narrow the filter</Text>
+            <Text dimColor>... {count(shown) - count(visible)} more, narrow the filter</Text>
           )}
         </Box>
       )
     }
+    // The base: all but the rows, and the two section headers an empty list
+    // leaves out (a Box, a Text and its string each).
     const used = weigh(draw([]))
+    used.nodes += 6
     const visible: Row[] = []
     for (const r of candidates) {
+      if (e.surface === 'terminal') {
+        visible.push(r)
+        continue
+      }
       const scope = `tg-${visible.length}`
       const w = weigh([row($, e, current, r, scope, colour.get(r.group)), card($, e, r, scope)])
       if (used.nodes + w.nodes > MAX_NODES || used.chars + w.chars > MAX_CHARS) break

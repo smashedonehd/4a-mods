@@ -1275,8 +1275,8 @@ test('on the desktop a switch is a pill and Shown an eye; the terminal keeps wor
 })
 
 // What a desktop asks of a Pane tree before it draws it, as its renderer
-// checks: at most 262144 characters, 2000 nodes (each element and each
-// string among children), 32 levels of elements and 66 of nesting.
+// checks: fewer than 2000 nodes (each element and each string among
+// children) and 32 levels; characters taken as JSON, past what it counts.
 const drawable = (tree: unknown) => {
   const json = JSON.stringify(tree)
   if (json.length > 262144) return `${json.length} characters`
@@ -1291,7 +1291,7 @@ const drawable = (tree: unknown) => {
     const depth = typed ? it.depth + 1 : it.depth
     const nesting = isObj ? it.nesting + 1 : it.nesting
     if (typed || (it.child && typeof v === 'string')) nodes++
-    if (nodes > 2000 || depth > 32 || nesting > 66) return `${nodes} nodes, depth ${depth}, nesting ${nesting}`
+    if (nodes >= 2000 || depth > 32 || nesting > 66) return `${nodes} nodes, depth ${depth}, nesting ${nesting}`
     if (isObj) {
       const list = Array.isArray(v)
       for (const c of Object.values(v as object)) stack.push({ value: c, depth, nesting, child: list })
@@ -1368,5 +1368,33 @@ test('some 30 skills of yours and 37 plugins draw whole, long descriptions and a
   expect(drawable(tree)).toBe('ok')
   expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 33$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 37$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the terminal draws every row: the desktop bounds are not its own', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  on('command.list', () => ({
+    value: Array.from({ length: 120 }, (_, i) => ({ name: `own-${i}`, source: 'user', description: long })),
+  }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-skills' })
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 120$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /more, narrow the filter/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('some 45 skills of yours leave room for the plugins, counted by skill', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  const { ui, tree } = await skillsTab($, on, 45, 300, 37, long)
+  expect(drawable(tree)).toBe('ok')
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 45$/ })).toBeTruthy()
+  const from = (await ui.find({ type: 'Text', text: /^FROM PLUGINS · \d+$/ })) as any
+  const drawn = Number(String(from?.text).split('· ')[1])
+  expect(drawn).toBeGreaterThan(10)
+  // What is left is told in skills: about eight to a plugin here.
+  const left = (await ui.find({ type: 'Text', text: /more, narrow the filter/ })) as any
+  if (drawn < 37) expect(Number(String(left?.text).match(/(\d+) more/)?.[1])).toBeGreaterThan(37 - drawn)
   await ui.unmount()
 })
