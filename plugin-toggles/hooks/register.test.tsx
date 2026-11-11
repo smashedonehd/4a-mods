@@ -354,14 +354,20 @@ test('a skill of your own gets a four-way switch and costs what its position doe
   expect(labels).toEqual(['On', 'Name', 'User', 'Off'].map(l => `${NBSP}${l}${NBSP}`))
   expect(await at(ui, 'skills:greg', modes)).toEqual(['name-only'])
   expect(await fills(ui)).toEqual(['suggestion'])
-  // No padding on the fill: a desktop would not press there.
-  const fill = (await ui.findAll({ type: 'Box' })).find((b: any) => b.props.backgroundColor)
-  expect([fill?.props.paddingX, fill?.props.padding]).toEqual([undefined, undefined])
+  // No padding round any cell, lit or not: a desktop would not press there.
+  const capsule = (await ui.findAll({ type: 'Box' })).find((b: any) => b.props.borderStyle === 'round')
+  const cells = (capsule?.children ?? []) as any[]
+  expect(cells.length).toBe(4)
+  expect(cells.map(c => [c.props?.paddingX, c.props?.padding])).toEqual(cells.map(() => [undefined, undefined]))
   expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^~2$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^On ~5 · Name ~2 · User and Off 0 tokens$/ })).toBeTruthy()
   await ui.unmount()
+  // The terminal brackets its buttons and keeps the labels bare.
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(String((await term.find({ type: 'Button', key: 'skills:greg:on' }))?.text)).toBe('On')
+  await term.unmount()
 })
 
 test('a count taken while a skill was name-only does not pass for its full cost', async ($, on) => {
