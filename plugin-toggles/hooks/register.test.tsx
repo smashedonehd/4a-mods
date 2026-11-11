@@ -334,14 +334,14 @@ test('a plugin skill leads to its plugin instead of a switch, and sizes the list
   })
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ type: 'Button', key: 'skills:brainstorm:plugin' }))?.text).toBe('superpowers ›')
+  expect((await ui.find({ type: 'Button', key: 'skills:plugin:superpowers:plugin' }))?.text).toBe('superpowers ›')
   expect(await ui.find({ type: 'Button', key: 'skills:brainstorm:on' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^40$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /On lists a skill with its description/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Explore ideas before building$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^brainstorm$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /2 skills don't fit the listing budget/ })).toBeTruthy()
-  await ui.press({ key: 'skills:brainstorm:plugin' })
+  await ui.press({ key: 'skills:plugin:superpowers:plugin' })
   expect(sets.some(s => s.includes('"q"') && s.includes('"superpowers"'))).toBe(true)
   expect(sets.some(s => s.includes('"tab"') && s.includes('"plugins"'))).toBe(true)
   await ui.unmount()
@@ -664,9 +664,9 @@ test("a plugin's command that the skill count does not name gets no skill row", 
 
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 1$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'skills:superpowers:brainstorming:plugin' })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'skills:cache:plugin' })).toBeFalsy()
-  expect(await ui.find({ type: 'Button', key: 'skills:jev:calibrate:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:superpowers:plugin' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:cache-keeper:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:jev:plugin' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -1272,4 +1272,129 @@ test('on the desktop a switch is a pill and Shown an eye; the terminal keeps wor
     }
     await ui.unmount()
   }
+})
+
+// What a desktop asks of a Pane tree before it draws it, as its renderer
+// checks: fewer than 2000 nodes (each element and each string among
+// children) and 32 levels; characters taken as JSON, past what it counts.
+const drawable = (tree: unknown) => {
+  const json = JSON.stringify(tree)
+  if (json.length > 262144) return `${json.length} characters`
+  const stack: { value: unknown; depth: number; nesting: number; child: boolean }[] = [
+    { value: JSON.parse(json), depth: 0, nesting: 0, child: true },
+  ]
+  let nodes = 0
+  for (let it = stack.pop(); it; it = stack.pop()) {
+    const v = it.value
+    const isObj = typeof v === 'object' && v !== null
+    const typed = isObj && 'type' in (v as object)
+    const depth = typed ? it.depth + 1 : it.depth
+    const nesting = isObj ? it.nesting + 1 : it.nesting
+    if (typed || (it.child && typeof v === 'string')) nodes++
+    if (nodes >= 2000 || depth > 32 || nesting > 66) return `${nodes} nodes, depth ${depth}, nesting ${nesting}`
+    if (isObj) {
+      const list = Array.isArray(v)
+      for (const c of Object.values(v as object)) stack.push({ value: c, depth, nesting, child: list })
+    }
+  }
+  return 'ok'
+}
+
+test('a long skill list stays drawable on a desktop, a plugin to a row', async ($, on) => {
+  // Long descriptions, as a skill may carry 1024 characters.
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  const own = Array.from({ length: 75 }, (_, i) => ({ name: `own-${i}`, source: 'user', description: long }))
+  const borrowed = Array.from({ length: 320 }, (_, i) => ({
+    name: `p${i}:skill`,
+    source: 'plugin',
+    plugin: `plug${i % 40}`,
+    description: long,
+  }))
+  on('command.list', () => ({ value: [...own, ...borrowed] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: { skillOverrides: { 'own-1': 'name-only', 'own-2': 'off' } } }))
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  const { text: _, ...tree } = (await ui.find({ type: 'Box' })) as any
+  expect(drawable(tree)).toBe('ok')
+  expect(await ui.find({ type: 'Text', text: /more, narrow the filter/ })).toBeTruthy()
+  // The count is of skills, not rows; the filter finds a skill by its own name.
+  expect(await ui.find({ type: 'Text', text: /394 of 395 skills listed/ })).toBeTruthy()
+  await ui.input({ key: 'q', text: 'p43:', kind: 'change' })
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:plug3:plugin' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:plug4:plugin' })).toBeFalsy()
+  // A few skills draw whole, a plugin's skills to one row.
+  await ui.input({ key: 'q', text: 'own-1', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /more, narrow the filter/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 11$/ })).toBeTruthy()
+  await ui.input({ key: 'q', text: 'p', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 40$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+// A Skills tab of `own` skills of yours and `borrowed` plugin skills spread
+// over `plugins` plugins, each described by `desc`.
+const skillsTab = async ($: any, on: any, own: number, borrowed: number, plugins: number, desc: string) => {
+  on('command.list', () => ({
+    value: [
+      ...Array.from({ length: own }, (_, i) => ({ name: `own-${i}`, source: 'user', description: desc })),
+      ...Array.from({ length: borrowed }, (_, i) => ({
+        name: `p${i}:skill`,
+        source: 'plugin',
+        plugin: `plug${i % plugins}`,
+        description: desc,
+      })),
+    ],
+  }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  const { text: _, ...tree } = (await ui.find({ type: 'Box' })) as any
+  return { ui, tree }
+}
+
+test('many short skills stop at the node bound a desktop draws to', async ($, on) => {
+  const { ui, tree } = await skillsTab($, on, 0, 200, 200, 'x')
+  expect(drawable(tree)).toBe('ok')
+  expect(await ui.find({ type: 'Text', text: /more, narrow the filter/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('some 30 skills of yours and 37 plugins draw whole, long descriptions and all', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  const { ui, tree } = await skillsTab($, on, 33, 300, 37, long)
+  expect(drawable(tree)).toBe('ok')
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 33$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 37$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the terminal draws every row: the desktop bounds are not its own', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  on('command.list', () => ({
+    value: Array.from({ length: 120 }, (_, i) => ({ name: `own-${i}`, source: 'user', description: long })),
+  }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: {} }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-skills' })
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 120$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /more, narrow the filter/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('some 45 skills of yours leave room for the plugins, counted by skill', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(17)
+  const { ui, tree } = await skillsTab($, on, 45, 300, 37, long)
+  expect(drawable(tree)).toBe('ok')
+  expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 45$/ })).toBeTruthy()
+  const from = (await ui.find({ type: 'Text', text: /^FROM PLUGINS · \d+$/ })) as any
+  const drawn = Number(String(from?.text).split('· ')[1])
+  expect(drawn).toBeGreaterThan(10)
+  // What is left is told in skills: about eight to a plugin here.
+  const left = (await ui.find({ type: 'Text', text: /more, narrow the filter/ })) as any
+  if (drawn < 37) expect(Number(String(left?.text).match(/(\d+) more/)?.[1])).toBeGreaterThan(37 - drawn)
+  await ui.unmount()
 })

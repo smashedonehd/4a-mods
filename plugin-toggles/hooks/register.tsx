@@ -79,12 +79,13 @@ const INK: Record<Mode, string> = {
 }
 const TRACK = '#8E8E93'
 const SVG = 'xmlns="http://www.w3.org/2000/svg"'
-const SHADOW =
-  '<defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-opacity=".35"/></filter></defs>'
+// The knob's edge, in place of a shadow filter: a picture's markup counts
+// against the size of the tree a desktop takes.
+const EDGE = 'stroke="#000" stroke-opacity=".18"'
 // A pill switch, coloured with the knob right when on: the Mods tab's in
 // green, a plugin's or a server's in the brand colour.
 const pill = (lit: boolean, colour = GOOD) =>
-  `<svg ${SVG} width="44" height="26" viewBox="0 0 44 26">${SHADOW}<rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? colour : TRACK}" fill-opacity="${lit ? 1 : 0.45}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff" filter="url(#s)"/></svg>`
+  `<svg ${SVG} width="44" height="26" viewBox="0 0 44 26"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? colour : TRACK}" fill-opacity="${lit ? 1 : 0.45}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff" ${EDGE}/></svg>`
 // One stop of a skill's four-stop slider, `at` the stop the knob is on. The
 // rail runs through each cell edge to edge, so four cells side by side draw
 // one rail, coloured from the left up to the knob.
@@ -94,9 +95,9 @@ const stop = (j: number, at: number, colour: string) => {
     `<line x1="${x1}" y1="13" x2="${x2}" y2="13" stroke="${lit ? colour : TRACK}" stroke-opacity="${lit ? 1 : 0.45}" stroke-width="4"/>`
   const mark =
     j === at
-      ? `<circle cx="13" cy="13" r="9" fill="#fff" stroke="${colour}" stroke-width="2" filter="url(#s)"/>`
+      ? `<circle cx="13" cy="13" r="9" fill="#fff" stroke="${colour}" stroke-width="2"/>`
       : `<circle cx="13" cy="13" r="4" fill="${j < at ? colour : TRACK}" fill-opacity="${j < at ? 1 : 0.6}"/>`
-  return `<svg ${SVG} width="${STOP}" height="26" viewBox="0 0 ${STOP} 26">${SHADOW}${j > 0 ? rail(0, 13, j <= at) : ''}${j < 3 ? rail(13, STOP, j < at) : ''}${mark}</svg>`
+  return `<svg ${SVG} width="${STOP}" height="26" viewBox="0 0 ${STOP} 26">${j > 0 ? rail(0, 13, j <= at) : ''}${j < 3 ? rail(13, STOP, j < at) : ''}${mark}</svg>`
 }
 // A desktop Button is as wide as its label, and a Box around it does not
 // press. So a pressable picture lies under a Box cut to its edges, holding a
@@ -104,8 +105,44 @@ const stop = (j: number, at: number, colour: string) => {
 // anywhere on the picture lands on the Button. Em spaces, as a desktop keeps
 // them where it folds plain spaces away.
 const BLANK = String.fromCharCode(0x2003).repeat(8)
-// Chips drawn at most; the filter narrows the rest.
+// Rows drawn at most; the filter narrows the rest.
 const SHOWN = 200
+// A desktop draws no Pane tree of 2000 nodes or more (each element, and
+// each string among an element's children) or past 262144 characters of
+// prop names and text: it keeps the old drawing, and the press that asked
+// for the new one seems to do nothing. Rows go in, heaviest first, while the
+// whole tree stays inside these, which keep room for the rest of the pane.
+// Characters are counted here as JSON, which runs near twice the desktop's
+// own count. The terminal sets no such bounds.
+const MAX_NODES = 1900
+const MAX_CHARS = 400_000
+// What a drawn tree weighs against those bounds, counted as a desktop counts.
+// The runtime stamps each Button with where its press goes, which no
+// stringify here sees: PRESS characters apiece.
+const PRESS = 64
+function weigh(tree: unknown) {
+  let nodes = 0
+  let presses = 0
+  const walk = (v: unknown, child: boolean) => {
+    if (typeof v === 'string') {
+      if (child) nodes++
+      return
+    }
+    if (!v || typeof v !== 'object') return
+    if (Array.isArray(v)) {
+      for (const c of v) walk(c, true)
+      return
+    }
+    const type = (v as { type?: unknown }).type
+    if (typeof type === 'string') nodes++
+    if (type === 'Button') presses++
+    for (const c of Object.values(v)) walk(c, false)
+  }
+  walk(tree, false)
+  return { nodes, chars: (JSON.stringify(tree)?.length ?? 0) + presses * PRESS }
+}
+// A row's card holds this much of its description.
+const DESC = 240
 // Bumped after each write so the pane redraws.
 const rev = atom({ plugin: 'plugin-toggles', key: 'rev' } as const, 0, {
   shape: 'rev-1',
@@ -394,6 +431,9 @@ type Row = {
   meta: string
   desc: string
   more: string
+  // The skills a plugin's row stands for, which the count and the filter
+  // take one by one.
+  skills?: string[]
 }
 
 const heavy = (a: Row, b: Row) => b.weight - a.weight || a.label.localeCompare(b.label)
@@ -520,33 +560,25 @@ function inspector($: any, e: any, rows: Row[], scopeOf: Map<string, string>, he
   const { Box, Text } = $.ui.resolve(e)
   return (
     <Box flexDirection="column" height={3} overflow="hidden">
-      {rows.map(r => {
-        const meta = [
-          MODE_SAYS[r.mode],
-          r.meta,
-          r.tokens > 0 && `${tag(r.tokens, r.exact)} tokens`,
-        ]
-          .filter(Boolean)
-          .join(' · ')
-        return (
-          <Box
-            display="none"
-            hover={{ scope: scopeOf.get(r.name), display: 'flex' }}
-            flexDirection="column"
-            minHeight={3}
-          >
-            <Text wrap="truncate-end">
-              <Text bold>{r.label}</Text>
-              <Text dimColor>{`  ${meta}`}</Text>
-            </Text>
-            <Text wrap="truncate-end">{r.desc}</Text>
-            <Text wrap="truncate-end" dimColor>
-              {r.more || ' '}
-            </Text>
-          </Box>
-        )
-      })}
+      {rows.map(r => card($, e, r, scopeOf.get(r.name)))}
       <Text dimColor>{help}</Text>
+    </Box>
+  )
+}
+
+// A row's card in the inspector, shown while the pointer is on the row.
+function card($: any, e: any, r: Row, scope: string | undefined) {
+  const { Box, Text } = $.ui.resolve(e)
+  const meta = [MODE_SAYS[r.mode], r.meta, r.tokens > 0 && `${tag(r.tokens, r.exact)} tokens`]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <Box display="none" hover={{ scope, display: 'flex' }} flexDirection="column" minHeight={3}>
+      <Text wrap="truncate-end" bold>{`${r.label}  ${meta}`}</Text>
+      <Text wrap="truncate-end">{clip(r.desc, DESC)}</Text>
+      <Text wrap="truncate-end" dimColor>
+        {r.more || ' '}
+      </Text>
     </Box>
   )
 }
@@ -586,24 +618,22 @@ function toggle($: any, e: any, kind: string, r: Row) {
     // Four stops, On to Off, the knob on the current one and its name beside.
     const at = r.modes.indexOf(r.mode)
     return (
-      <Box alignItems="center" gap={1} flexShrink={0}>
-        <Box width={4}>
+      <Box alignItems="center" gap={0} flexShrink={0}>
+        <Box width={5}>
           <Text dimColor={!lit}>{MODE_LABEL[r.mode]}</Text>
         </Box>
-        <Box gap={0}>
-          {r.modes.map((m, j) =>
-            pressable(
-              $,
-              e,
-              `${kind}:${r.name}:${m}`,
-              stop(j, at, INK[r.mode]),
-              `${r.label} ${MODE_LABEL[m]}`,
-              STOP,
-              to(m),
-              m !== r.mode,
-            ),
-          )}
-        </Box>
+        {r.modes.map((m, j) =>
+          pressable(
+            $,
+            e,
+            `${kind}:${r.name}:${m}`,
+            stop(j, at, INK[r.mode]),
+            `${r.label} ${MODE_LABEL[m]}`,
+            STOP,
+            to(m),
+            m !== r.mode,
+          ),
+        )}
       </Box>
     )
   }
@@ -1405,6 +1435,34 @@ export const register: Register = on => {
           more: '',
         })
       }
+      // A plugin's skills share one row, as the plugin switches them all. A
+      // row apiece made a list too long for a desktop to draw: it drops a
+      // tree over 262144 characters, and the tab would not open.
+      const from = new Map<string, Row[]>()
+      for (const r of rows) if (r.plugin !== undefined) from.set(r.plugin, [...(from.get(r.plugin) ?? []), r])
+      rows = [
+        ...rows.filter(r => r.plugin === undefined),
+        ...[...from].map(([plugin, list]): Row => {
+          const tokens = list.reduce((n, r) => n + r.tokens, 0)
+          return {
+            name: `plugin:${plugin}`,
+            label: plugin || 'Plugins',
+            mode: 'on',
+            modes: [],
+            plugin,
+            tokens,
+            exact: list.every(r => r.exact),
+            weight: tokens,
+            group: plugin || 'plugins',
+            meta: `${list.length} skill${list.length === 1 ? '' : 's'} ${plugin ? `from ${plugin}` : 'from plugins'}`,
+            desc: list.length > 20
+              ? `${list.slice(0, 20).map(r => r.name).join(', ')} and ${list.length - 20} more`
+              : list.map(r => r.name).join(', '),
+            more: 'Switched with its plugin: Claude Code has no per-skill switch for a plugin’s skills.',
+            skills: list.map(r => r.name),
+          }
+        }),
+      ]
       noun = 'skills'
       const fit = now?.fit
       if (fit && fit.included < fit.total) {
@@ -1449,6 +1507,7 @@ export const register: Register = on => {
 
     // The bar shows everything Claude sees, whatever the filter hides.
     const lit = rows.filter(r => inContext(r.mode))
+    const count = (list: Row[]) => list.reduce((n, r) => n + (r.skills?.length ?? 1), 0)
     const total = lit.reduce((n, r) => n + r.tokens, 0)
     const byGroup = new Map<string, number>()
     for (const r of lit) if (r.tokens > 0) byGroup.set(r.group, (byGroup.get(r.group) ?? 0) + r.tokens)
@@ -1463,44 +1522,63 @@ export const register: Register = on => {
     const caption =
       current === 'mcp'
         ? `tokens of tool schemas · ${lit.length} of ${rows.length} ${noun} on`
-        : `tokens in every turn · ${lit.length} of ${rows.length} ${noun} ${current === 'skills' ? 'listed' : 'on'}`
+        : `tokens in every turn · ${count(lit)} of ${count(rows)} ${noun} ${current === 'skills' ? 'listed' : 'on'}`
 
     // Rows keep their place when switched, heaviest first: the user's own
     // skills, which have the full switch, above those plugins bring.
     const needle = typed.toLowerCase()
-    const shown = rows.filter(r => r.name.toLowerCase().includes(needle))
-    const own = shown.filter(r => r.plugin === undefined).sort(heavy).slice(0, SHOWN)
-    const borrowed = shown
-      .filter(r => r.plugin !== undefined)
-      .sort(heavy)
-      .slice(0, Math.max(0, SHOWN - own.length))
-    const visible = [...own, ...borrowed]
-    const scopeOf = new Map(visible.map((r, i) => [r.name, `tg-${i}`]))
+    const shown = rows.filter(r => [r.name, ...(r.skills ?? [])].some(n => n.toLowerCase().includes(needle)))
+    const candidates = [
+      ...shown.filter(r => r.plugin === undefined).sort(heavy),
+      ...shown.filter(r => r.plugin !== undefined).sort(heavy),
+    ].slice(0, SHOWN)
     const title =
       current === 'skills' ? 'YOUR SKILLS' : current === 'mcp' ? 'SERVERS' : 'PLUGINS'
-
-    return (
-      <Box flexDirection="column" gap={1} padding={1}>
-        {tabs($, e, current)}
-        {pendingBanner($, e, pending, canReload)}
-        {gauge($, e, segs, total, caption, note, warn)}
-        {inspector($, e, visible, scopeOf, TAB_HELP[current] ?? '')}
-        {Input && (
-          <Input
-            key="q"
-            placeholder="Filter by name"
-            value={typed}
-            onInput={(v: string) => update($, query, () => v)}
-            onSubmit={(v: string) => update($, query, () => v)}
-          />
-        )}
-        {shown.length === 0 && <Text dimColor>Nothing found.</Text>}
-        {section($, e, current, title, own, scopeOf, colour)}
-        {section($, e, current, 'FROM PLUGINS', borrowed, scopeOf, colour)}
-        {shown.length > visible.length && (
-          <Text dimColor>... {shown.length - visible.length} more, narrow the filter</Text>
-        )}
-      </Box>
-    )
+    const draw = (visible: Row[]) => {
+      const scopeOf = new Map(visible.map((r, i) => [r.name, `tg-${i}`]))
+      const own = visible.filter(r => r.plugin === undefined)
+      const borrowed = visible.filter(r => r.plugin !== undefined)
+      return (
+        <Box flexDirection="column" gap={1} padding={1}>
+          {tabs($, e, current)}
+          {pendingBanner($, e, pending, canReload)}
+          {gauge($, e, segs, total, caption, note, warn)}
+          {inspector($, e, visible, scopeOf, TAB_HELP[current] ?? '')}
+          {Input && (
+            <Input
+              key="q"
+              placeholder="Filter by name"
+              value={typed}
+              onInput={(v: string) => update($, query, () => v)}
+              onSubmit={(v: string) => update($, query, () => v)}
+            />
+          )}
+          {shown.length === 0 && <Text dimColor>Nothing found.</Text>}
+          {section($, e, current, title, own, scopeOf, colour)}
+          {section($, e, current, 'FROM PLUGINS', borrowed, scopeOf, colour)}
+          {shown.length > visible.length && (
+            <Text dimColor>... {count(shown) - count(visible)} more, narrow the filter</Text>
+          )}
+        </Box>
+      )
+    }
+    // The base: all but the rows, and the two section headers an empty list
+    // leaves out (a Box, a Text and its string each).
+    const used = weigh(draw([]))
+    used.nodes += 6
+    const visible: Row[] = []
+    for (const r of candidates) {
+      if (e.surface === 'terminal') {
+        visible.push(r)
+        continue
+      }
+      const scope = `tg-${visible.length}`
+      const w = weigh([row($, e, current, r, scope, colour.get(r.group)), card($, e, r, scope)])
+      if (used.nodes + w.nodes > MAX_NODES || used.chars + w.chars > MAX_CHARS) break
+      used.nodes += w.nodes
+      used.chars += w.chars
+      visible.push(r)
+    }
+    return draw(visible)
   })
 }
