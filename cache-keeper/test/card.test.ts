@@ -411,7 +411,17 @@ async function bandAt($: Engine, columns: number) {
   await ui.unmount()
   const cards = row.children as { props: Record<string, unknown> }[]
   const each = cards.map((c) => cells(c as Drawn))
-  return { line: each.reduce((a, w) => a + w + 1, -1), widest: Math.max(...each), shrink: cards.every((c) => c.props.flexShrink === 1), still: cards.every((c) => c.props.flexShrink === 0) }
+  // The context card (the one that grows): the width it starts from, its floor, and what it holds
+  // (its own row's cells, its border and padding left out)
+  const ctx = cards.find((c) => c.props.flexGrow === 1) as { props: Record<string, unknown> }
+  const ctxInner = cells({ ...(ctx as Drawn & object), props: { ...ctx.props, minWidth: 0 } } as Drawn) - 4
+  return {
+    line: each.reduce((a, w) => a + w + 1, -1),
+    widest: Math.max(...each),
+    shrink: cards.every((c) => c.props.flexShrink === 1),
+    still: cards.every((c) => c.props.flexShrink === 0),
+    ctx: { width: ctx.props.width, minWidth: ctx.props.minWidth, inner: ctxInner },
+  }
 }
 
 const limitGauges = async ($: Engine, columns: number) => {
@@ -426,6 +436,10 @@ async function sweep($: Engine) {
   const oneLine: number[] = []
   for (let columns = 200; columns >= 24; columns -= 2) {
     const b = await bandAt($, columns)
+    // The context card starts from exactly what it holds at its narrowest,
+    // not from its gauge's markup; squeezed, it has no floor and may shrink
+    expect(b.ctx.width).toBe(b.ctx.inner)
+    expect(b.ctx.minWidth).toBe(b.shrink ? undefined : b.ctx.width)
     if (b.line <= columns) {
       // One line: the context card grows into the rest, nothing shrinks
       expect(b.still).toBe(true)
