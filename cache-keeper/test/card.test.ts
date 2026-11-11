@@ -333,13 +333,14 @@ const COOLING_AFTER = 56 * 60 * 1000
 
 const limits = ($: Engine, list: { kind: string; percentUsed: number }[]) => $.session.measure({ rateLimits: list } as never)
 
-// The width the context gauge is drawn at, in a window of that many columns
+// The context gauge in a window of that many columns: its Svg and the Box it grows in
 async function ctxGauge($: Engine, columns?: number) {
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...(columns ? laidOut(columns) : BAND) } as never)
   const svgs = await ui.findAll({ type: 'Svg' } as never)
-  const gauge = svgs.find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt)))
+  const svg = svgs.find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt))) as { props: Record<string, unknown> }
+  const box = (await ui.find({ key: 'ctx-gauge' } as never)) as { props: Record<string, unknown> }
   await ui.unmount()
-  return Number(gauge?.props.width)
+  return { svg: svg.props, box: box.props }
 }
 
 test('desktop band: only the context card stretches; the others hug what they hold', async ($: Engine, on: On) => {
@@ -359,22 +360,20 @@ test('desktop band: only the context card stretches; the others hug what they ho
   await ui.unmount()
 })
 
-test('desktop band: the context gauge follows the window, with no cap, down to a limit card', async ($: Engine, on: On) => {
+test('desktop band: the context gauge stretches over its card, on one line or a wrapped one', async ($: Engine, on: On) => {
   await sized($, on, 320000)
   await limits($, [{ kind: 'seven_day', percentUsed: 34 }])
-  const huge = await ctxGauge($, 400)
-  const wide = await ctxGauge($, 300)
-  const mid = await ctxGauge($, 200)
-  // Each column more is one cell (8 px) more gauge: no 200 px cap
-  expect(huge - wide).toBe(800)
-  expect(wide - mid).toBe(800)
-  expect(mid).toBeGreaterThan(200)
-  // The band is laid out in bodyColumns, not in the window's columns
-  expect(await ctxGauge($)).toBe(mid)
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(150), viewport: { columns: 300, rows: 40 } } as never)
-  const gauge = (await ui.findAll({ type: 'Svg' } as never)).find((x: { props: { alt?: string } }) => /^context /.test(String(x.props.alt)))
-  await ui.unmount()
-  expect(Number(gauge?.props.width)).toBe(await ctxGauge($, 150))
+  for (const columns of [400, 200, 120, 60]) {
+    const { svg, box } = await ctxGauge($, columns)
+    // No width of its own: the surface stretches the markup over the slot
+    expect(svg.width).toBeUndefined()
+    expect(svg.height).toBe(8)
+    expect(String(svg.source)).toContain('preserveAspectRatio="none"')
+    // The slot grows into what the card has, from nothing up, never below the floor
+    expect(box.flexGrow).toBe(1)
+    expect(box.width).toBe(0)
+    expect(Number(box.minWidth)).toBeGreaterThanOrEqual(1)
+  }
   // The limit gauges keep their width while the full form fits
   expect(await limitGauges($, 400)).toEqual([64])
 })
@@ -395,9 +394,9 @@ function cells(n: Drawn): number {
     const opt = (p.options as { value: string; label: string }[]).find((o) => o.value === p.value)
     return String(p.label).length + 1 + String(opt ? opt.label : p.value).length + 5
   }
-  if (n.type === 'Svg') return Math.ceil(Number(p.width) / 8)
+  if (n.type === 'Svg') return p.width === undefined ? 0 : Math.ceil(Number(p.width) / 8)
   const inner = p.flexDirection === 'column' ? Math.max(0, ...kids.map(cells)) : kids.reduce((a: number, c) => a + cells(c), 0) + (typeof p.columnGap === 'number' ? p.columnGap : 0) * Math.max(0, kids.length - 1)
-  return inner + (p.borderStyle ? 2 : 0) + 2 * (Number(p.paddingX) || 0)
+  return Math.max(Number(p.minWidth) || 0, inner) + (p.borderStyle ? 2 : 0) + 2 * (Number(p.paddingX) || 0)
 }
 
 // The band at one width: whether its cards fit one line, the widest card, and
@@ -408,22 +407,7 @@ async function bandAt($: Engine, columns: number) {
   await ui.unmount()
   const cards = row.children as { props: Record<string, unknown> }[]
   const each = cards.map((c) => cells(c as Drawn))
-  // The cells the context card's line leaves empty once the row wraps: each
-  // card on the current line if it fits there with a one-cell gap
-  const at = cards.findIndex((c) => { const k = c as { key?: string; props: { key?: string } }; return (k.key ?? k.props.key) === 'card-ctx' })
-  const lines: number[][] = [[]]
-  let used = 0
-  each.forEach((w, i) => {
-    if (used > 0 && used + 1 + w > columns) {
-      lines.push([])
-      used = 0
-    }
-    used += (used > 0 ? 1 : 0) + w
-    lines[lines.length - 1].push(i)
-  })
-  const ctxLine = lines.find((l) => l.includes(at)) as number[]
-  const ctxSlack = columns - ctxLine.reduce((a, i) => a + each[i] + 1, -1)
-  return { line: each.reduce((a, w) => a + w + 1, -1), ctxSlack, widest: Math.max(...each), shrink: cards.every((c) => c.props.flexShrink === 1), still: cards.every((c) => c.props.flexShrink === 0) }
+  return { line: each.reduce((a, w) => a + w + 1, -1), widest: Math.max(...each), shrink: cards.every((c) => c.props.flexShrink === 1), still: cards.every((c) => c.props.flexShrink === 0) }
 }
 
 const limitGauges = async ($: Engine, columns: number) => {
@@ -439,16 +423,12 @@ async function sweep($: Engine) {
   for (let columns = 200; columns >= 24; columns -= 2) {
     const b = await bandAt($, columns)
     if (b.line <= columns) {
-      // One line, flush right: the context card takes the rest, nothing stretches past it
+      // One line: the context card grows into the rest, nothing shrinks
       expect(b.still).toBe(true)
-      expect(columns - b.line).toBeLessThanOrEqual(1)
       oneLine.push(columns)
     } else if (b.widest <= columns) {
-      // Wrapped onto more lines: every card fits the window as it is, and the
-      // context card's gauge fills its own line, not a stub in a wide card
+      // Wrapped onto more lines: every card fits the window as it is
       expect(b.still).toBe(true)
-      expect(b.ctxSlack).toBeGreaterThanOrEqual(0)
-      expect(b.ctxSlack).toBeLessThanOrEqual(1)
     } else {
       // A card wider than the window itself: the cards may shrink and wrap their rows
       expect(b.shrink).toBe(true)
@@ -496,11 +476,10 @@ test('desktop band: with no limit card the context gauge stops at a limit gauge 
     const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(columns) } as never)
     const isFull = !!(await ui.find({ type: 'Text', text: 'Rewrite cost' } as never))
     await ui.unmount()
-    if (isFull) full.push(await ctxGauge($, columns))
+    if (isFull) full.push(Number((await ctxGauge($, columns)).box.minWidth))
   }
-  expect(Math.min(...full)).toBeGreaterThanOrEqual(64)
-  // A window this narrow wraps the row; the context gauge then fills its own line
-  expect(await ctxGauge($, 60)).toBeGreaterThan(32)
+  expect(Math.min(...full)).toBeGreaterThanOrEqual(8)
+  expect(Number((await ctxGauge($, 60)).box.minWidth)).toBe(4)
 })
 
 test('desktop band: each plan limit has a card, coloured from 80%', async ($: Engine, on: On) => {

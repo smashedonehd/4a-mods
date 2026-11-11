@@ -1036,6 +1036,18 @@ function ctxHue(n) {
 function limitHue(p) {
   return p >= 95 ? HUE.red : p >= 80 ? HUE.yellow : p >= 50 ? HUE.cyan : HUE.green
 }
+// A gauge stretched to its slot: a wide markup drawn without a width, as
+// the Toggles pane's bar is, so the surface sizes it and nothing is counted
+const STRETCH_W = 1000
+function stretchGaugeSvg(Svg, frac, fill, alt, ticks = []) {
+  const w = STRETCH_W
+  const f = Math.max(0, Math.min(1, frac))
+  const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
+  if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(12, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
+  for (const t of ticks) out.push(`<rect x="${(w * t).toFixed(1)}" y="0" width="2" height="8" fill="#8b949e" fill-opacity=".45"/>`)
+  return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="8" viewBox="0 0 ${w} 8" preserveAspectRatio="none">${out.join('')}</svg>`, height: 8, alt })
+}
+
 function gaugeSvg(Svg, frac, fill, alt, ticks = [], w = 64) {
   const h = 8
   const f = Math.max(0, Math.min(1, frac))
@@ -1183,27 +1195,6 @@ function ctxFloor(figure, limit, gauge, gap) {
   return { fixed, floor: Math.max(1, limit ? limit - fixed : gauge) }
 }
 
-// The cells left over on the line the context card lands on, at its
-// narrowest (ctxMin), when the row wraps as a flex row does: each card goes
-// on the current line if it fits there with a one-cell gap, else starts the
-// next. One line or several, the context card grows into what is left.
-function ctxLineRoom(columns, widths, at, ctxMin) {
-  const all = [...widths.slice(0, at), ctxMin, ...widths.slice(at)]
-  let used = 0
-  let ctxLine = -1
-  let line = 0
-  for (let i = 0; i < all.length; i++) {
-    if (used > 0 && used + 1 + all[i] > columns) {
-      if (line === ctxLine) return Math.max(0, columns - used)
-      line++
-      used = 0
-    }
-    used += (used > 0 ? 1 : 0) + all[i]
-    if (i === at) ctxLine = line
-  }
-  return Math.max(0, columns - used)
-}
-
 // How the desktop band gives way when its row would not fit, in order: the
 // context gauge narrows down to a limit card's width; then the captions and
 // the tags take their short form (also below NARROW_COLUMNS); then the
@@ -1342,12 +1333,11 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   // The context card at its narrowest: its gauge at the floor
   const { fixed, floor } = ctxFloor(figure, limitCells, limitGauge, gap)
   const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
-  // Its gauge fills what its line leaves, so a wrapped row's card is not a
-  // wide card around a stub of a gauge
-  const gauge = (ctxMin - fixed + ctxLineRoom(columns, widths, ctxAt, ctxMin)) * CELL_PX
+  // Its gauge grows into whatever the card has, on one line or a wrapped
+  // one; the cell count only keeps it from going below the floor
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
-    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
+    Svg && Box({ key: 'ctx-gauge', flexGrow: 1, width: 0, minWidth: floor, children: [stretchGaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8])] }),
   ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true, squeeze, gap }))
   return {
     need: others + ctxMin,
