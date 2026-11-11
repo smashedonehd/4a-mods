@@ -121,3 +121,28 @@ test('the dotted grid is as tall as the avatar row plus the rest', async ($, on)
   expect(rows).toBe(74 + 44)
   expect(grid).toBe(rows + 2 * 24)
 })
+
+test('every subagent is asked to report its steps, once', async ($, on) => {
+  const prompts: string[] = []
+  on('clock.now', () => ({ value: Date.parse('2026-11-11T10:00:00Z') }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', (_$, e) => {
+    prompts.push((e as { prompt: string }).prompt)
+    return { model: 'claude-opus-5-5', agentId: (e as { tool_use_id: string }).tool_use_id } as never
+  })
+  const spawn = (id: string, subagentType: string, prompt: string) =>
+    $.agent.spawn({ tool_use_id: id, prompt, description: `Task ${id}`, subagentType, provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false } as never)
+  await spawn('s1', 'ukazovatko-team:wp-designer', 'Build the page.')
+  await spawn('s2', 'savvy-careful', 'Fix the bug.')
+  await spawn('s3', 'general-purpose', 'Review it. Call mcp__savvy-progress__step after each step.')
+  await $.agent.spawn({ tool_use_id: 's4', prompt: 'Go on.', description: 'Task s4', subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false, resume: { agentId: 's1' } } as never)
+  await $.agent.spawn({ tool_use_id: 's5', prompt: 'Rate it.', description: 'Task s5', subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  expect(prompts[0]?.startsWith('Build the page.')).toBe(true)
+  expect(prompts[0]).toContain('Progress reporting: before any other work, call `mcp__savvy-progress__step`')
+  expect(prompts[1]?.split('Progress reporting:').length).toBe(2)
+  // A brief that already names the tool stays as the parent wrote it
+  expect(prompts[2]).toBe('Review it. Call mcp__savvy-progress__step after each step.')
+  // A resumed run and a workflow's agent keep their prompt (the engine itself
+  // drops a rewrite of a resumed run's prompt, so that case documents intent)
+  expect(prompts.slice(3)).toEqual(['Go on.', 'Rate it.'])
+})
