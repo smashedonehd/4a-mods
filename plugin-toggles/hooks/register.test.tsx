@@ -63,6 +63,7 @@ const runs = (on: any) => {
   return ran
 }
 
+const NBSP = String.fromCharCode(160)
 const SETTINGS = 'C:/Users/x/.claude/settings.json'
 const GLOBAL = 'C:/Users/x/.claude.json'
 const PROFILES = 'C:/Users/x/.claude/mods-data/plugin-toggles-profiles.json'
@@ -349,9 +350,13 @@ test('a skill of your own gets a four-way switch and costs what its position doe
   const modes = FOUR
   const labels: string[] = []
   for (const m of modes) labels.push(String((await ui.find({ type: 'Button', key: `skills:greg:${m}` }))?.text))
-  expect(labels).toEqual(['On', 'Name', 'User', 'Off'])
+  // Padded with no-break spaces, so the button fills its cell of the capsule.
+  expect(labels).toEqual(['On', 'Name', 'User', 'Off'].map(l => `${NBSP}${l}${NBSP}`))
   expect(await at(ui, 'skills:greg', modes)).toEqual(['name-only'])
   expect(await fills(ui)).toEqual(['suggestion'])
+  // No padding on the fill: a desktop would not press there.
+  const fill = (await ui.findAll({ type: 'Box' })).find((b: any) => b.props.backgroundColor)
+  expect([fill?.props.paddingX, fill?.props.padding]).toEqual([undefined, undefined])
   expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^~2$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()

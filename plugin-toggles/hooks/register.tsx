@@ -34,6 +34,8 @@ const MODE_LABEL: Record<Mode, string> = {
   'user-invocable-only': 'User',
   off: 'Off',
 }
+// A no-break space: room a desktop button keeps, where a plain space is trimmed.
+const NBSP = String.fromCharCode(160)
 const MODE_SAYS: Record<Mode, string> = {
   on: 'on',
   'name-only': 'name only',
@@ -521,6 +523,9 @@ function inspector($: any, e: any, rows: Row[], scopeOf: Map<string, string>, he
 // Elsewhere they sit chromeless in one rounded capsule, the current one on
 // its fill. Older engines take only a plain label on a Button: 2.1.282
 // refuses the whole tree otherwise.
+// A desktop presses only on the button itself, never on the Box around it,
+// so the fill has no padding of its own: the label carries the room as
+// no-break spaces, and a click anywhere on the fill lands on the button.
 function toggle($: any, e: any, kind: string, r: Row) {
   const { Box, Button } = $.ui.resolve(e)
   const terminal = e.surface === 'terminal'
@@ -529,7 +534,7 @@ function toggle($: any, e: any, kind: string, r: Row) {
     const button = (
       <Button
         key={`${kind}:${r.name}:${m}`}
-        label={MODE_LABEL[m]}
+        label={terminal ? MODE_LABEL[m] : `${NBSP}${MODE_LABEL[m]}${NBSP}`}
         {...(terminal ? { variant: on ? 'primary' : 'secondary' } : { plain: true })}
         dimColor={!on}
         onPress={() => {
@@ -540,7 +545,7 @@ function toggle($: any, e: any, kind: string, r: Row) {
     )
     if (terminal) return button
     return (
-      <Box paddingX={1} {...(on ? { backgroundColor: MODE_FILL[m] } : {})}>
+      <Box {...(on ? { backgroundColor: MODE_FILL[m] } : {})}>
         {button}
       </Box>
     )
