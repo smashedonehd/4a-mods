@@ -334,14 +334,14 @@ test('a plugin skill leads to its plugin instead of a switch, and sizes the list
   })
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ type: 'Button', key: 'skills:brainstorm:plugin' }))?.text).toBe('superpowers ›')
+  expect((await ui.find({ type: 'Button', key: 'skills:plugin:superpowers:plugin' }))?.text).toBe('superpowers ›')
   expect(await ui.find({ type: 'Button', key: 'skills:brainstorm:on' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^40$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /On lists a skill with its description/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Explore ideas before building$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^brainstorm$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /2 skills don't fit the listing budget/ })).toBeTruthy()
-  await ui.press({ key: 'skills:brainstorm:plugin' })
+  await ui.press({ key: 'skills:plugin:superpowers:plugin' })
   expect(sets.some(s => s.includes('"q"') && s.includes('"superpowers"'))).toBe(true)
   expect(sets.some(s => s.includes('"tab"') && s.includes('"plugins"'))).toBe(true)
   await ui.unmount()
@@ -664,9 +664,9 @@ test("a plugin's command that the skill count does not name gets no skill row", 
 
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 1$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'skills:superpowers:brainstorming:plugin' })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'skills:cache:plugin' })).toBeFalsy()
-  expect(await ui.find({ type: 'Button', key: 'skills:jev:calibrate:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:superpowers:plugin' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:cache-keeper:plugin' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:jev:plugin' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -1272,4 +1272,31 @@ test('on the desktop a switch is a pill and Shown an eye; the terminal keeps wor
     }
     await ui.unmount()
   }
+})
+
+test('a long skill list stays under the size a desktop draws, a plugin to a row', async ($, on) => {
+  const long = 'Says at length what the skill does and when to reach for it. '.repeat(3)
+  const own = Array.from({ length: 75 }, (_, i) => ({ name: `own-${i}`, source: 'user', description: long }))
+  const borrowed = Array.from({ length: 160 }, (_, i) => ({
+    name: `p${i}:skill`,
+    source: 'plugin',
+    plugin: `plug${i % 20}`,
+    description: long,
+  }))
+  on('command.list', () => ({ value: [...own, ...borrowed] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('settings.read', () => ({ value: { skillOverrides: { 'own-1': 'name-only', 'own-2': 'off' } } }))
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-skills' })
+  expect(JSON.stringify(await ui.find({ type: 'Box' })).length).toBeLessThan(262144)
+  expect(await ui.find({ type: 'Text', text: /^FROM PLUGINS · 20$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^plug3$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /\.\.\. 35 more, narrow the filter/ })).toBeTruthy()
+  // The count is of skills, not rows; the filter finds a skill by its own name.
+  expect(await ui.find({ type: 'Text', text: /234 of 235 skills listed/ })).toBeTruthy()
+  await ui.input({ key: 'q', text: 'p43:', kind: 'change' })
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:plug3:plugin' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'skills:plugin:plug4:plugin' })).toBeFalsy()
+  await ui.unmount()
 })

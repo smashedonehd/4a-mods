@@ -79,12 +79,13 @@ const INK: Record<Mode, string> = {
 }
 const TRACK = '#8E8E93'
 const SVG = 'xmlns="http://www.w3.org/2000/svg"'
-const SHADOW =
-  '<defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-opacity=".35"/></filter></defs>'
+// The knob's edge, in place of a shadow filter: a picture's markup counts
+// against the size of the tree a desktop takes.
+const EDGE = 'stroke="#000" stroke-opacity=".18"'
 // A pill switch, coloured with the knob right when on: the Mods tab's in
 // green, a plugin's or a server's in the brand colour.
 const pill = (lit: boolean, colour = GOOD) =>
-  `<svg ${SVG} width="44" height="26" viewBox="0 0 44 26">${SHADOW}<rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? colour : TRACK}" fill-opacity="${lit ? 1 : 0.45}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff" filter="url(#s)"/></svg>`
+  `<svg ${SVG} width="44" height="26" viewBox="0 0 44 26"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? colour : TRACK}" fill-opacity="${lit ? 1 : 0.45}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff" ${EDGE}/></svg>`
 // One stop of a skill's four-stop slider, `at` the stop the knob is on. The
 // rail runs through each cell edge to edge, so four cells side by side draw
 // one rail, coloured from the left up to the knob.
@@ -94,9 +95,9 @@ const stop = (j: number, at: number, colour: string) => {
     `<line x1="${x1}" y1="13" x2="${x2}" y2="13" stroke="${lit ? colour : TRACK}" stroke-opacity="${lit ? 1 : 0.45}" stroke-width="4"/>`
   const mark =
     j === at
-      ? `<circle cx="13" cy="13" r="9" fill="#fff" stroke="${colour}" stroke-width="2" filter="url(#s)"/>`
+      ? `<circle cx="13" cy="13" r="9" fill="#fff" stroke="${colour}" stroke-width="2"/>`
       : `<circle cx="13" cy="13" r="4" fill="${j < at ? colour : TRACK}" fill-opacity="${j < at ? 1 : 0.6}"/>`
-  return `<svg ${SVG} width="${STOP}" height="26" viewBox="0 0 ${STOP} 26">${SHADOW}${j > 0 ? rail(0, 13, j <= at) : ''}${j < 3 ? rail(13, STOP, j < at) : ''}${mark}</svg>`
+  return `<svg ${SVG} width="${STOP}" height="26" viewBox="0 0 ${STOP} 26">${j > 0 ? rail(0, 13, j <= at) : ''}${j < 3 ? rail(13, STOP, j < at) : ''}${mark}</svg>`
 }
 // A desktop Button is as wide as its label, and a Box around it does not
 // press. So a pressable picture lies under a Box cut to its edges, holding a
@@ -104,8 +105,11 @@ const stop = (j: number, at: number, colour: string) => {
 // anywhere on the picture lands on the Button. Em spaces, as a desktop keeps
 // them where it folds plain spaces away.
 const BLANK = String.fromCharCode(0x2003).repeat(8)
-// Chips drawn at most; the filter narrows the rest.
+// Rows drawn at most; the filter narrows the rest. A desktop drops a tree
+// over 262144 characters, and a skill's slider row is some 4000 of them, so
+// fewer of those are drawn.
 const SHOWN = 200
+const SLIDERS = 40
 // Bumped after each write so the pane redraws.
 const rev = atom({ plugin: 'plugin-toggles', key: 'rev' } as const, 0, {
   shape: 'rev-1',
@@ -394,6 +398,9 @@ type Row = {
   meta: string
   desc: string
   more: string
+  // The skills a plugin's row stands for, which the count and the filter
+  // take one by one.
+  skills?: string[]
 }
 
 const heavy = (a: Row, b: Row) => b.weight - a.weight || a.label.localeCompare(b.label)
@@ -1405,6 +1412,32 @@ export const register: Register = on => {
           more: '',
         })
       }
+      // A plugin's skills share one row, as the plugin switches them all. A
+      // row apiece made a list too long for a desktop to draw: it drops a
+      // tree over 262144 characters, and the tab would not open.
+      const from = new Map<string, Row[]>()
+      for (const r of rows) if (r.plugin !== undefined) from.set(r.plugin, [...(from.get(r.plugin) ?? []), r])
+      rows = [
+        ...rows.filter(r => r.plugin === undefined),
+        ...[...from].map(([plugin, list]): Row => {
+          const tokens = list.reduce((n, r) => n + r.tokens, 0)
+          return {
+            name: `plugin:${plugin}`,
+            label: plugin || 'Plugins',
+            mode: 'on',
+            modes: [],
+            plugin,
+            tokens,
+            exact: list.every(r => r.exact),
+            weight: tokens,
+            group: plugin || 'plugins',
+            meta: `${list.length} skill${list.length === 1 ? '' : 's'} ${plugin ? `from ${plugin}` : 'from plugins'}`,
+            desc: list.map(r => r.name).join(', '),
+            more: 'Switched with its plugin: Claude Code has no per-skill switch for a plugin’s skills.',
+            skills: list.map(r => r.name),
+          }
+        }),
+      ]
       noun = 'skills'
       const fit = now?.fit
       if (fit && fit.included < fit.total) {
@@ -1449,6 +1482,7 @@ export const register: Register = on => {
 
     // The bar shows everything Claude sees, whatever the filter hides.
     const lit = rows.filter(r => inContext(r.mode))
+    const count = (list: Row[]) => list.reduce((n, r) => n + (r.skills?.length ?? 1), 0)
     const total = lit.reduce((n, r) => n + r.tokens, 0)
     const byGroup = new Map<string, number>()
     for (const r of lit) if (r.tokens > 0) byGroup.set(r.group, (byGroup.get(r.group) ?? 0) + r.tokens)
@@ -1463,13 +1497,16 @@ export const register: Register = on => {
     const caption =
       current === 'mcp'
         ? `tokens of tool schemas · ${lit.length} of ${rows.length} ${noun} on`
-        : `tokens in every turn · ${lit.length} of ${rows.length} ${noun} ${current === 'skills' ? 'listed' : 'on'}`
+        : `tokens in every turn · ${count(lit)} of ${count(rows)} ${noun} ${current === 'skills' ? 'listed' : 'on'}`
 
     // Rows keep their place when switched, heaviest first: the user's own
     // skills, which have the full switch, above those plugins bring.
     const needle = typed.toLowerCase()
-    const shown = rows.filter(r => r.name.toLowerCase().includes(needle))
-    const own = shown.filter(r => r.plugin === undefined).sort(heavy).slice(0, SHOWN)
+    const shown = rows.filter(r => [r.name, ...(r.skills ?? [])].some(n => n.toLowerCase().includes(needle)))
+    const own = shown
+      .filter(r => r.plugin === undefined)
+      .sort(heavy)
+      .slice(0, current === 'skills' ? SLIDERS : SHOWN)
     const borrowed = shown
       .filter(r => r.plugin !== undefined)
       .sort(heavy)
