@@ -4,7 +4,7 @@
 // module instance: its module state is empty.
 import assert from 'node:assert/strict'
 import {
-  normalizePath, commandPaths, rankFiles, gatherFacts, redact, draftText, forkPrompt, cleanReply,
+  normalizePath, commandPaths, rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, cleanReply,
   missingSections, wordCount, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
 } from '../hooks/handoff.mjs'
 
@@ -123,7 +123,7 @@ async function boot(cwd, id, opts = {}) {
       list: async () => [{ key: 'cache-keeper.handoffOfferAt', value: '300k' }],
       set: async (a) => (configSets.push(a), configDeny ? { deny: 'no' } : { value: a.value }),
     },
-    agent: { list: async () => [] },
+    agent: { list: () => (opts.agentList ? opts.agentList() : Promise.resolve(opts.agents || [])) },
     command: {
       register: async () => {},
       list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }],
@@ -343,6 +343,40 @@ await check('draft and fork prompt carry the facts; the prompt asks for English 
   for (const s of ['Do not call any tool', 'in English', 'User asked', 'My own idea (confirm with the user before acting)', 'Deferred by rule', 'Open (needs the user', 'Pick up here', 'No git state from memory', 'D:/proj/src/parse.mjs (changed)', 'acme/tool#12', 'Absolute paths']) assert.ok(p.includes(s), s)
 })
 
+await check('running subagents: the live list minus finished ones, the model from the Agent call; draft and prompt name them', () => {
+  const rows = [{ role: 'assistant', text: '', toolUses: [
+    { tool: 'Agent', input: { description: 'Task 5 impl', model: 'sonnet', effort: 'medium', run_in_background: true }, text: 'Async agent launched successfully.\nagentId: a1cd91a274738ee47 (internal ID)' },
+    { tool: 'Agent', input: { description: 'Task 4 review', model: 'opus' }, text: 'agentId: afd360d12e1aaa70c' },
+    // A synchronous result: the report quotes another agent; its own id comes last
+    { tool: 'Agent', input: { description: 'Sync check', model: 'haiku' }, text: 'Done. Task 5 answered "agentId: a1cd91a274738ee47" earlier.\nagentId: a1cd91a274738ee47 was asked too.\nagentId: ffff0000aaaa1111 (for resuming)' },
+    { tool: 'Agent', input: { model: 'opus' }, result: { status: 'async_launched', agentId: 'eeee0000bbbb2222' } },
+  ] }]
+  const f = gatherFacts(rows)
+  assert.deepEqual(f.spawned.map(([id]) => id), ['a1cd91a274738ee47', 'afd360d12e1aaa70c', 'ffff0000aaaa1111', 'eeee0000bbbb2222'])
+  const agents = runningAgents([
+    { id: 'a1cd91a274738ee47', description: 'Task 5 impl', type: 'general-purpose', status: 'running' },
+    { id: 'afd360d12e1aaa70c', description: 'Task 4 review', type: 'general-purpose', status: 'completed' },
+    { id: 'bbbbbbbb', description: 'Watcher', type: 'Explore', status: 'idle', name: 'watch' },
+    { id: 'cccccccc', status: 'killed' },
+    // Their reports never reach the main chat: a nested agent's, a plugin's
+    { id: 'dddddddd', description: 'Nested', type: 'Explore', status: 'running', parentId: 'a1cd91a274738ee47' },
+    { id: 'eeeeeeee', description: 'Plugin run', type: 'lab:runner', status: 'running', spawnedBy: 'lab' },
+  ], f.spawned)
+  assert.deepEqual(agents.map((a) => a.id), ['a1cd91a274738ee47', 'bbbbbbbb'])
+  assert.equal(agents[0].model, 'sonnet')
+  assert.deepEqual(runningAgents(undefined, []), [])
+  const g = { cwd: 'D:/proj', messages: 1, rawMessages: rows, files: [], facts: { ...f, agents } }
+  const d = draftText(g)
+  assert.deepEqual(missingSections(d), [])
+  assert.match(d, /Subagents still running: a1cd91a274738ee47: Task 5 impl \(general-purpose, sonnet, medium, running\); bbbbbbbb: Watcher \(Explore, idle, reports only when messaged\), SendMessage name watch/)
+  const p = forkPrompt(g)
+  assert.ok(p.includes('a1cd91a274738ee47: Task 5 impl'))
+  assert.ok(p.includes('Subagents still running:'), 'the template asks for them')
+  assert.ok(p.includes('what the next agent does with its report'), 'rule 6 asks what to do with each report')
+  const none = draftText({ ...g, facts: { ...f, agents: [] } })
+  assert.ok(none.includes('- Subagents still running: none'))
+})
+
 await check('transcript file: rows with tool uses and their results, junk lines skipped', () => {
   assert.equal(transcriptPath('C:\\Users\\n', 'D:\\Claude Work\\x', 'abc'), 'C:/Users/n/.claude/projects/D--Claude-Work-x/abc.jsonl')
   const jsonl = [
@@ -392,7 +426,7 @@ await check('threshold choices', () => {
 
 // ======================= the pipeline =======================
 
-await check('/handoff keep: five steps, draft first, the handoff saved and checked, the card ready, no clear', async () => {
+await check('/handoff keep: six steps, draft first, the handoff saved and checked, the card ready, no clear', async () => {
   let draftsAtFork = -1
   const s = await boot('/w/keep', 'keep0001-0000', { fork: async () => ((draftsAtFork = drafts().filter((d) => d.includes('keep0001')).length), { isAnswered: true, text: GOOD }) })
   const r = await s.run('handoff', 'keep')
@@ -409,9 +443,32 @@ await check('/handoff keep: five steps, draft first, the handoff saved and check
   const t = texts(card)
   assert.match(t, /Handoff ready · [\d,]+ words/)
   assert.ok(t.includes('Saved to ' + saved))
-  for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 's', 'words']) assert.ok(t.includes(d), d)
-  assert.equal((t.match(/✓/g) || []).length, 5)
+  for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 'none running', 's', 'words']) assert.ok(t.includes(d), d)
+  assert.equal((t.match(/✓/g) || []).length, 6)
   for (const k of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close']) assert.ok(s.buttons.has(k), k)
+})
+
+await check('a subagent still running is counted on its step and named in the fork prompt; a finished one is not', async () => {
+  const agents = [{ id: 'a1cd91a274738ee47', description: 'Task 5 impl', type: 'general-purpose', status: 'running' }, { id: 'afd360d12e1aaa70c', description: 'Task 4 review', type: 'general-purpose', status: 'completed' }]
+  const s = await boot('/w/agents', 'agent001-0', { agents })
+  await s.run('handoff', 'keep')
+  assert.ok(texts(await s.render()).includes('1 running'), 'the step says how many')
+  assert.ok(s.prompts[0].includes('a1cd91a274738ee47: Task 5 impl (general-purpose, running)'))
+  assert.ok(!s.prompts[0].includes('afd360d12e1aaa70c'))
+})
+
+await check('an agent list that never answers does not hold the handoff: none listed after the guard', async () => {
+  // The fake clock fires the guard's timer at once
+  let hang = false
+  let asked = 0
+  const s = await boot('/w/agents', 'agent002-0', { agentList: () => (hang ? (asked++, new Promise(() => {})) : Promise.resolve([])) })
+  hang = true
+  await s.run('handoff', 'keep')
+  hang = false
+  assert.ok(asked >= 1)
+  assert.match(texts(await s.render()), /Handoff ready/)
+  assert.ok(texts(await s.render()).includes('none running'))
+  assert.equal(s.prompts.length, 1)
 })
 
 await check('ready card: Clear and continue clears and sends the handoff with its age in front', async () => {
@@ -543,7 +600,7 @@ await check('neither messages nor a transcript: the first step fails, no draft',
   assert.ok(!t.includes('Draft saved'))
 })
 
-await check('working card: five rows, the first three done, the fourth running with its seconds', async () => {
+await check('working card: six rows, the first four done, the fifth running with its seconds', async () => {
   let release
   const gate = new Promise((r) => (release = r))
   const s = await boot('/w/work', 'work0001-0', { fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
@@ -552,10 +609,10 @@ await check('working card: five rows, the first three done, the fourth running w
   const card = await s.render()
   const t = texts(card)
   assert.ok(t.includes('Writing the handoff'))
-  for (const l of ['1. Reading the conversation', '2. Finding the files you used', '3. Listing skills, tools and links', '4. Writing the handoff', '5. Saving and checking']) assert.ok(t.includes(l), l)
-  assert.equal((t.match(/✓/g) || []).length, 3)
+  for (const l of ['1. Reading the conversation', '2. Finding the files you used', '3. Listing skills, tools and links', '4. Checking running subagents', '5. Writing the handoff', '6. Saving and checking']) assert.ok(t.includes(l), l)
+  assert.equal((t.match(/✓/g) || []).length, 4)
   assert.ok(t.includes('7 s'))
-  assert.ok(keys(card).has('ck-ho-step-4'))
+  assert.ok(keys(card).has('ck-ho-step-5'))
   // a second /handoff while it runs starts no second fork, but decides what
   // follows: this one clears
   await s.run('handoff')

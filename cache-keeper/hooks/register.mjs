@@ -1,7 +1,7 @@
 // Cache Keeper: watches this session's prompt cache, keeps big caches warm on
 // request, refuses a cold send without asking first, and shows every local
 // session on one board (/board), and hands a big chat off to a fresh one
-// (/handoff): five steps on a card above the prompt, then /clear and continue.
+// (/handoff): six steps on a card above the prompt, then /clear and continue.
 //
 // Why: each request re-reads the whole context. From the cache that costs about
 // a tenth of normal input. Once the cache expires (1 hour idle on a subscription,
@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -133,7 +133,7 @@ async function reviveSkills($, list) {
   }
 }
 
-// The handoff. Cache Keeper writes it itself, in five steps shown on a card
+// The handoff. Cache Keeper writes it itself, in six steps shown on a card
 // above the prompt: it reads the conversation, finds the files it used, lists
 // skills, tools and links, has a fork of the conversation write the handoff
 // (after saving a model-free draft), then saves and checks it. "clear and
@@ -162,7 +162,8 @@ const H = {
 // The pipeline and its card. after: what follows a written handoff: 'clear'
 // clears and continues on its own, 'none' (keep) and 'ask' leave the choice
 // to the card's buttons.
-const STEP_LABELS = ['Reading the conversation', 'Finding the files you used', 'Listing skills, tools and links', 'Writing the handoff', 'Saving and checking']
+const STEP_LABELS = ['Reading the conversation', 'Finding the files you used', 'Listing skills, tools and links', 'Checking running subagents', 'Writing the handoff', 'Saving and checking']
+const WRITE_STEP = 4 // the model step: its ring nears full with its seconds
 const FILES_MAX = 25 // files the handoff lists
 const FILES_CHECKED = 80 // candidates checked against the disk
 const WRITE_SCALE = 40000 // ms: the writing step's bar nears full on this scale
@@ -558,7 +559,17 @@ function forkFailure(r) {
 // What follows a handoff, by strength: an earlier choice holds against a weaker one
 const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
 
-// Runs the five steps now, or once the running turn ends. after: see P.after.
+// The live agent list, or [] when the host does not answer in LIVE_TIMEOUT.
+// The guard's timer starts only when the list is not in at once.
+async function listAgentsSoon($) {
+  let answered = false
+  const list = $.agent.list().catch(() => []).finally(() => (answered = true))
+  for (let i = 0; i < 3 && !answered; i++) await null
+  if (answered) return list
+  return Promise.race([list, new Promise((done) => $.clock.after(LIVE_TIMEOUT, () => done([])))])
+}
+
+// Runs the six steps now, or once the running turn ends. after: see P.after.
 async function runPipeline($, after = 'ask') {
   // A later press that only asks never overrides a choice made earlier: a clear
   // or a keep (so auto clear cannot clear a chat /handoff keep was for)
@@ -586,10 +597,13 @@ async function runPipeline($, after = 'ask') {
     const read = await runStep($, 0, () => readMessages($), (r) => plural(r.messages.length, 'message') + (r.fromFile ? ' (transcript file)' : ''))
     const messages = read.messages
     const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
-    const facts = await runStep($, 2, async () => gatherFacts(messages), (f) => [plural(f.skills.length + f.servers.length, 'skill or tool'), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
+    const found = await runStep($, 2, async () => gatherFacts(messages), (f) => [plural(f.skills.length + f.servers.length, 'skill or tool'), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
+    // Still at work, their reports arrive in the fresh chat: the handoff names them
+    const agents = await runStep($, 3, async () => runningAgents(await listAgentsSoon($), found.spawned), (a) => (a.length ? plural(a.length, 'running') : 'none running'))
+    const facts = { ...found, agents }
     const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
     const name = await handoffName($)
-    const reply = await runStep($, 3, async () => {
+    const reply = await runStep($, WRITE_STEP, async () => {
       // Saved first: a failed or interrupted model step still leaves this
       await saveDraft($, name, redact(draftText(g)).text)
       let r = await $.model.fork({ prompt: forkPrompt(g) })
@@ -601,7 +615,7 @@ async function runPipeline($, after = 'ask') {
       if (!r || !r.isAnswered || !String(r.text || '').trim()) throw new Error(forkFailure(r))
       return r
     }, () => `${Math.max(1, Math.round((now - P.stepAt) / 1000))} s`)
-    const saved = await runStep($, 4, async () => {
+    const saved = await runStep($, 5, async () => {
       const red = redact(cleanReply(reply.text))
       const text = red.text.trim()
       const missing = missingSections(text)
@@ -1439,13 +1453,28 @@ const SPIN = ['◐', '◓', '◑', '◒']
 function stepProgress(i, s) {
   if (s.status === 'done') return 1
   if (s.status !== 'run') return s.status === 'fail' ? 1 : 0
-  if (i === 3) return Math.min(0.95, 1 - Math.exp(-(now - P.stepAt) / WRITE_SCALE))
+  if (i === WRITE_STEP) return Math.min(0.95, 1 - Math.exp(-(now - P.stepAt) / WRITE_SCALE))
   return 0.5
+}
+
+// A step's progress ring: a grey track, the done part drawn clockwise from
+// the top, a check or a cross in the middle once the step ended
+function ringSvg(Svg, frac, color, status, alt, turn = 0) {
+  const d = 16
+  const r = 6
+  const c = 2 * Math.PI * r
+  const f = Math.max(0, Math.min(1, frac))
+  const out = [`<circle cx="8" cy="8" r="${r}" fill="none" stroke="#8b949e" stroke-opacity=".25" stroke-width="2.5"/>`]
+  if (f > 0) out.push(`<circle cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${(c * f).toFixed(2)} ${c.toFixed(2)}" transform="rotate(${-90 + turn} 8 8)"/>`)
+  if (status === 'done') out.push(`<path d="M5.2 8.2l1.9 1.9 3.7-3.9" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`)
+  if (status === 'fail') out.push(`<path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round"/>`)
+  return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}" viewBox="0 0 ${d} ${d}">${out.join('')}</svg>`, width: d, height: d, alt })
 }
 
 function stepBar(els, Svg, frac, status) {
   const color = status === 'fail' ? HUE.red : status === 'done' ? HUE.green : ACCENT
-  if (Svg) return gaugeSvg(Svg, frac, color, `${Math.round(frac * 100)}%`)
+  // A running step's arc turns a quarter with each redraw: busy, not stuck
+  if (Svg) return ringSvg(Svg, frac, color, status, `${Math.round(frac * 100)}%`, status === 'run' ? (Math.floor(now / 500) % 4) * 90 : 0)
   const on = Math.round(frac * BAR_CELLS)
   return els.Text({ children: [els.Text({ color, children: ['━'.repeat(on)] }), els.Text({ dimColor: true, children: ['━'.repeat(BAR_CELLS - on)] })] })
 }
@@ -1467,7 +1496,7 @@ function colourButton({ Button, Text }, key, label, color, extra = {}) {
   return Button({ key, plain: true, ...extra, onPress: () => {}, children: [Text({ color, children: [label] })] })
 }
 
-// The card above the band: the offer, the five steps while they run, the
+// The card above the band: the offer, the six steps while they run, the
 // ready handoff or the failure. null when there is nothing to show.
 function handoffCard($, e, els, Svg) {
   const { Box, Text, Button } = els
@@ -1513,8 +1542,9 @@ function handoffCard($, e, els, Svg) {
     const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
     const bar = stepBar(els, Svg, stepProgress(i, s), s.status)
     const detail = Text({ dimColor: true, ...(desk ? { size: 'caption' } : {}), children: [stepDetail(s) || ''] })
-    // Desktop: the five steps stand side by side, each a small column
-    if (desk) return Box({ key: 'ck-ho-step-' + i, flexDirection: 'column', children: [rowOf('ck-ho-step-head-' + i, [icon, label], 1), bar, detail] })
+    // Desktop: the six steps stand side by side, each a ring beside its label
+    // and detail; the ring is the step's icon too
+    if (desk) return Box({ key: 'ck-ho-step-' + i, flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [Svg ? bar : icon, Box({ key: 'ck-ho-step-text-' + i, flexDirection: 'column', children: [label, detail] })] })
     return Box({ key: 'ck-ho-step-' + i, flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [
       Box({ width: 2, children: [icon] }),
       Box({ width: 32, children: [label] }),

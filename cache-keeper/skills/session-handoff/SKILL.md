@@ -1,6 +1,6 @@
 ---
 name: session-handoff
-description: Use when the user says "session handoff", "wrap up session", "hand off", "handoff summary", or wants a structured end-of-session summary before clearing context. Cache Keeper then writes the handoff itself (five steps on a card above the prompt) once your turn ends, saves it, and clears the chat and continues with it.
+description: Use when the user says "session handoff", "wrap up session", "hand off", "handoff summary", or wants a structured end-of-session summary before clearing context. Cache Keeper then writes the handoff itself (six steps on a card above the prompt) once your turn ends, saves it, and clears the chat and continues with it.
 ---
 
 # Session Handoff

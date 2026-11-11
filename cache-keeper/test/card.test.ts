@@ -305,12 +305,17 @@ test('desktop card: the offer and the failed steps stand in a frame, the termina
   expect((await ui.find({ key: 'ck-ho-offer-card' } as never))?.props.borderColor).toBe('#d97757')
   await ui.press({ key: 'ck-ho-start' } as never)
   await clock.advance(0)
-  // Failed: the frame turns red and the five steps stand side by side in one wrapping row
+  // Failed: the frame turns red and the six steps stand side by side in one
+  // wrapping row, each a ring beside its label and detail
   expect((await ui.find({ key: 'ck-ho-card' } as never))?.props.borderColor).toBe('#f85149')
   const steps = await ui.find({ key: 'ck-ho-steps' } as never)
   expect(steps?.props.flexDirection).toBe('row')
   expect(steps?.props.flexWrap).toBe('wrap')
-  for (let i = 0; i < 5; i++) expect((await ui.find({ key: 'ck-ho-step-' + i } as never))?.props.flexDirection).toBe('column')
+  for (let i = 0; i < 6; i++) {
+    expect((await ui.find({ key: 'ck-ho-step-' + i } as never))?.props.flexDirection).toBe('row')
+    expect((await ui.find({ key: 'ck-ho-step-text-' + i } as never))?.props.flexDirection).toBe('column')
+  }
+  expect(await ui.find({ key: 'ck-ho-step-6' } as never)).toBeFalsy()
   await ui.unmount()
 })
 

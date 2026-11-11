@@ -33,6 +33,7 @@ const TEMPLATE = `# Session Handoff: <one-line title of what this session was ab
 
 ## Running state
 - Background processes: <shell IDs + what they are + how to kill>, or "none"
+- Subagents still running: <agent ID + its task + what to do with its report when it arrives>, or "none"
 - Dev servers / ports: <url + port>, or "none"
 - Open worktrees / branches: <paths>, or "none"
 - Pull requests and links: <the ones the next agent needs>, or "none"
@@ -55,7 +56,7 @@ const RULES = `Rules:
 3. Never invent state. A section with nothing to report says "none"; never drop a section.
 4. Absolute paths always. If a plan file drove the session, name it first under "Key files".
 5. Every open item says who wants it: "User asked" (the user's own request), "My own idea (confirm with the user before acting)" (anything you proposed or noticed), "Deferred by rule (the user does this)" (a rule, hook or permission kept you from it; name the rule), "Open (needs the user's answer)".
-6. Background shell IDs go under "Running state" with how to stop them.
+6. Background shell IDs go under "Running state" with how to stop them. So does every subagent the facts list as still running: its ID (SendMessage reaches it by that ID), its task, and what the next agent does with its report, which arrives in the fresh chat.
 7. No git state from memory (branch, dirty files, last commits): Cache Keeper reads git live when the handoff is sent. Say what you changed, not what git would say.
 8. Never write an API key, token or password; say where it lives instead.
 9. "Pick up here" comes from "User asked" or "Open", never from "My own idea".
@@ -142,6 +143,13 @@ const PR_URL = /^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/
 const PR_REF = /(?<![\w/.-])([A-Za-z0-9][\w.-]*\/[\w.-]+)#(\d+)\b/g
 const SHELL_ID = /(?:background with ID|shell ID|shell_id|bash_id|task_id|task ID)["':\s]+([A-Za-z0-9_-]{2,})/i
 const KILLERS = ['KillShell', 'KillBash', 'TaskStop']
+const AGENT_TOOLS = ['Agent', 'Task']
+// The Agent result's own line: a synchronous one ends with it, after a report
+// that may quote other agents' ids, so the last line-start match counts
+const AGENT_ID = /^agentId["':\s]+([A-Za-z0-9_-]{6,})/gm
+const AGENT_ID_JSON = /"agentId"\s*:\s*"([A-Za-z0-9_-]{6,})"/
+// An agent the live list names in one of these is done
+const AGENT_DONE = ['completed', 'failed', 'killed']
 
 function urlOf(raw) {
   return raw.replace(/[.,:;!?'"]+$/, '')
@@ -156,6 +164,7 @@ export function gatherFacts(messages) {
   const prs = new Set()
   const bump = (set, k) => (set.delete(k), set.add(k)) // newest last
   const shells = new Map() // id -> { id, what, killed }
+  const spawned = new Map() // agent id -> { model, effort } of the Agent call that started it
   let tools = 0
   const addLinks = (text) => {
     for (const m of String(text || '').matchAll(URL_RE)) {
@@ -186,6 +195,10 @@ export function gatherFacts(messages) {
         const id = (SHELL_ID.exec(said) || [])[1]
         if (id) shells.set(id, { id, what: clip(String(input.description || input.command || ''), 80), killed: false })
       }
+      if (AGENT_TOOLS.includes(u.tool)) {
+        const id = typeof u.text === 'string' ? ([...u.text.matchAll(AGENT_ID)].pop() || [])[1] : (AGENT_ID_JSON.exec(JSON.stringify(u.result || '')) || [])[1]
+        if (id) spawned.set(id, { model: String(input.model || ''), effort: String(input.effort || '') })
+      }
       if (KILLERS.includes(u.tool)) {
         const id = input.shell_id || input.bash_id || input.task_id || input.id
         if (id && shells.has(id)) shells.get(id).killed = true
@@ -198,8 +211,20 @@ export function gatherFacts(messages) {
     links: [...links].slice(-20),
     prs: [...prs].slice(-10),
     shells: [...shells.values()],
+    spawned: [...spawned],
     tools,
   }
+}
+
+// The subagents still at work whose reports come to the main chat: the live
+// agent list (AgentInfo rows) minus finished ones, nested ones (they report to
+// their parent agent) and a plugin's (its hook gets the answer), with the
+// model the Agent call asked for when the transcript has it
+export function runningAgents(listed, spawned) {
+  const asked = new Map(spawned || [])
+  return (Array.isArray(listed) ? listed : [])
+    .filter((a) => a && a.id && !AGENT_DONE.includes(a.status) && !a.parentId && !a.spawnedBy)
+    .map((a) => ({ id: a.id, description: clip(String(a.description || ''), 80), type: a.type || '', status: a.status || '', name: a.name || '', ...(asked.get(a.id) || {}) }))
 }
 
 // ---- redaction ------------------------------------------------------------
@@ -260,6 +285,12 @@ export function redact(input) {
 
 const list = (xs, empty = 'none') => (xs.length ? xs.map((x) => `- ${x}`).join('\n') : `- ${empty}`)
 
+function agentLine(a) {
+  // idle: a teammate that reports only once a message wakes it
+  const how = [a.type, a.model, a.effort, a.status === 'idle' ? 'idle, reports only when messaged' : a.status].filter(Boolean).join(', ')
+  return `${a.id}: ${a.description || 'subagent'}${how ? ` (${how})` : ''}${a.name && a.name !== a.id ? `, SendMessage name ${a.name}` : ''}`
+}
+
 function shellLine(s) {
   return `${s.id}: ${s.what || 'background shell'}${s.killed ? ' (stopped)' : ''}`
 }
@@ -285,6 +316,8 @@ function factsBlock(g) {
     list(g.facts.servers),
     'Background shells started:',
     list(g.facts.shells.map(shellLine)),
+    'Subagents still running (live agent list; their reports arrive in the fresh chat):',
+    list((g.facts.agents || []).map(agentLine)),
     'Pull requests:',
     list(g.facts.prs),
     'Links:',
@@ -365,6 +398,7 @@ ${list(g.files.slice(0, 15).map((f) => `\`${f.path}\`: ${f.edited ? 'changed' : 
 
 ## Running state
 - Background processes: ${g.facts.shells.length ? g.facts.shells.map(shellLine).join('; ') : 'none'}
+- Subagents still running: ${(g.facts.agents || []).length ? g.facts.agents.map(agentLine).join('; ') + ': their reports arrive in this chat' : 'none'}
 - Dev servers / ports: unknown
 - Open worktrees / branches: see the live git state above
 - Pull requests and links: ${[...g.facts.prs, ...g.facts.links.slice(-5)].join(', ') || 'none'}
