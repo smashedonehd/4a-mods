@@ -449,8 +449,9 @@ export function parseTranscript(jsonl) {
 
 export const PRUNE_DAYS = 30
 
-// Only names the mod writes: <date>-...-<id8>[.draft].md
-const HANDOFF_NAME = /^\d{4}-\d{2}-\d{2}-[A-Za-z0-9-]+-[0-9a-f]{8}(?:\.draft)?\.md$/
+// Only names the mod writes: <date>-...-<id8>[-<n>][.draft].md (-<n>: a second
+// handoff of one chat in the same minute)
+const HANDOFF_NAME = /^\d{4}-\d{2}-\d{2}-[A-Za-z0-9-]+-[0-9a-f]{8}(?:-\d+)?(?:\.draft)?\.md$/
 
 // The dated handoffs to delete: handoff files older than PRUNE_DAYS, except the
 // newest of each chat still open (liveIds: session ids, or their first 8 chars)
@@ -459,7 +460,7 @@ export function pruneNames(entries, nowMs, liveIds) {
   const files = (entries || []).filter((e) => e && e.kind === 'file' && HANDOFF_NAME.test(e.name))
   const newest = new Map() // id8 -> name of its newest file
   for (const f of files) {
-    const id = (/-([0-9a-f]{8})(?:\.draft)?\.md$/.exec(f.name) || [])[1]
+    const id = (/-([0-9a-f]{8})(?:-\d+)?(?:\.draft)?\.md$/.exec(f.name) || [])[1]
     if (!id || !live.has(id)) continue
     const best = newest.get(id)
     if (!best || f.mtimeMs > best.mtimeMs) newest.set(id, f)
