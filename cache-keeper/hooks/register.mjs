@@ -1152,7 +1152,7 @@ function continueButton($, Button, extra = {}) {
 
 // A card of the desktop band: a caption over one row of what it holds. Its
 // border takes a colour only while the card needs the person
-function bandCard({ Box, Text }, key, caption, children, { tone, grow, squeeze, gap = 2 } = {}) {
+function bandCard({ Box, Text }, key, caption, children, { tone, grow, basis, squeeze, gap = 2 } = {}) {
   return Box({
     key,
     flexDirection: 'column',
@@ -1163,6 +1163,10 @@ function bandCard({ Box, Text }, key, caption, children, { tone, grow, squeeze, 
     flexShrink: squeeze ? 1 : 0,
     // The context card takes what the row has left, so the row ends flush right
     ...(grow ? { flexGrow: 1 } : {}),
+    // ...from a set width (cells inside its border and padding), not from its
+    // gauge: the gauge's markup is 1000 px wide and the card would start there,
+    // push the cards after it past the edge and wrap the rest
+    ...(basis ? { width: basis, ...(squeeze ? {} : { minWidth: basis }) } : {}),
     children: [
       Text({ dimColor: true, size: 'caption', children: [caption] }),
       Box({ key: key + '-value', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: gap, children: children.filter(Boolean) }),
@@ -1342,8 +1346,8 @@ function deskCards($, els, { st, ttl, big }, level, squeeze) {
   // one; the cell count only keeps it from going below the floor
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
-    Svg && Box({ key: 'ctx-gauge', flexGrow: 1, width: 0, minWidth: floor, children: [stretchGaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8])] }),
-  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true, squeeze, gap }))
+    Svg && Box({ key: 'ctx-gauge', flexGrow: 1, width: 1, minWidth: floor, children: [stretchGaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8])] }),
+  ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true, basis: ctxMin - CARD_CHROME, squeeze, gap }))
   return {
     need: others + ctxMin,
     widest: Math.max(ctxMin, ...widths),

@@ -352,7 +352,11 @@ test('desktop band: only the context card stretches; the others hug what they ho
     // The context card takes the rest of the row, so the row ends flush right
     expect(card?.props.flexGrow).toBe(key === 'card-ctx' ? 1 : undefined)
     expect(card?.props.flexShrink).toBe(0)
-    expect(card?.props.width).toBeUndefined()
+    // The context card starts from its narrowest and grows; never from its gauge
+    if (key === 'card-ctx') {
+      expect(Number(card?.props.width)).toBeGreaterThan(0)
+      expect(card?.props.minWidth).toBe(card?.props.width)
+    } else expect(card?.props.width).toBeUndefined()
   }
   // The context card stands third, between the cost and the limits
   const drawn = (await ui.findAll({ type: 'Box' } as never)).map((b: { key?: string }) => String(b.key)).filter((k: string) => /^card-[a-z_-]+$/.test(k) && !k.endsWith('-value'))
@@ -371,7 +375,7 @@ test('desktop band: the context gauge stretches over its card, on one line or a 
     expect(String(svg.source)).toContain('preserveAspectRatio="none"')
     // The slot grows into what the card has, from nothing up, never below the floor
     expect(box.flexGrow).toBe(1)
-    expect(box.width).toBe(0)
+    expect(box.width).toBe(1)
     expect(Number(box.minWidth)).toBeGreaterThanOrEqual(1)
   }
   // The limit gauges keep their width while the full form fits
