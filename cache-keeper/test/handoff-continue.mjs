@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import {
   normalizePath, commandPaths, rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, cleanReply,
-  missingSections, wordCount, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
+  missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
 } from '../hooks/handoff.mjs'
 
 let passed = 0
@@ -447,18 +447,25 @@ await check('/handoff keep: six steps, draft first, the handoff saved and checke
   const t = texts(card)
   assert.match(t, /Handoff ready · [\d,]+ words/)
   assert.ok(t.includes('Saved to ' + saved))
-  for (const d of ['3 messages', '2 files', '2 skill or tools, 1 link, 1 shell', 'none running', 's', 'words']) assert.ok(t.includes(d), d)
+  for (const d of ['3 messages', '2 files', '2 skills or tools, 1 link, 1 shell', 'none running', 's', 'words']) assert.ok(t.includes(d), d)
   assert.equal((t.match(/✓/g) || []).length, 6)
   for (const k of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open', 'ck-ho-close']) assert.ok(s.buttons.has(k), k)
 })
 
 await check('a subagent still running is counted on its step and named in the fork prompt; a finished one is not', async () => {
-  const agents = [{ id: 'a1cd91a274738ee47', description: 'Task 5 impl', type: 'general-purpose', status: 'running' }, { id: 'afd360d12e1aaa70c', description: 'Task 4 review', type: 'general-purpose', status: 'completed' }]
+  const agents = [{ id: 'a1cd91a274738ee47', description: 'Task 5 impl', type: 'general-purpose', status: 'running' }, { id: 'b2cd91a274738ee48', description: 'Task 6 impl', type: 'general-purpose', status: 'running' }, { id: 'afd360d12e1aaa70c', description: 'Task 4 review', type: 'general-purpose', status: 'completed' }]
   const s = await boot('/w/agents', 'agent001-0', { agents })
   await s.run('handoff', 'keep')
-  assert.ok(texts(await s.render()).includes('1 running'), 'the step says how many')
+  const t = texts(await s.render())
+  assert.ok(t.includes('2 running'), 'the step says how many')
   assert.ok(s.prompts[0].includes('a1cd91a274738ee47: Task 5 impl (general-purpose, running)'))
   assert.ok(!s.prompts[0].includes('afd360d12e1aaa70c'))
+})
+
+await check('the skills step counts in English: one skill or tool, many skills or tools', async () => {
+  assert.equal(skillsOrTools(0), '0 skills or tools')
+  assert.equal(skillsOrTools(1), '1 skill or tool')
+  assert.equal(skillsOrTools(5), '5 skills or tools')
 })
 
 await check('an agent list that never answers does not hold the handoff: none listed after the guard', async () => {

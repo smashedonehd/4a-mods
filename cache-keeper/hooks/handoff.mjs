@@ -434,6 +434,11 @@ export function missingSections(text) {
   return HEADINGS.filter((h) => !lines.some((l) => l.startsWith(h)))
 }
 
+// The card's count of skills and tools: "1 skill or tool", "5 skills or tools"
+export function skillsOrTools(n) {
+  return `${n} ${n === 1 ? 'skill or tool' : 'skills or tools'}`
+}
+
 export function wordCount(text) {
   return (String(text || '').match(/\S+/g) || []).length
 }

@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -472,7 +472,6 @@ function freshSteps() {
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
-
 // While a step runs, the card redraws twice a second: its seconds and its bar
 function startTicker($) {
   stopTicker()
@@ -598,9 +597,9 @@ async function runPipeline($, after = 'ask') {
     const read = await runStep($, 0, () => readMessages($), (r) => plural(r.messages.length, 'message') + (r.fromFile ? ' (transcript file)' : ''))
     const messages = read.messages
     const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
-    const found = await runStep($, 2, async () => gatherFacts(messages), (f) => [plural(f.skills.length + f.servers.length, 'skill or tool'), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
+    const found = await runStep($, 2, async () => gatherFacts(messages), (f) => [skillsOrTools(f.skills.length + f.servers.length), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
     // Still at work, their reports arrive in the fresh chat: the handoff names them
-    const agents = await runStep($, 3, async () => runningAgents(await listAgentsSoon($), found.spawned), (a) => (a.length ? plural(a.length, 'running') : 'none running'))
+    const agents = await runStep($, 3, async () => runningAgents(await listAgentsSoon($), found.spawned), (a) => (a.length ? `${a.length} running` : 'none running'))
     const facts = { ...found, agents }
     const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
     const name = await handoffName($)
