@@ -1183,13 +1183,25 @@ function ctxFloor(figure, limit, gauge, gap) {
   return { fixed, floor: Math.max(1, limit ? limit - fixed : gauge) }
 }
 
-// How wide the context gauge is drawn, in pixels: `columns` of room, `others`
-// the cells the other cards and the gaps take, `limit` a limit card's cells,
-// `gauge` a limit gauge's cells (the floor when there is no limit card)
-function ctxGaugePx(columns, others, figure, limit, gauge, gap) {
-  const { fixed, floor } = ctxFloor(figure, limit, gauge, gap)
-  const room = columns - others - fixed
-  return Math.round(Math.max(floor, room) * CELL_PX)
+// The cells left over on the line the context card lands on, at its
+// narrowest (ctxMin), when the row wraps as a flex row does: each card goes
+// on the current line if it fits there with a one-cell gap, else starts the
+// next. One line or several, the context card grows into what is left.
+function ctxLineRoom(columns, widths, at, ctxMin) {
+  const all = [...widths.slice(0, at), ctxMin, ...widths.slice(at)]
+  let used = 0
+  let ctxLine = -1
+  let line = 0
+  for (let i = 0; i < all.length; i++) {
+    if (used > 0 && used + 1 + all[i] > columns) {
+      if (line === ctxLine) return Math.max(0, columns - used)
+      line++
+      used = 0
+    }
+    used += (used > 0 ? 1 : 0) + all[i]
+    if (i === at) ctxLine = line
+  }
+  return Math.max(0, columns - used)
 }
 
 // How the desktop band gives way when its row would not fit, in order: the
@@ -1327,10 +1339,12 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   const ctxCaption = narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`
   // The other cards and the gap after each of them
   const others = widths.reduce((a, w) => a + w + 1, 0)
-  const gauge = ctxGaugePx(columns, others, figure, limitCells, limitGauge, gap)
   // The context card at its narrowest: its gauge at the floor
   const { fixed, floor } = ctxFloor(figure, limitCells, limitGauge, gap)
   const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
+  // Its gauge fills what its line leaves, so a wrapped row's card is not a
+  // wide card around a stub of a gauge
+  const gauge = (ctxMin - fixed + ctxLineRoom(columns, widths, ctxAt, ctxMin)) * CELL_PX
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
     Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
