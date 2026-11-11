@@ -408,7 +408,22 @@ async function bandAt($: Engine, columns: number) {
   await ui.unmount()
   const cards = row.children as { props: Record<string, unknown> }[]
   const each = cards.map((c) => cells(c as Drawn))
-  return { line: each.reduce((a, w) => a + w + 1, -1), widest: Math.max(...each), shrink: cards.every((c) => c.props.flexShrink === 1), still: cards.every((c) => c.props.flexShrink === 0) }
+  // The cells the context card's line leaves empty once the row wraps: each
+  // card on the current line if it fits there with a one-cell gap
+  const at = cards.findIndex((c) => { const k = c as { key?: string; props: { key?: string } }; return (k.key ?? k.props.key) === 'card-ctx' })
+  const lines: number[][] = [[]]
+  let used = 0
+  each.forEach((w, i) => {
+    if (used > 0 && used + 1 + w > columns) {
+      lines.push([])
+      used = 0
+    }
+    used += (used > 0 ? 1 : 0) + w
+    lines[lines.length - 1].push(i)
+  })
+  const ctxLine = lines.find((l) => l.includes(at)) as number[]
+  const ctxSlack = columns - ctxLine.reduce((a, i) => a + each[i] + 1, -1)
+  return { line: each.reduce((a, w) => a + w + 1, -1), ctxSlack, widest: Math.max(...each), shrink: cards.every((c) => c.props.flexShrink === 1), still: cards.every((c) => c.props.flexShrink === 0) }
 }
 
 const limitGauges = async ($: Engine, columns: number) => {
@@ -429,8 +444,11 @@ async function sweep($: Engine) {
       expect(columns - b.line).toBeLessThanOrEqual(1)
       oneLine.push(columns)
     } else if (b.widest <= columns) {
-      // Wrapped onto more lines: every card fits the window as it is
+      // Wrapped onto more lines: every card fits the window as it is, and the
+      // context card's gauge fills its own line, not a stub in a wide card
       expect(b.still).toBe(true)
+      expect(b.ctxSlack).toBeGreaterThanOrEqual(0)
+      expect(b.ctxSlack).toBeLessThanOrEqual(1)
     } else {
       // A card wider than the window itself: the cards may shrink and wrap their rows
       expect(b.shrink).toBe(true)
@@ -481,7 +499,8 @@ test('desktop band: with no limit card the context gauge stops at a limit gauge 
     if (isFull) full.push(await ctxGauge($, columns))
   }
   expect(Math.min(...full)).toBeGreaterThanOrEqual(64)
-  expect(await ctxGauge($, 60)).toBe(32)
+  // A window this narrow wraps the row; the context gauge then fills its own line
+  expect(await ctxGauge($, 60)).toBeGreaterThan(32)
 })
 
 test('desktop band: each plan limit has a card, coloured from 80%', async ($: Engine, on: On) => {
