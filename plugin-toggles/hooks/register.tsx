@@ -68,9 +68,42 @@ const PALETTE = [
 ]
 // A switched-on mod's On and Shown.
 const GOOD = '#16a34a'
-// The Mods tab's switch: a pill, green with the knob right when on.
-const pill = (lit: boolean) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="26" viewBox="0 0 44 26"><rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? GOOD : '#d1d1d6'}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff"/></svg>`
+// What a switch drawn as a picture is coloured by: its position's own colour
+// where Claude sees the item, a grey that reads on a light and a dark theme
+// where it does not.
+const INK: Record<Mode, string> = {
+  on: '#D97757',
+  'name-only': '#6A9BCC',
+  'user-invocable-only': '#8E8E93',
+  off: '#8E8E93',
+}
+const TRACK = '#8E8E93'
+const SVG = 'xmlns="http://www.w3.org/2000/svg"'
+const SHADOW =
+  '<defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-opacity=".35"/></filter></defs>'
+// A pill switch, coloured with the knob right when on: the Mods tab's in
+// green, a plugin's or a server's in the brand colour.
+const pill = (lit: boolean, colour = GOOD) =>
+  `<svg ${SVG} width="44" height="26" viewBox="0 0 44 26">${SHADOW}<rect x="1" y="1" width="42" height="24" rx="12" fill="${lit ? colour : TRACK}" fill-opacity="${lit ? 1 : 0.45}"/><circle cx="${lit ? 30 : 14}" cy="13" r="10" fill="#fff" filter="url(#s)"/></svg>`
+// One stop of a skill's four-stop slider, `at` the stop the knob is on. The
+// rail runs through each cell edge to edge, so four cells side by side draw
+// one rail, coloured from the left up to the knob.
+const STOP = 26
+const stop = (j: number, at: number, colour: string) => {
+  const rail = (x1: number, x2: number, lit: boolean) =>
+    `<line x1="${x1}" y1="13" x2="${x2}" y2="13" stroke="${lit ? colour : TRACK}" stroke-opacity="${lit ? 1 : 0.45}" stroke-width="4"/>`
+  const mark =
+    j === at
+      ? `<circle cx="13" cy="13" r="9" fill="#fff" stroke="${colour}" stroke-width="2" filter="url(#s)"/>`
+      : `<circle cx="13" cy="13" r="4" fill="${j < at ? colour : TRACK}" fill-opacity="${j < at ? 1 : 0.6}"/>`
+  return `<svg ${SVG} width="${STOP}" height="26" viewBox="0 0 ${STOP} 26">${SHADOW}${j > 0 ? rail(0, 13, j <= at) : ''}${j < 3 ? rail(13, STOP, j < at) : ''}${mark}</svg>`
+}
+// A desktop Button is as wide as its label, and a Box around it does not
+// press. So a pressable picture lies under a Box cut to its edges, holding a
+// plain Button whose blank label is wider than any picture here: a click
+// anywhere on the picture lands on the Button. Em spaces, as a desktop keeps
+// them where it folds plain spaces away.
+const BLANK = String.fromCharCode(0x2003).repeat(8)
 // Chips drawn at most; the filter narrows the rest.
 const SHOWN = 200
 // Bumped after each write so the pane redraws.
@@ -518,17 +551,62 @@ function inspector($: any, e: any, rows: Row[], scopeOf: Map<string, string>, he
   )
 }
 
-// One Button a position. The terminal would draw a bordered Box three rows
-// high, so there they are bracketed Buttons, the current one in the accent.
-// Elsewhere they sit chromeless in one rounded capsule, the current one on
-// its fill. Older engines take only a plain label on a Button: 2.1.282
-// refuses the whole tree otherwise.
+// Where pictures draw, a pill switch for On or Off and a four-stop slider
+// for a skill. The terminal would draw a bordered Box three rows high, so
+// there they are bracketed Buttons, one a position, the current one in the
+// accent. An engine without Svg gets them chromeless in one rounded capsule,
+// the current one on its fill. Older engines take only a plain label on a
+// Button: 2.1.282 refuses the whole tree otherwise.
 // A desktop presses only on the button itself, never on the Box around it,
-// so the fill has no padding of its own: the label carries the room as
-// no-break spaces, and a click anywhere on the fill lands on the button.
+// so the capsule's fill has no padding of its own: the label carries the
+// room as no-break spaces, and a click anywhere on the fill lands on it.
 function toggle($: any, e: any, kind: string, r: Row) {
-  const { Box, Button } = $.ui.resolve(e)
+  const { Box, Button, Svg, Text } = $.ui.resolve(e) as any
   const terminal = e.surface === 'terminal'
+  const to = (m: Mode) => () => {
+    // The position it is at already: nothing to write or count.
+    if (m !== r.mode) return setMode($, kind, r.name, m)
+  }
+  if (Svg && !terminal) {
+    const lit = inContext(r.mode)
+    // On or Off: one switch, which a press flips. Its Button is named by
+    // where the press moves it.
+    if (r.modes.length === 2) {
+      const next = r.mode === 'on' ? 'off' : 'on'
+      return pressable(
+        $,
+        e,
+        `${kind}:${r.name}:${next}`,
+        pill(r.mode === 'on', INK.on),
+        `${r.label} ${MODE_LABEL[r.mode]}`,
+        44,
+        to(next),
+      )
+    }
+    // Four stops, On to Off, the knob on the current one and its name beside.
+    const at = r.modes.indexOf(r.mode)
+    return (
+      <Box alignItems="center" gap={1} flexShrink={0}>
+        <Box width={4}>
+          <Text dimColor={!lit}>{MODE_LABEL[r.mode]}</Text>
+        </Box>
+        <Box gap={0}>
+          {r.modes.map((m, j) =>
+            pressable(
+              $,
+              e,
+              `${kind}:${r.name}:${m}`,
+              stop(j, at, INK[r.mode]),
+              `${r.label} ${MODE_LABEL[m]}`,
+              STOP,
+              to(m),
+              m !== r.mode,
+            ),
+          )}
+        </Box>
+      </Box>
+    )
+  }
   const buttons = r.modes.map(m => {
     const on = m === r.mode
     const button = (
@@ -537,10 +615,7 @@ function toggle($: any, e: any, kind: string, r: Row) {
         label={terminal ? MODE_LABEL[m] : `${NBSP}${MODE_LABEL[m]}${NBSP}`}
         {...(terminal ? { variant: on ? 'primary' : 'secondary' } : { plain: true })}
         dimColor={!on}
-        onPress={() => {
-          // The position it is at already: nothing to write or count.
-          if (!on) return setMode($, kind, r.name, m)
-        }}
+        onPress={to(m)}
       />
     )
     if (terminal) return button
@@ -554,6 +629,30 @@ function toggle($: any, e: any, kind: string, r: Row) {
   return (
     <Box borderStyle="round" borderDimColor padding={0} gap={0} overflow="hidden" flexShrink={0}>
       {buttons}
+    </Box>
+  )
+}
+
+// A picture pressed anywhere on it: see BLANK. The Button's own name is
+// blank, as a Button takes no name apart from its label; the picture's alt
+// names the item and the position.
+function pressable(
+  $: any,
+  e: any,
+  key: string,
+  source: string,
+  alt: string,
+  width: number,
+  press: () => unknown,
+  dim = false,
+) {
+  const { Box, Button, Svg } = $.ui.resolve(e) as any
+  return (
+    <Box key={`${key}-pic`} flexShrink={0} overflow="hidden">
+      <Svg source={source} alt={alt} width={width} height={26} />
+      <Box position="absolute" top={0} bottom={0} left={0}>
+        <Button key={key} label={BLANK} plain dimColor={dim} onPress={press} />
+      </Box>
     </Box>
   )
 }
@@ -1129,14 +1228,7 @@ export const register: Register = on => {
             </Text>
           )
         if (pictures)
-          return (
-            <Box flexShrink={0}>
-              <Svg source={pill(lit)} alt={label} width={44} height={26} />
-              <Box position="absolute" top={0} left={0}>
-                <Button key={key} label={'⠀⠀⠀'} plain onPress={press} />
-              </Box>
-            </Box>
-          )
+          return pressable($, e, key, pill(lit), label, 44, press)
         return !live ? (
           <Text key={key} dimColor>
             {label}
