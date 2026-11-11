@@ -1414,7 +1414,8 @@ export const register: Register = (on, options) => {
     return started
   })
 
-  // Each model request of a subagent: live context, tokens and cost.
+  // Each model request: the main loop's thinks again; a subagent's brings its
+  // live context, tokens and cost.
   on('turn.step', async function* ($, e, next) {
     // Back to thinking once a tool's result goes to the model
     if (e.agentId === undefined) await pose($, 'think')
