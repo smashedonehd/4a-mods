@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, redact, draftText, forkPrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -522,7 +522,12 @@ async function runPipeline($, after = 'ask') {
     const reply = await runStep($, 3, async () => {
       // Saved first: a failed or interrupted model step still leaves this
       await saveDraft($, name, redact(draftText(g)).text)
-      const r = await $.model.fork({ prompt: forkPrompt(g) })
+      let r = await $.model.fork({ prompt: forkPrompt(g) })
+      // A chat resumed asleep (after a restart) has no snapshot to fork: the
+      // model reads the transcript as text instead, uncached
+      if (r && r.reason === 'nothing-to-fork' && messages.length) {
+        r = await $.model.complete({ model: S.model || 'opus', prompt: completePrompt(g), maxTokens: 16000, timeoutMs: 540000 })
+      }
       if (!r || !r.isAnswered || !String(r.text || '').trim()) throw new Error(forkFailure(r))
       return r
     }, () => `${Math.max(1, Math.round((now - P.stepAt) / 1000))} s`)

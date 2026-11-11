@@ -63,6 +63,7 @@ async function boot(cwd, id, opts = {}) {
   const log = []
   const sent = []
   const prompts = [] // fork prompts
+  const completes = [] // $.model.complete requests
   const configSets = []
   const ran = [] // $.process.run argv
   const buttons = new Map()
@@ -101,7 +102,7 @@ async function boot(cwd, id, opts = {}) {
       messages: async () => (typeof msgs === 'function' ? msgs() : msgs),
       surface: async () => 'terminal',
     },
-    model: { fork: async (r) => (prompts.push(r.prompt), forkFn(r.prompt)) },
+    model: { fork: async (r) => (prompts.push(r.prompt), forkFn(r.prompt)), ...(opts.complete ? { complete: async (r) => (completes.push(r), opts.complete(r)) } : {}) },
     state: { get: async () => ({ value: states.get(id) }), set: async (_ref, v) => void states.set(id, v) },
     store: {
       get: async (k) => store.get(k) ?? null,
@@ -455,9 +456,10 @@ await check('the fork fails: the card says why, keeps the draft, and Try again w
 })
 
 await check('nothing to fork, and a reply without the sections, fail with their reasons', async () => {
-  let s = await boot('/w/nf', 'nf000001-0', { fork: async () => ({ isAnswered: false, reason: 'nothing-to-fork' }) })
+  // Nothing to fork, and the completion that reads the transcript instead fails too
+  let s = await boot('/w/nf', 'nf000001-0', { fork: async () => ({ isAnswered: false, reason: 'nothing-to-fork' }), complete: async () => ({ isAnswered: false, reason: 'api-error', status: 500 }) })
   await s.run('handoff', 'keep')
-  assert.ok(texts(await s.render()).includes('there is no conversation to fork yet'))
+  assert.ok(texts(await s.render()).includes('the model call failed (HTTP 500)'))
   s = await boot('/w/ms', 'ms000001-0', { fork: async () => ({ isAnswered: true, text: '# Session Handoff: x\n\n## Where it started\nhi' }) })
   await s.run('handoff', 'keep')
   const t = texts(await s.render())
@@ -465,6 +467,18 @@ await check('nothing to fork, and a reply without the sections, fail with their 
   assert.ok(!handoffs().some((k) => k.includes('ms000001')), 'no handoff saved to continue with')
   assert.ok(files.get(drafts().find((d) => d.includes('ms000001'))).includes('## Where it started\nhi'), 'the reply is kept as the draft')
   assert.ok(!files.get(latestKey()).includes('ms000001'))
+})
+
+await check('a chat resumed asleep has nothing to fork: the transcript goes to a completion instead', async () => {
+  let req
+  const s = await boot('/w/sl', 'sl000001-0', { fork: async () => ({ isAnswered: false, reason: 'nothing-to-fork' }), complete: async (r) => ((req = r), { isAnswered: true, text: GOOD }) })
+  await s.run('handoff', 'keep')
+  assert.ok(req, 'the completion ran')
+  assert.equal(req.model, 'claude-opus-5-5')
+  assert.match(req.prompt, /<transcript>[\s\S]*User: [\s\S]*\[tool Read [\s\S]*<\/transcript>/)
+  assert.ok(req.prompt.includes('# Session Handoff'), 'the fork prompt follows the transcript')
+  assert.ok(handoffs().some((k) => k.includes('sl000001')), 'the handoff is saved')
+  assert.ok(!texts(await s.render()).includes('there is no conversation to fork yet'))
 })
 
 await check('secrets in the fork reply never reach the saved file', async () => {
