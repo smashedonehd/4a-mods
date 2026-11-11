@@ -19,12 +19,14 @@ const dismissed = atom({ plugin: 'savvy-progress', key: 'dismissed' } as const, 
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
-// Added to the end of each savvy worker's brief. Their system prompt words step
-// reporting as a condition ("if the step tool appears among your tools") and they
-// skip it even with the tool listed; the same request in the brief is followed.
+// Added to the end of every subagent's brief, so each row in the panel can show
+// its steps. A savvy worker's system prompt words step reporting as a condition
+// ("if the step tool appears among your tools") and they skip it even with the
+// tool listed; the same request in the brief is followed. An agent whose tool
+// list leaves the step tool out is told to skip it.
 const STEP_BRIEF = `
 
-Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar.`
+Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar. If the tool is deferred, load it with ToolSearch first; if you have no such tool at all, skip this.`
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
@@ -1385,7 +1387,7 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
+    const isUnbriefed = !e.prompt.includes(STEP_TOOL)
     const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
 
