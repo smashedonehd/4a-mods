@@ -135,9 +135,13 @@ test('every subagent is asked to report its steps, once', async ($, on) => {
   await spawn('s1', 'ukazovatko-team:wp-designer', 'Build the page.')
   await spawn('s2', 'savvy-careful', 'Fix the bug.')
   await spawn('s3', 'general-purpose', 'Review it. Call mcp__savvy-progress__step after each step.')
+  await $.agent.spawn({ tool_use_id: 's4', prompt: 'Go on.', description: 'Task s4', subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false, resume: { agentId: 's1' } } as never)
+  await $.agent.spawn({ tool_use_id: 's5', prompt: 'Rate it.', description: 'Task s5', subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false, workflow: { runId: 'wf_1' } } as never)
   expect(prompts[0]?.startsWith('Build the page.')).toBe(true)
   expect(prompts[0]).toContain('Progress reporting: before any other work, call `mcp__savvy-progress__step`')
-  expect(prompts[1]).toContain('Progress reporting:')
+  expect(prompts[1]?.split('Progress reporting:').length).toBe(2)
   // A brief that already names the tool stays as the parent wrote it
   expect(prompts[2]).toBe('Review it. Call mcp__savvy-progress__step after each step.')
+  // A resumed run and a workflow's agent keep their prompt
+  expect(prompts.slice(3)).toEqual(['Go on.', 'Rate it.'])
 })

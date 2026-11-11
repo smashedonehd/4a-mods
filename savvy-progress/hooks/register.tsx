@@ -1387,7 +1387,9 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const isUnbriefed = !e.prompt.includes(STEP_TOOL)
+    // A resumed run's prompt is not the engine's to change, and a workflow's
+    // agents answer to their script: both keep their prompt as it is
+    const isUnbriefed = !e.resume && !e.workflow && !e.prompt.includes(STEP_TOOL)
     const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
 
