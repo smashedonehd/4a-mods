@@ -54,6 +54,7 @@ declare module 'claude-code' {
       panel: Panel
       now: number
       dismissed: string
+      pose: 'think' | 'write' | 'wait' | 'delegate'
     }
   }
 }

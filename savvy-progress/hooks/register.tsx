@@ -11,6 +11,8 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
+// What the main loop is doing, for its avatar's pose
+const mainPose = atom({ plugin: 'savvy-progress', key: 'pose' } as const, 'wait')
 // The wave whose band was dismissed, by the id of the run that was its first: the
 // band without a reported plan stays away from every wave that run is in
 const dismissed = atom({ plugin: 'savvy-progress', key: 'dismissed' } as const, '')
@@ -53,6 +55,7 @@ type Lang = 'en' | 'ru' | 'he'
 
 const STRINGS = {
   en: {
+    pose: { think: 'thinking', write: 'working', wait: 'waiting for you', delegate: 'handing out tasks' },
     pane: 'Agents',
     auto: 'Subagents',
     cost: 'Cost',
@@ -85,6 +88,7 @@ const STRINGS = {
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   },
   ru: {
+    pose: { think: 'думает', write: 'работает', wait: 'ждёт тебя', delegate: 'раздаёт задачи' },
     pane: 'Агенты',
     auto: 'Субагенты',
     cost: 'Стоимость',
@@ -117,6 +121,7 @@ const STRINGS = {
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   },
   he: {
+    pose: { think: 'חושב', write: 'עובד', wait: 'מחכה לך', delegate: 'מחלק משימות' },
     pane: 'סוכנים',
     auto: 'תת-סוכנים',
     cost: 'עלות',
@@ -816,6 +821,229 @@ const costumeOf = (a: { type: string; model?: string; effort?: string }): string
   return roleOf(a.type) || tierFromModel(a.model ?? '', a.effort)
 }
 
+// --- the main agent's avatar: one dressed crab per persona at the top of the
+// pane, in a pose that follows what the main loop is doing.
+
+export type Pose = 'think' | 'write' | 'wait' | 'delegate'
+
+// A jacket over the lower body: lapels in a V, the shirt between
+const jacket = (f: Fill, coat: string, shirt: string, lapel = coat, buttons = ''): void => {
+  f(7, 16, 16, 6, coat)
+  f(3, 14, 4, 4, coat)
+  stamp(f, 12, 15, ['ssssss', 'lsssl.', '.lssl.', '..ll..'], { s: shirt, l: lapel })
+  if (buttons) {
+    f(13, 20, 1, 1, buttons)
+    f(16, 20, 1, 1, buttons)
+  }
+}
+
+type Persona = {
+  name: string
+  accent: string
+  // Drawn behind the body (a cape)
+  back?: (f: Fill) => void
+  // Head and outfit, over the body
+  dress: (f: Fill) => void
+  // What the claw holds while the agent works, its top left at x, y
+  tool: (f: Fill, x: number, y: number) => void
+}
+
+const PERSONAS: Record<string, Persona> = {
+  // Any main chat without a persona: crown, royal cape, a baton
+  claude: {
+    name: 'Claude',
+    accent: '#D4A017',
+    back: f => {
+      f(5, 13, 20, 11, '#9E2B2B')
+      f(5, 23, 20, 1, '#F2EFE6')
+      for (const x of [6, 12, 18, 23]) f(x, 23, 1, 1, INK)
+    },
+    dress: f => {
+      f(7, 15, 16, 2, '#F2EFE6')
+      f(9, 15, 1, 1, INK)
+      f(14, 16, 1, 1, INK)
+      f(19, 15, 1, 1, INK)
+      f(7, 17, 16, 5, '#7A2E8C')
+      f(14, 17, 2, 5, '#D4A017')
+      stamp(f, 9, 3, ['g...g..g...g', 'gg.ggggggg.g', 'gggrgggbgggg', 'gggggggggggg', 'gwgwgwgwgwgw'], { g: '#D4A017', r: '#C0392B', b: '#2E6FD8', w: '#F2EFE6' })
+    },
+    tool: (f, x, y) => {
+      f(x, y, 1, 6, '#2B2A28')
+      f(x, y - 1, 1, 1, '#F2EFE6')
+    },
+  },
+  // Performance marketing: hoodie with a growth arrow, a headset, the campaigns' chart
+  watson: {
+    name: 'John Watson',
+    accent: '#3FB950',
+    dress: f => {
+      f(7, 8, 16, 3, '#2F3A33')
+      f(7, 16, 16, 6, '#34403A')
+      f(3, 14, 4, 4, '#34403A')
+      f(7, 21, 16, 1, '#26302B')
+      f(11, 16, 1, 3, '#E6E8EE')
+      f(18, 16, 1, 3, '#E6E8EE')
+      stamp(f, 12, 17, ['....ggg', '.....gg', '...g.g.', '..gg...', 'gg.....'], { g: '#3FB950' })
+      stamp(f, 6, 6, ['...bbbbbbbbbb...', '.bb..........bb.', 'b..............b', 'b..............b'], { b: '#2B2A28' })
+      f(5, 10, 3, 4, '#2B2A28')
+      f(22, 10, 3, 4, '#2B2A28')
+      f(6, 11, 1, 2, '#3FB950')
+      f(23, 14, 1, 1, '#2B2A28')
+      f(19, 15, 4, 1, '#2B2A28')
+      f(18, 15, 1, 1, '#E04A3A')
+    },
+    tool: (f, x, y) => stamp(f, x - 1, y, ['dddddd', 'dwwwwd', 'dwwwgd', 'dwgwgd', 'dggggd', 'dddddd'], { d: '#2B2A28', w: '#EAF2EE', g: '#3FB950' }),
+  },
+  // Invoices and documents: a bun, glasses, a navy blazer, pearls, a tablet
+  lisa: {
+    name: 'Lisa Stark',
+    accent: '#2E8B57',
+    dress: f => {
+      jacket(f, '#1F3A5F', '#F4F3EE', '#16294A')
+      for (const x of [11, 13, 15, 17, 19]) f(x, x === 15 ? 16 : 15, 1, 1, '#F7F3E8')
+      stamp(f, 7, 4, ['......bbbb......', '.....bbbbbb.....', '......bbbb......', '..bbbbbbbbbbbb..', '.bbbbbbbbbbbbbb.', 'bbbbbbbbbbbbbbbb', 'bb............bb', 'bb............bb', 'b..............b'], { b: '#3A2418' })
+      stamp(f, 8, 11, ['kkkk......kkkk', 'k..kkkkkkkk..k', 'kkkk......kkkk'], { k: '#B8862B' })
+    },
+    tool: (f, x, y) => stamp(f, x - 1, y, ['dddddd', 'dwwwwd', 'dwggwd', 'dwwwwd', 'dwrrwd', 'dddddd'], { d: '#2B2A28', w: '#EAF2EE', g: '#2E8B57', r: '#9a9a96' }),
+  },
+  // Publishing and photos: a beanie, a scarf, a denim jacket, a camera on its strap
+  greg: {
+    name: 'Greg',
+    accent: '#8B2E3A',
+    dress: f => {
+      jacket(f, '#3E5A80', '#2B2A28', '#2F4766', '#C9A24A')
+      for (let i = 0; i < 7; i++) f(9 + i, 15 + i, 1, 1, '#5A3519')
+      stamp(f, 15, 18, ['kkkkkk', 'kgglkk', 'kkkkkk'], { k: '#2E2C2A', g: '#8E8B86', l: '#7FB6E0' })
+      f(7, 15, 16, 2, '#8B2E3A')
+      f(20, 16, 2, 4, '#8B2E3A')
+      f(20, 19, 2, 1, '#6A1F2A')
+      stamp(f, 7, 3, ['.......pp.......', '.....pppppp.....', '...pppppppppp...', '..pppppppppppp..', '.pppppppppppppp.', 'dddddddddddddddd', 'dd.dd.dd.dd.dd.d'], { p: '#D9A532', d: '#B5861F' })
+    },
+    tool: (f, x, y) => stamp(f, x - 1, y, ['.kk...', 'kkkkkk', 'kglllk', 'kklllk', 'kkkkkk'], { k: '#2E2C2A', g: '#8E8B86', l: '#7FB6E0' }),
+  },
+  // Writing: a wide hat with a feather, a lace collar, a plum dress, a brooch
+  irene: {
+    name: 'Irene Adler',
+    accent: '#B04A8C',
+    dress: f => {
+      f(7, 16, 16, 6, '#6B2A5E')
+      f(6, 20, 18, 3, '#6B2A5E')
+      f(3, 14, 4, 4, '#6B2A5E')
+      f(9, 18, 12, 1, '#8A3A7A')
+      stamp(f, 9, 15, ['w.w.w.w.w.w.', '.www.ww.www.'], { w: '#F4F3EE' })
+      f(14, 17, 2, 2, '#E8C35A')
+      f(14, 17, 1, 1, '#B04A8C')
+      stamp(f, 3, 2, ['..................ff....', '................ffff....', '.......pppppppp.fff.....', '......pppppppppff.......', '......rrrrrrrrrr........', 'pppppppppppppppppppppp..', '.pppppppppppppppppppp...'], { p: '#3E1F38', r: '#B04A8C', f: '#E9D9F0' })
+    },
+    tool: (f, x, y) => stamp(f, x, y - 3, ['...f', '..ff', '.ff.', 'ff..', 'k...', 'k...'], { f: '#F4F3EE', k: '#3A3A3C' }),
+  },
+}
+
+// Whose chat this is, by the folder it runs in: a persona's own project, or a
+// worktree under it; anything else is Claude's
+const personaOf = (root: string): string => {
+  const parts = String(root || '').toLowerCase().split(/[\\/]+/)
+  if (parts.includes('john-watson')) return 'watson'
+  if (parts.includes('lisa stark') || parts.includes('stark')) return 'lisa'
+  if (parts.includes('greg-publisher')) return 'greg'
+  if (parts.includes('irene-adler')) return 'irene'
+  return 'claude'
+}
+
+// The pose a tool call of the main loop puts it in
+const WORK_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell', 'MultiEdit'])
+const poseOfTool = (tool: string): Pose => (tool === 'Agent' || tool === 'Task' ? 'delegate' : WORK_TOOLS.has(tool) ? 'write' : 'think')
+
+// Only a change is written, so the pane redraws seldom
+async function pose($: EngineInterface, next: Pose): Promise<void> {
+  if ((await read($, mainPose)) !== next) await update($, mainPose, () => next)
+}
+
+// While subagents run, the main agent hands out tasks whatever its own loop does
+const shownPose = (stored: Pose, running: number): Pose => (running > 0 && stored !== 'wait' ? 'delegate' : stored)
+
+// What the right claw does in each pose, and what floats beside it
+const POSE_DRAW: Record<Pose, (f: Fill, p: Persona) => void> = {
+  think: f => {
+    f(19, 16, 4, 4, CLAY)
+    f(29, 9, 2, 2, '#BDBDB8', 'b1')
+    f(31, 5, 3, 3, '#BDBDB8', 'b2')
+    stamp(f, 30, -2, ['.wwww.', 'wwwwww', 'wkwkww', 'wwwwww', '.wwww.'], { w: '#E6E4DD', k: '#6b6a66' }, 'b3')
+  },
+  write: (f, p) => {
+    f(23, 14, 4, 4, CLAY, 'it')
+    p.tool((x, y, w, h, c) => f(x, y, w, h, c, 'it'), 27, 10)
+  },
+  wait: f => {
+    f(23, 9, 4, 4, CLAY, 'wv')
+    f(24, 13, 2, 2, CLAY, 'wv')
+    stamp(f, 28, 0, ['.wwwwww.', 'wwwkkwww', 'wwwwwkww', 'wwwwkwww', 'wwwwwwww', 'wwwwkwww', '.wwwwww.', '..w.....', '.w......'], { w: '#FFF6D6', k: '#B5861F' }, 'q')
+  },
+  delegate: f => {
+    f(23, 15, 6, 3, CLAY)
+    for (const [cls, x, y] of [['e1', 31, 12], ['e2', 33, 17], ['e3', 31, 22]] as const) stamp(f, x, y, ['wwww', 'wkkw', 'wwww'], { w: '#F4F3EE', k: '#9a9a96' }, cls)
+  },
+}
+
+const AVATAR_CSS = `<style>
+.av g{transform-box:fill-box}
+.av .la{animation:st .5s steps(1) infinite}.av .lb{animation:st .5s steps(1) infinite -.25s}
+.p-write .bd,.p-delegate .bd{animation:bob .5s steps(1) infinite -.125s}
+.p-think .la,.p-think .lb,.p-wait .la,.p-wait .lb{animation:none}
+.p-think .b1{animation:pop 2.4s steps(1) infinite}.p-think .b2{animation:pop 2.4s steps(1) infinite .4s}.p-think .b3{animation:pop 2.4s steps(1) infinite .8s}
+@keyframes pop{0%{opacity:0}10%{opacity:1}85%{opacity:1}95%{opacity:0}}
+.p-write .it{animation:scribble .5s steps(1) infinite}
+.p-wait .wv{transform-origin:50% 100%;animation:hail .6s steps(1) infinite}
+@keyframes hail{50%{transform:rotate(-20deg)}}
+.p-wait .q{animation:nod 1.2s ease-in-out infinite}@keyframes nod{50%{transform:translateY(-1px)}}
+.p-delegate .e1,.p-delegate .e2,.p-delegate .e3{animation:send 1.5s linear infinite}
+.p-delegate .e2{animation-delay:-.5s}.p-delegate .e3{animation-delay:-1s}
+@keyframes send{0%{transform:translate(-4px,0);opacity:0}20%{opacity:1}100%{transform:translate(6px,-3px);opacity:0}}
+@media (prefers-reduced-motion: reduce){.av,.av g{animation:none!important}}
+</style>`
+
+// The avatar on a 42x34 grid (the crab at 5,4), placed at x, y and scaled;
+// mirrored inside its own box in Hebrew
+const AVATAR_BOX = 42
+const avatar = (x: number, y: number, persona: string, pose: Pose, scale: number, mirror = false): string => {
+  const p = PERSONAS[persona] ?? (PERSONAS.claude as Persona)
+  const groups = new Map<string, string[]>([['bd', []]])
+  const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
+    if (!groups.has(cls)) groups.set(cls, [])
+    groups.get(cls)?.push(`<rect x="${cx + 5}" y="${cy + 4}" width="${w}" height="${h}" fill="${c}"/>`)
+  }
+  p.back?.(f)
+  f(7, 10, 16, 12, CLAY)
+  f(3, 14, 4, 4, CLAY)
+  f(9, 12, 2, 2, INK)
+  f(19, 12, 2, 2, INK)
+  f(7, 22, 2, 4, CLAY, 'la')
+  f(17, 22, 2, 4, CLAY, 'la')
+  f(11, 22, 2, 4, CLAY, 'lb')
+  f(21, 22, 2, 4, CLAY, 'lb')
+  p.dress(f)
+  POSE_DRAW[pose](f, p)
+  const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
+  const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
+  const place = mirror ? `translate(${x + AVATAR_BOX * scale},${y}) scale(${-scale},${scale})` : `translate(${x},${y}) scale(${scale})`
+  return `<g transform="${place}" shape-rendering="crispEdges"><g class="av p-${pose} a-${persona}"><g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>${group('la')}${group('lb')}</g></g>`
+}
+
+const AVATAR_H = 74
+const AVATAR_SCALE = 2
+
+// The pane's top row: the main agent, its name and what it is doing
+const avatarSvg = (W: number, persona: string, pose: Pose): string => {
+  const p = PERSONAS[persona] ?? (PERSONAS.claude as Persona)
+  const boxW = AVATAR_BOX * AVATAR_SCALE
+  const textX = boxW + 10
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${AVATAR_H}" viewBox="0 0 ${W} ${AVATAR_H}">${PANE_CSS}${CRAB_CSS}${AVATAR_CSS}
+${avatar(mx(W, 0, boxW), 2, persona, pose, AVATAR_SCALE, isRtl())}
+<text class="t" ${startText(W, textX, 32)} font-family="${FONT}" font-size="15" font-weight="600">${xml(p.name)}</text>
+<text ${startText(W, textX, 51)} font-family="${FONT}" font-size="12"><tspan fill="${p.accent}">●</tspan><tspan class="s"> ${xml(tr().pose[pose])}</tspan></text>
+</svg>`
+}
+
 const CRAB_SCALE = 1.1
 
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
@@ -1110,6 +1338,22 @@ export const register: Register = (on, options) => {
     return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
+  // The main loop's pose: a prompt or a model turn thinks, a tool that changes
+  // something works, launching a subagent hands out tasks, the end of a turn
+  // waits for the person.
+  on('prompt.submit', async ($, e, next) => {
+    await pose($, 'think')
+    return next(e)
+  })
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) await pose($, 'think')
+    return next(e)
+  })
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId === undefined) await pose($, poseOfTool(String(e.tool)))
+    return next(e)
+  })
+
   // Safety net: worker launches move the faint layer even if the orchestrator forgets to report.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const type = String(e.subagent_type ?? '')
@@ -1214,6 +1458,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
+    if (!agentId) await pose($, 'wait')
     if (agentId) {
       await foundRun($, agentId, e.usage?.model || '')
       const at = await $.clock.now()
@@ -1253,8 +1498,11 @@ export const register: Register = (on, options) => {
     const f = await read($, flow)
     const p: Panel = await read($, panel)
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), 0)
+    const persona = personaOf(await $.session.root().catch(() => ''))
 
     const running = list.filter(a => a.status === 'running').reverse()
+    const bossPose = shownPose(await read($, mainPose), running.length)
+    const boss = `${(PERSONAS[persona] ?? (PERSONAS.claude as Persona)).name}: ${s.pose[bossPose]}`
     const finished = list.filter(a => a.status !== 'running').reverse()
     const planned = plannedOf(f, list)
     const t = totals(list, at)
@@ -1301,7 +1549,7 @@ export const register: Register = (on, options) => {
       }
       const shownDone = p.isDoneCollapsed ? 0 : finished.length
       const lines = 1 + (isEmpty ? 1 : 0) + (running.length > 0 ? 1 : 0) + (finished.length > 0 ? 1 : 0) + (planned.length > 0 ? 1 : 0)
-      const gridH = headerHeight(title) + lines * LINE_H + (running.length + shownDone) * 66 + planned.length * 46
+      const gridH = AVATAR_H + headerHeight(title) + lines * LINE_H + (running.length + shownDone) * 66 + planned.length * 46
       return (
         <Box flexDirection="column">
           {/* The grid sizes the pane; the content is placed over it, as an
@@ -1310,6 +1558,7 @@ export const register: Register = (on, options) => {
             <Svg key={`grid-${i}`} source={gridSvg(W, tileH)} alt="dotted grid" width={W} height={tileH} />
           ))}
           <Box flexDirection="column" position="absolute" top={0} left={0} right={0} alignItems={align}>
+            <Svg key="boss" source={avatarSvg(W, persona, bossPose)} alt={boss} width={W} height={AVATAR_H} />
             <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
             {toggleCompact}
             {isEmpty && <Text dimColor>{s.empty}</Text>}
