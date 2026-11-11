@@ -359,10 +359,13 @@ test('a skill of your own gets a four-way switch and costs what its position doe
   for (const m of modes)
     expect((await ui.find({ type: 'Button', key: `skills:greg:${m}` }))?.props.label).toBe(BLANK)
   expect(await at(ui, 'skills:greg', modes)).toEqual(['name-only'])
-  expect(await pictures(ui)).toEqual(['On', 'Name', 'User', 'Off'].map(a => [a, false]))
+  expect(await pictures(ui)).toEqual(['On', 'Name', 'User', 'Off'].map(a => [`greg ${a}`, false]))
   const stops = (await ui.findAll({ type: 'Svg' })).filter((s: any) => s.props.height === 26)
   expect(stops.map((s: any) => s.props.source.includes('r="9"'))).toEqual([false, true, false, false])
   expect(stops[1]?.props.source).toContain('#6A9BCC')
+  // The rail is lit up to the knob and grey past it.
+  const lit = (s: any) => /<line[^>]*stroke="#6A9BCC"/.test(s.props.source)
+  expect(stops.map(lit)).toEqual([true, true, false, false])
   // Each stop's Button lies over its whole picture, cut to the picture's edges.
   const boxes = await ui.findAll({ type: 'Box' })
   const cell = boxes.find((b: any) => b.props.key === 'skills:greg:off-pic')

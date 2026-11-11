@@ -597,7 +597,7 @@ function toggle($: any, e: any, kind: string, r: Row) {
               e,
               `${kind}:${r.name}:${m}`,
               stop(j, at, INK[r.mode]),
-              MODE_LABEL[m],
+              `${r.label} ${MODE_LABEL[m]}`,
               STOP,
               to(m),
               m !== r.mode,
@@ -633,7 +633,9 @@ function toggle($: any, e: any, kind: string, r: Row) {
   )
 }
 
-// A picture pressed anywhere on it: see BLANK.
+// A picture pressed anywhere on it: see BLANK. The Button's own name is
+// blank, as a Button takes no name apart from its label; the picture's alt
+// names the item and the position.
 function pressable(
   $: any,
   e: any,
