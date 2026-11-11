@@ -350,9 +350,13 @@ await check('running subagents: the live list minus finished ones, the model fro
     // A synchronous result: the report quotes another agent; its own id comes last
     { tool: 'Agent', input: { description: 'Sync check', model: 'haiku' }, text: 'Done. Task 5 answered "agentId: a1cd91a274738ee47" earlier.\nagentId: a1cd91a274738ee47 was asked too.\nagentId: ffff0000aaaa1111 (for resuming)' },
     { tool: 'Agent', input: { model: 'opus' }, result: { status: 'async_launched', agentId: 'eeee0000bbbb2222' } },
+    // Empty text: the result object's own id, not a nested one
+    { tool: 'Agent', input: { model: 'opus' }, text: '', result: { prior: { agentId: 'nested000000' }, agentId: 'own000000000' } },
+    // No id on the agentId line itself: nothing from the next line
+    { tool: 'Agent', input: { model: 'opus' }, text: 'Done.\nagentId:\nnextline0000' },
   ] }]
   const f = gatherFacts(rows)
-  assert.deepEqual(f.spawned.map(([id]) => id), ['a1cd91a274738ee47', 'afd360d12e1aaa70c', 'ffff0000aaaa1111', 'eeee0000bbbb2222'])
+  assert.deepEqual(f.spawned.map(([id]) => id), ['a1cd91a274738ee47', 'afd360d12e1aaa70c', 'ffff0000aaaa1111', 'eeee0000bbbb2222', 'own000000000'])
   const agents = runningAgents([
     { id: 'a1cd91a274738ee47', description: 'Task 5 impl', type: 'general-purpose', status: 'running' },
     { id: 'afd360d12e1aaa70c', description: 'Task 4 review', type: 'general-purpose', status: 'completed' },

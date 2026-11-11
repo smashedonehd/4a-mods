@@ -559,14 +559,15 @@ function forkFailure(r) {
 // What follows a handoff, by strength: an earlier choice holds against a weaker one
 const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
 
-// The live agent list, or [] when the host does not answer in LIVE_TIMEOUT.
-// The guard's timer starts only when the list is not in at once.
-async function listAgentsSoon($) {
+// The live agent list, or `none` ([] by default) when the host fails or does
+// not answer in LIVE_TIMEOUT. The guard's timer starts only when the list is
+// not in at once.
+async function listAgentsSoon($, none = []) {
   let answered = false
-  const list = $.agent.list().catch(() => []).finally(() => (answered = true))
+  const list = $.agent.list().catch(() => none).finally(() => (answered = true))
   for (let i = 0; i < 3 && !answered; i++) await null
   if (answered) return list
-  return Promise.race([list, new Promise((done) => $.clock.after(LIVE_TIMEOUT, () => done([])))])
+  return Promise.race([list, new Promise((done) => $.clock.after(LIVE_TIMEOUT, () => done(none)))])
 }
 
 // Runs the six steps now, or once the running turn ends. after: see P.after.
@@ -1471,10 +1472,11 @@ function ringSvg(Svg, frac, color, status, alt, turn = 0) {
   return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}" viewBox="0 0 ${d} ${d}">${out.join('')}</svg>`, width: d, height: d, alt })
 }
 
-function stepBar(els, Svg, frac, status) {
+function stepBar(els, Svg, frac, status, spins = false) {
   const color = status === 'fail' ? HUE.red : status === 'done' ? HUE.green : ACCENT
-  // A running step's arc turns a quarter with each redraw: busy, not stuck
-  if (Svg) return ringSvg(Svg, frac, color, status, `${Math.round(frac * 100)}%`, status === 'run' ? (Math.floor(now / 500) % 4) * 90 : 0)
+  // A running step's fixed half arc turns a quarter with each redraw: busy,
+  // not stuck. The writing step's arc grows instead, from the top.
+  if (Svg) return ringSvg(Svg, frac, color, status, `${Math.round(frac * 100)}%`, spins ? (Math.floor(now / 500) % 4) * 90 : 0)
   const on = Math.round(frac * BAR_CELLS)
   return els.Text({ children: [els.Text({ color, children: ['━'.repeat(on)] }), els.Text({ dimColor: true, children: ['━'.repeat(BAR_CELLS - on)] })] })
 }
@@ -1540,7 +1542,7 @@ function handoffCard($, e, els, Svg) {
   const steps = (P.steps.length ? P.steps : freshSteps()).map((s, i) => {
     const icon = s.status === 'done' ? Text({ color: HUE.green, children: ['✓'] }) : s.status === 'fail' ? Text({ color: HUE.red, children: ['✗'] }) : s.status === 'run' ? Text({ color: ACCENT, children: [SPIN[Math.floor(now / 500) % SPIN.length]] }) : Text({ dimColor: true, children: ['○'] })
     const label = Text({ dimColor: s.status === 'wait', children: [desk ? STEP_LABELS[i] : `${i + 1}. ${STEP_LABELS[i]}`] })
-    const bar = stepBar(els, Svg, stepProgress(i, s), s.status)
+    const bar = stepBar(els, Svg, stepProgress(i, s), s.status, s.status === 'run' && i !== WRITE_STEP)
     const detail = Text({ dimColor: true, ...(desk ? { size: 'caption' } : {}), children: [stepDetail(s) || ''] })
     // Desktop: the six steps stand side by side, each a ring beside its label
     // and detail; the ring is the step's icon too
@@ -1738,8 +1740,9 @@ async function heartbeat($, force) {
   if (!force && now - lastHeartbeat < 5000) return
   lastHeartbeat = now
   try {
-    const agents = await $.agent.list()
-    S.agentsRunning = agents.filter((a) => a.status === 'running').length
+    // A failed or slow list keeps the last count
+    const agents = await listAgentsSoon($, null)
+    if (agents) S.agentsRunning = agents.filter((a) => a.status === 'running').length
   } catch {
     // agent list unavailable: keep the last count
   }
