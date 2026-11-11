@@ -63,7 +63,6 @@ const runs = (on: any) => {
   return ran
 }
 
-const NBSP = String.fromCharCode(160)
 const SETTINGS = 'C:/Users/x/.claude/settings.json'
 const GLOBAL = 'C:/Users/x/.claude.json'
 const PROFILES = 'C:/Users/x/.claude/mods-data/plugin-toggles-profiles.json'
@@ -91,19 +90,26 @@ const usage =
     },
   })
 
-// The positions a switch is at: those of its Buttons drawn at full ink.
+// The positions a switch is at: those of its Buttons drawn at full ink. On
+// the desktop an On or Off switch is one Button, named by where a press moves
+// it, so there the position with no Button is the one it is at.
 const at = async (ui: any, key: string, modes: string[]) => {
-  const lit: string[] = []
-  for (const m of modes) {
-    const b = await ui.find({ type: 'Button', key: `${key}:${m}` })
-    if (b && b.props.dimColor !== true) lit.push(m)
-  }
-  return lit
+  const drawn: [string, any][] = []
+  for (const m of modes) drawn.push([m, await ui.find({ type: 'Button', key: `${key}:${m}` })])
+  const named = drawn.filter(([, b]) => b)
+  if (modes.length === 2 && named.length === 1) return drawn.filter(([, b]) => !b).map(([m]) => m)
+  return named.filter(([, b]) => b.props.dimColor !== true).map(([m]) => m)
 }
 
-// The fills under the switches' current positions, top to bottom.
-const fills = async (ui: any) =>
-  (await ui.findAll({ type: 'Box' })).map((b: any) => b.props.backgroundColor).filter(Boolean)
+// The switches drawn as pictures, top to bottom: what each says and whether
+// it is lit in the brand colour. The gauge's bar is no switch.
+const pictures = async (ui: any) =>
+  (await ui.findAll({ type: 'Svg' }))
+    .filter((s: any) => s.props.height === 26)
+    .map((s: any) => [s.props.alt, s.props.source.includes('#D97757')])
+
+// The blank label a picture's Button carries, wider than the picture.
+const BLANK = String.fromCharCode(0x2003).repeat(8)
 
 const fooSkills = (pluginName: string, tokens: number) => ({
   skills: {
@@ -173,7 +179,7 @@ test('an enabled plugin is lit and sized by the engine count, as a bar on deskto
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await at(ui, 'plugins:foo@bar', ['on', 'off'])).toEqual(['on'])
     expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:name-only' })).toBeFalsy()
-    if (surface === 'desktop') expect(await fills(ui)).toEqual(['claude'])
+    if (surface === 'desktop') expect(await pictures(ui)).toEqual([['foo On', true]])
     else
       expect((await ui.find({ type: 'Button', key: 'plugins:foo@bar:on' }))?.props.variant).toBe('primary')
     // The total above the bar and the row's own cost.
@@ -196,7 +202,7 @@ test('an off plugin has its switch at Off and a cost estimated from its files', 
 
   const ui = await $.ui.mount(PANE)
   expect(await at(ui, 'plugins:foo@bar', ['on', 'off'])).toEqual(['off'])
-  expect(await fills(ui)).toEqual(['subtle'])
+  expect(await pictures(ui)).toEqual([['foo Off', false]])
   expect(await ui.find({ type: 'Text', text: /^~7$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /0 of 1 plugins on/ })).toBeTruthy()
   await ui.unmount()
@@ -223,7 +229,8 @@ test('pressing the position a switch is at writes and counts nothing', async ($,
   const before = JSON.stringify({ enabledPlugins: { 'foo@bar': true } })
   const files = disk(on, { [SETTINGS]: before })
 
-  const ui = await $.ui.mount(PANE)
+  // The terminal draws a Button for each position, the current one too.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'plugins:foo@bar:on' })
   expect(files[SETTINGS]).toBe(before)
   expect(await ui.find({ type: 'Text', text: /change saved/ })).toBeFalsy()
@@ -348,17 +355,22 @@ test('a skill of your own gets a four-way switch and costs what its position doe
 
   const ui = await $.ui.mount(PANE)
   const modes = FOUR
-  const labels: string[] = []
-  for (const m of modes) labels.push(String((await ui.find({ type: 'Button', key: `skills:greg:${m}` }))?.text))
-  // Padded with no-break spaces, so the button fills its cell of the capsule.
-  expect(labels).toEqual(['On', 'Name', 'User', 'Off'].map(l => `${NBSP}${l}${NBSP}`))
+  // A slider of four stops, each a picture under its own Button, the knob on Name.
+  for (const m of modes)
+    expect((await ui.find({ type: 'Button', key: `skills:greg:${m}` }))?.props.label).toBe(BLANK)
   expect(await at(ui, 'skills:greg', modes)).toEqual(['name-only'])
-  expect(await fills(ui)).toEqual(['suggestion'])
-  // No padding round any cell, lit or not: a desktop would not press there.
-  const capsule = (await ui.findAll({ type: 'Box' })).find((b: any) => b.props.borderStyle === 'round')
-  const cells = (capsule?.children ?? []) as any[]
-  expect(cells.length).toBe(4)
-  expect(cells.map(c => [c.props?.paddingX, c.props?.padding])).toEqual(cells.map(() => [undefined, undefined]))
+  expect(await pictures(ui)).toEqual(['On', 'Name', 'User', 'Off'].map(a => [a, false]))
+  const stops = (await ui.findAll({ type: 'Svg' })).filter((s: any) => s.props.height === 26)
+  expect(stops.map((s: any) => s.props.source.includes('r="9"'))).toEqual([false, true, false, false])
+  expect(stops[1]?.props.source).toContain('#6A9BCC')
+  // Each stop's Button lies over its whole picture, cut to the picture's edges.
+  const boxes = await ui.findAll({ type: 'Box' })
+  const cell = boxes.find((b: any) => b.props.key === 'skills:greg:off-pic')
+  expect(cell?.props.overflow).toBe('hidden')
+  const over = (cell?.children ?? []).find((c: any) => c?.type === 'Box')
+  expect([over?.props.position, over?.props.top, over?.props.bottom, over?.props.left]).toEqual(['absolute', 0, 0, 0])
+  expect(over?.children?.[0]?.props.key).toBe('skills:greg:off')
+  expect(await ui.find({ type: 'Text', text: /^Name$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^YOUR SKILLS · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^~2$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /1 of 1 skills listed/ })).toBeTruthy()
@@ -367,6 +379,7 @@ test('a skill of your own gets a four-way switch and costs what its position doe
   // The terminal brackets its buttons and keeps the labels bare.
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(String((await term.find({ type: 'Button', key: 'skills:greg:on' }))?.text)).toBe('On')
+  expect(await at(term, 'skills:greg', modes)).toEqual(['name-only'])
   await term.unmount()
 })
 
@@ -686,10 +699,10 @@ test('the profile name and the filter are kept apart, and the filter keeps its c
   await ui.press({ key: 'tab-profiles' })
   await ui.input({ key: 'name', text: 'Work', kind: 'change' })
   await ui.press({ key: 'tab-plugins' })
-  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:on' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:off' })).toBeTruthy()
   await ui.input({ key: 'q', text: 'FOO', kind: 'change' })
   expect((await ui.find({ type: 'Input', key: 'q' }))?.props.value).toBe('FOO')
-  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:on' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'plugins:foo@bar:off' })).toBeTruthy()
   await ui.press({ key: 'tab-profiles' })
   expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('Work')
   await ui.unmount()
@@ -1245,7 +1258,7 @@ test('on the desktop a switch is a pill and Shown an eye; the terminal keeps wor
         ['On', true, true],
         ['Off', false, false],
       ])
-      expect(power?.props.label).toBe('⠀⠀⠀')
+      expect(power?.props.label).toBe(BLANK)
       expect(power?.props.plain).toBe(true)
       expect(shown?.props.label).toBe('\u{1F441}')
       expect(shown?.props.dimColor).toBe(true)
