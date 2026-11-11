@@ -1338,13 +1338,10 @@ export const register: Register = (on, options) => {
     return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
-  // The main loop's pose: a prompt or a model turn thinks, a tool that changes
-  // something works, launching a subagent hands out tasks, the end of a turn
-  // waits for the person.
-  on('prompt.submit', async ($, e, next) => {
-    await pose($, 'think')
-    return next(e)
-  })
+  // The main loop's pose: a model turn thinks, a tool that changes something
+  // works, launching a subagent hands out tasks, the end of a turn waits for
+  // the person. A prompt alone moves nothing: one dropped before its turn
+  // would leave the avatar thinking while idle.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) await pose($, 'think')
     return next(e)
@@ -1419,6 +1416,8 @@ export const register: Register = (on, options) => {
 
   // Each model request of a subagent: live context, tokens and cost.
   on('turn.step', async function* ($, e, next) {
+    // Back to thinking once a tool's result goes to the model
+    if (e.agentId === undefined) await pose($, 'think')
     const result = yield* next(e)
     const agentId = e.agentId
     const usage = result.usage
@@ -1498,11 +1497,8 @@ export const register: Register = (on, options) => {
     const f = await read($, flow)
     const p: Panel = await read($, panel)
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), 0)
-    const persona = personaOf(await $.session.root().catch(() => ''))
 
     const running = list.filter(a => a.status === 'running').reverse()
-    const bossPose = shownPose(await read($, mainPose), running.length)
-    const boss = `${(PERSONAS[persona] ?? (PERSONAS.claude as Persona)).name}: ${s.pose[bossPose]}`
     const finished = list.filter(a => a.status !== 'running').reverse()
     const planned = plannedOf(f, list)
     const t = totals(list, at)
@@ -1547,6 +1543,10 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
+      // The main agent's avatar: whose chat this is and what it is doing
+      const persona = personaOf(await $.session.root().catch(() => ''))
+      const bossPose = shownPose(await read($, mainPose), running.length)
+      const boss = `${(PERSONAS[persona] ?? (PERSONAS.claude as Persona)).name}: ${s.pose[bossPose]}`
       const shownDone = p.isDoneCollapsed ? 0 : finished.length
       const lines = 1 + (isEmpty ? 1 : 0) + (running.length > 0 ? 1 : 0) + (finished.length > 0 ? 1 : 0) + (planned.length > 0 ? 1 : 0)
       const gridH = AVATAR_H + headerHeight(title) + lines * LINE_H + (running.length + shownDone) * 66 + planned.length * 46

@@ -16,6 +16,15 @@ function session(on: On, root: string | (() => string)) {
   on('turn.start', () => ({ turnId: 'turn' }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
+  on('turn.step', async function* () {
+    return { turnId: 'turn', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'claude-opus-5-5', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
+  })
+}
+
+// One model request of the main loop, or of a subagent
+const modelStep = async ($: Engine, agentId?: string) => {
+  const stream = ($.turn.step as (e: unknown) => AsyncIterable<unknown>)({ turnId: 'turn', index: 0, model: 'claude-opus-5-5', messageCount: 1, ...(agentId ? { agentId } : {}) })
+  for await (const _ of stream) void _
 }
 
 // The avatar row: its persona and pose classes and what it says
@@ -27,7 +36,7 @@ async function boss($: Engine): Promise<{ persona: string; pose: string; alt: st
   return { pose: m?.[1] ?? '', persona: m?.[2] ?? '', alt: String(row?.props.alt ?? '') }
 }
 
-const startTurn = ($: Engine, agentId?: string) => ($.turn.start as (e: unknown) => Promise<unknown>)({ ...(agentId ? { agentId } : {}) })
+const startTurn = ($: Engine, agentId?: string) => ($.turn.start as (e: unknown) => Promise<unknown>)({ turnId: 'turn', ...(agentId ? { agentId } : {}) })
 const endTurn = ($: Engine, agentId?: string) => ($.turn.complete as (e: unknown) => Promise<unknown>)({ ...(agentId ? { agentId } : {}), reason: 'answer', answer: 'ok' })
 const callTool = ($: Engine, tool: string, agentId?: string) => $.tool.call({ tool, ...(agentId ? { agentId } : {}) } as never)
 
@@ -64,6 +73,15 @@ test('the main loop sets the pose: a turn thinks, an edit works, the end waits',
   expect((await boss($)).pose).toBe('think')
   await callTool($, 'Bash')
   expect((await boss($)).pose).toBe('write')
+  // The next model request thinks again, a subagent's does not
+  await modelStep($, 'a1')
+  expect((await boss($)).pose).toBe('write')
+  await modelStep($)
+  expect((await boss($)).pose).toBe('think')
+  await callTool($, 'PowerShell')
+  expect((await boss($)).pose).toBe('write')
+  await callTool($, 'Task')
+  expect((await boss($)).pose).toBe('delegate')
   await endTurn($)
   const b = await boss($)
   expect(b.pose).toBe('wait')
@@ -87,4 +105,19 @@ test('a subagent moves nothing; while one runs the main agent hands out tasks', 
   // The main turn ends: the person is asked, even with a worker still out
   await endTurn($)
   expect((await boss($)).pose).toBe('wait')
+  // A subagent starting a turn of its own does not wake the main agent
+  await startTurn($, 't1')
+  expect((await boss($)).pose).toBe('wait')
+})
+
+test('the dotted grid is as tall as the avatar row plus the rest', async ($, on) => {
+  session(on, 'D:\\ClaudeWork')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: pane })
+  const svgs = await ui.findAll({ type: 'Svg' })
+  await ui.unmount()
+  const grid = svgs.filter(el => el.props.alt === 'dotted grid').reduce((h, el) => h + Number(el.props.height), 0)
+  const rows = svgs.filter(el => el.props.alt !== 'dotted grid').reduce((h, el) => h + Number(el.props.height), 0)
+  // Empty pane: the avatar, the header and two text lines (the button, the empty note)
+  expect(rows).toBe(74 + 44)
+  expect(grid).toBe(rows + 2 * 24)
 })
