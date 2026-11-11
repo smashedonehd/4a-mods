@@ -103,7 +103,16 @@ async function boot(cwd, id, opts = {}) {
       surface: async () => 'terminal',
     },
     model: { fork: async (r) => (prompts.push(r.prompt), forkFn(r.prompt)), ...(opts.complete ? { complete: async (r) => (completes.push(r), opts.complete(r)) } : {}) },
-    state: { get: async () => ({ value: states.get(id) }), set: async (_ref, v) => void states.set(id, v) },
+    state: {
+      get: async (ref) => states.get(`${id}:${ref.key}`) || { value: undefined, version: 0 },
+      set: async (ref, v, o) => {
+        const k = `${id}:${ref.key}`
+        const cur = states.get(k) || { version: 0 }
+        if (o && o.ifVersion !== undefined && o.ifVersion !== cur.version) return { isSet: false, version: cur.version }
+        states.set(k, { value: v, version: cur.version + 1 })
+        return { isSet: true, version: cur.version + 1 }
+      },
+    },
     store: {
       get: async (k) => store.get(k) ?? null,
       set: async (k, v) => void store.set(k, v),
@@ -364,6 +373,14 @@ await check('pruning: older than 30 days goes, the newest of an open chat stays,
     { name: '2026-09-01-1000-p-cccccccc.md', kind: 'other', mtimeMs: 0 }, // a link
   ]
   assert.deepEqual(pruneNames(entries, now, ['aaaaaaaa-1111-2222']).sort(), ['2026-09-01-1000-p-aaaaaaaa.md', '2026-09-01-1000-p-bbbbbbbb.draft.md', '2026-09-01-1000-p-bbbbbbbb.md'])
+  // A second handoff of one minute (-2): pruned alike, and the newest of an open chat
+  const twos = [
+    { name: '2026-09-01-1000-p-bbbbbbbb-2.md', kind: 'file', mtimeMs: old },
+    { name: '2026-09-01-1000-p-bbbbbbbb-2.draft.md', kind: 'file', mtimeMs: old },
+    { name: '2026-09-01-1000-p-aaaaaaaa.md', kind: 'file', mtimeMs: old },
+    { name: '2026-09-01-1000-p-aaaaaaaa-2.md', kind: 'file', mtimeMs: old + HOUR },
+  ]
+  assert.deepEqual(pruneNames(twos, now, ['aaaaaaaa-1111-2222']).sort(), ['2026-09-01-1000-p-aaaaaaaa.md', '2026-09-01-1000-p-bbbbbbbb-2.draft.md', '2026-09-01-1000-p-bbbbbbbb-2.md'])
 })
 
 await check('threshold choices', () => {
@@ -937,6 +954,171 @@ const armed = async (id) => {
   await flush(timers)
   return { s, timers }
 }
+
+const peer = (s, text) => s.fire('prompt.submit', { text, origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+
+await check('auto clear on: a subagent report in the countdown waits for the clear; one handoff, then the report', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac9', 'ac000200-0', { timers })
+  await startFromCard(s, timers)
+  const r = await peer(s, 'subagent report')
+  assert.ok(r && r.drop, 'held')
+  await flush(timers)
+  assert.equal(s.prompts.length, 1, 'no second handoff')
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 2)
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent[1], { text: 'subagent report' })
+  store.delete('settings')
+})
+
+await check('auto clear on: a subagent report while the handoff is written waits too; Keep chat sends it at once', async () => {
+  store.set('settings', { autoClear: true })
+  let release
+  const gate = new Promise((r) => (release = r))
+  const timers = []
+  const s = await boot('/w/ac9', 'ac000201-0', { timers, fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await startFromCard(s, timers)
+  const r = await peer(s, 'early report')
+  assert.ok(r && r.drop, 'held while written')
+  release()
+  await settle()
+  await settle()
+  assert.equal(s.sent.length, 0, 'still held in the countdown')
+  await s.press('ck-ho-keep')
+  await settle()
+  assert.deepEqual(s.sent, [{ text: 'early report' }])
+  await flush(timers)
+  assert.ok(!cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear off: a subagent report while the card handoff is written is not held', async () => {
+  store.delete('settings')
+  let release
+  const gate = new Promise((r) => (release = r))
+  const timers = []
+  const s = await boot('/w/ac9', 'ac000202-0', { timers, fork: async () => (await gate, { isAnswered: true, text: GOOD }) })
+  await startFromCard(s, timers)
+  const r = await peer(s, 'report')
+  assert.ok(!(r && r.drop))
+  release()
+  await settle()
+})
+
+await check('auto clear on: a held report goes out once when the handoff fails', async () => {
+  store.set('settings', { autoClear: true })
+  let release
+  const gate = new Promise((r) => (release = r))
+  const timers = []
+  const s = await boot('/w/ac11', 'ac000220-0', { timers, fork: async () => (await gate, { isAnswered: false, reason: 'api-error', status: 500 }) })
+  await startFromCard(s, timers)
+  assert.ok((await peer(s, 'report'))?.drop)
+  release()
+  await settle()
+  await settle()
+  await flush(timers)
+  assert.deepEqual(s.sent, [{ text: 'report' }])
+  assert.ok(!cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: typing in the countdown stops it and sends the held report after the typed prompt', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac11', 'ac000221-0', { timers })
+  await startFromCard(s, timers)
+  assert.ok((await peer(s, 'report'))?.drop)
+  const r = await s.fire('prompt.submit', { text: 'mine', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(!(r && r.drop), 'the typed prompt is not held')
+  await flush(timers)
+  assert.deepEqual(s.sent, [{ text: 'report' }])
+  assert.ok(!cleared(s.log))
+  store.delete('settings')
+})
+
+await check('auto clear on: turned off in the countdown, the held report goes at once', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac11', 'ac000222-0', { timers })
+  await startFromCard(s, timers)
+  assert.ok((await peer(s, 'report'))?.drop)
+  await s.run('cache', 'autoclear off')
+  await settle()
+  assert.deepEqual(s.sent, [{ text: 'report' }])
+  // Sent is sent: a reload does not send it again
+  const t2 = []
+  const s2 = await boot('/w/ac11', 'ac000222-0', { timers: t2 })
+  await flush(t2)
+  assert.deepEqual(s2.sent, [])
+  store.delete('settings')
+})
+
+await check('auto clear on: armed through a turn, a report that would start a new turn waits for the clear', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000223-0')
+  assert.ok((await peer(s, 'report'))?.drop, 'no turnId: a turn of its own')
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 2)
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent[1], { text: 'report' })
+  store.delete('settings')
+})
+
+await check('Clear now in the countdown: a report that comes while the chat clears is held', async () => {
+  store.set('settings', { autoClear: true })
+  let release
+  const gate = new Promise((r) => (release = r))
+  const timers = []
+  const s = await boot('/w/ac11', 'ac000224-0', { timers, proc: async () => (await gate, { exitCode: 1, stdout: '', stderr: 'no' }) })
+  await startFromCard(s, timers)
+  await s.press('ck-ho-clear')
+  await timers.pop()() // the press runs off its hook
+  await settle()
+  assert.ok((await peer(s, 'late report'))?.drop, 'held while clearing')
+  release()
+  await settle()
+  await settle()
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 2)
+  assert.deepEqual(s.sent[1], { text: 'late report' })
+  store.delete('settings')
+})
+
+await check('a reload in the countdown loses no held report', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac12', 'ac000230-0', { timers })
+  await startFromCard(s, timers)
+  assert.ok((await peer(s, 'report'))?.drop)
+  const t2 = []
+  const s2 = await boot('/w/ac12', 'ac000230-0', { timers: t2 })
+  await flush(t2)
+  assert.deepEqual(s2.sent, [{ text: 'report' }])
+  // The old module going on anyway does not send it again
+  await flush(timers)
+  assert.ok(!s.sent.some((p) => p.text === 'report'))
+  store.delete('settings')
+})
+
+await check('a fresh handoff in the same minute gets its own file', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac10', 'ac000210-0', { timers })
+  await startFromCard(s, timers)
+  await s.fire('turn.start', { turnId: 't9' })
+  await flush(timers)
+  await s.end({ turnId: 't9' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 2)
+  const mds = [...files.keys()].filter((k) => k.includes('ac10-ac000210') && k.endsWith('.md') && !k.endsWith('.draft.md'))
+  assert.equal(mds.length, 2, mds.join(', '))
+  store.delete('settings')
+})
 
 await check('auto clear on: armed through a turn, the card says so and Keep chat, Close, Open file or the toggle still stop it', async () => {
   store.set('settings', { autoClear: true })

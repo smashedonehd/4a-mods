@@ -237,12 +237,48 @@ function landed($, result) {
 }
 
 // Prompts that came while the chat was about to clear: a turn they started in
-// this chat would keep /clear from running. They go on after the handoff.
+// this chat would keep /clear from running. They go on after the handoff. Kept
+// in $.state too: the host already dropped them, and a reload must not lose them.
 const held = []
+const HELD_REF = { plugin: 'cache-keeper', key: 'held' }
+
+async function saveHeld($) {
+  try {
+    await $.state.set(HELD_REF, held.slice())
+  } catch {
+    // not kept: a reload forgets them
+  }
+}
+
+// A reload ends any hold: what the old module held is sent shortly after
+async function loadHeld($) {
+  try {
+    const { value } = await $.state.get(HELD_REF)
+    if (Array.isArray(value)) for (const p of value) if (p && typeof p.text === 'string') held.push(p.asUser ? { text: p.text, asUser: true } : { text: p.text })
+  } catch {
+    // nothing kept
+  }
+  if (held.length) $.clock.after(1000, () => settleHold($))
+}
 
 // Held only while a handoff that clears is queued or running, or its clear is due
 function holdsPrompts() {
-  return P.pending === 'clear' || (P.phase === 'working' && P.after === 'clear') || !!H.clearDue
+  // continuing: Clear now pressed in the countdown runs with no clear due
+  return P.pending === 'clear' || (P.phase === 'working' && P.after === 'clear') || !!H.clearDue || !!H.continuing
+}
+
+// Auto clear on its way: the handoff for the card that asks is being written,
+// or the ready card counts down (or waits for the running turn's end). A
+// notification or another session's message (a subagent's report) that would
+// start a turn waits too: that turn would put the handoff out of date and cost
+// a second one. What the person types is not held by this: it stops the clear.
+function autoHolds() {
+  return !!settings.autoClear && ((P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+}
+
+// Sends what was held once nothing holds it any more. Never throws.
+async function releaseIfFree($) {
+  if (!holdsPrompts() && !autoHolds() && held.length) await releaseHeld($)
 }
 
 // What cannot be sent again as it came passes the hold: a command, attachments,
@@ -264,7 +300,24 @@ function joinsOtherTurn(e, fromUser) {
 // Sends the held prompts in the order they came; one that cannot be sent goes
 // to the prompt box rather than being lost. Never throws.
 async function releaseHeld($) {
-  for (const p of held.splice(0)) {
+  // Claimed in $.state first, so a module reloaded meanwhile and the old one
+  // never both send them: whoever empties the kept list sends what it held. A
+  // miss (a prompt held meanwhile) reads again; local `held` stays until then.
+  let out = null
+  try {
+    for (let i = 0; i < 3 && out === null; i++) {
+      const kept = await $.state.get(HELD_REF)
+      const r = await $.state.set(HELD_REF, [], { ifVersion: kept.version })
+      if (r && !r.isSet) continue
+      out = Array.isArray(kept.value) ? kept.value : held.slice()
+    }
+  } catch {
+    // no state: what this module held
+    out = held.slice()
+  }
+  if (out === null) return
+  held.splice(0)
+  for (const p of out) {
     try {
       await $.prompt.submit(p)
     } catch {
@@ -284,7 +337,7 @@ async function releaseHeld($) {
 // handoff again
 async function settleHold($) {
   H.refreshed = false
-  if (!holdsPrompts() && held.length) await releaseHeld($)
+  await releaseIfFree($)
 }
 
 function fileStamp(ms) {
@@ -305,9 +358,26 @@ function handoffFile(name) {
   return `${home || '.'}/.claude/mods-data/cache-keeper/handoffs/${name}`.replace(/\\/g, '/')
 }
 
-// The dated file's name, without its extension
-function handoffName() {
-  return `${fileStamp(now)}-${handoffProject()}-${S.id.slice(0, 8)}`
+// Names this module gave out: a second handoff in the same minute (a fresh one
+// for an overtaken clear) must not overwrite the first
+const usedNames = new Set()
+
+// The dated file's name, without its extension; unique per handoff, also
+// against a file a reloaded module wrote
+async function handoffName($) {
+  const base = `${fileStamp(now)}-${handoffProject()}-${S.id.slice(0, 8)}`
+  let name = base
+  for (let i = 2; usedNames.has(name) || (await fileExists($, handoffFile(name + '.md'))); i++) name = `${base}-${i}`
+  usedNames.add(name)
+  return name
+}
+
+async function fileExists($, path) {
+  try {
+    return !!(await $.fs.exists(path))
+  } catch {
+    return false
+  }
 }
 
 // One latest handoff per folder (keyed by the full cwd, so two folders called
@@ -322,8 +392,8 @@ function latestPath() {
 
 // The dated file and the latest copy are written independently: one failing
 // must not lose the other. Never throws.
-async function saveHandoff($, text) {
-  let path = handoffFile(handoffName() + '.md')
+async function saveHandoff($, name, text) {
+  let path = handoffFile(name + '.md')
   try {
     await $.fs.write(path, text + '\n')
   } catch {
@@ -518,7 +588,7 @@ async function runPipeline($, after = 'ask') {
     const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
     const facts = await runStep($, 2, async () => gatherFacts(messages), (f) => [plural(f.skills.length + f.servers.length, 'skill or tool'), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
     const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
-    const name = handoffName()
+    const name = await handoffName($)
     const reply = await runStep($, 3, async () => {
       // Saved first: a failed or interrupted model step still leaves this
       await saveDraft($, name, redact(draftText(g)).text)
@@ -540,7 +610,7 @@ async function runPipeline($, after = 'ask') {
         await saveDraft($, name, text + '\n')
         throw new Error('the handoff lacks ' + missing.map((h) => `"${h.replace(/^#+\s*/, '')}"`).join(', '))
       }
-      const out = await saveHandoff($, text)
+      const out = await saveHandoff($, name, text)
       if (!out.path) throw new Error('the handoff file could not be written')
       const back = String(await $.fs.read(out.path)).trim()
       if (back !== text) throw new Error('the saved file does not read back the same')
@@ -799,7 +869,7 @@ function autoClearDue($, at) {
   const stale = cancelAutoClear()
   // A safety net: what closes the card stops the countdown first, and the
   // clear itself refuses without a handoff
-  if (P.phase !== 'ready' || H.continuing) return
+  if (P.phase !== 'ready' || H.continuing) return void releaseIfFree($)
   // Still armed, and still stoppable, until the running turn ends (turn.complete)
   if (S.working) P.autoWait = true
   else autoClearGo($, stale)
@@ -822,6 +892,7 @@ async function setAutoClear($, on) {
   settings.autoClear = !!on
   if (!on) cancelAutoClear()
   await $.store.set('settings', settings)
+  await releaseIfFree($)
   $.ui.invalidate('ui.render')
 }
 
@@ -978,6 +1049,8 @@ async function cardPress($, key) {
   try {
     now = await $.clock.now()
     await cardAction($, key)
+    // Keep chat, Close or Open file stopped the clear: what it held goes on
+    await releaseIfFree($)
   } catch (err) {
     $.ui.toast('Handoff: ' + errText(err), { timeoutMs: 8000 })
   }
@@ -1809,6 +1882,7 @@ export function register(on, options) {
     await loadLatestHandoff($)
     await loadSettings($)
     await loadRevive($)
+    await loadHeld($)
     await readRecording($)
     names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off] [autoclear on|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
@@ -1873,9 +1947,11 @@ export function register(on, options) {
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
-    if (holdsPrompts() && canHold(e) && !joinsOtherTurn(e, fromUser)) {
+    if ((holdsPrompts() || (!fromUser && autoHolds())) && canHold(e) && !joinsOtherTurn(e, fromUser)) {
+      const why = holdsPrompts() ? 'Held until this chat clears: it is sent after the handoff.' : 'Held for the auto clear: it is sent after the handoff, or at once if the clear is stopped.'
       held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
-      $.ui.toast('Held until this chat clears: it is sent after the handoff.', { timeoutMs: 8000 })
+      await saveHeld($)
+      $.ui.toast(why, { timeoutMs: 8000 })
       return { drop: 'Held by cache-keeper until clear and continue is done' }
     }
     now = await $.clock.now()
@@ -1893,6 +1969,9 @@ export function register(on, options) {
       H.fid = ''
       cancelAutoClear()
       if (P.phase === 'ready') P.phase = ''
+      // What the countdown held goes on, after this hook: so after the typed
+      // prompt, whose turn the person asked for first
+      offHook($, () => releaseIfFree($))
       await dropLatestHandoff($, fid)
       $.ui.invalidate('ui.render')
     }
@@ -2004,6 +2083,7 @@ export function register(on, options) {
       // The armed auto clear: the turn just ended, so its handoff is out of date
       cancelAutoClear()
       if (P.phase === 'ready' && !H.continuing) autoClearGo($, true)
+      else offHook($, () => releaseIfFree($))
     } else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
