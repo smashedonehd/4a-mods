@@ -652,14 +652,14 @@ const CRAB_CSS = `<style>
 .c-accountant.run .sc{animation:blink .5s steps(1) infinite}
 .c-analyst.run .it{transform-origin:50% 100%;animation:rise 1s steps(1) infinite}
 @keyframes rise{50%{transform:scaleY(.6)}}
-.c-photographer.run .fl{animation:flash 1s steps(1) infinite}
+.c-photographer .fl{opacity:0}.c-photographer.run .fl{animation:flash 1s steps(1) infinite}
 @keyframes flash{0%,80%{opacity:0}90%{opacity:1}}
 .c-writer.run .it{animation:scribble .5s steps(1) infinite}
 @keyframes scribble{25%{transform:translate(-1px,1px)}50%{transform:translate(0,1px)}75%{transform:translate(-1px,0)}}
-.c-factcheck.run .t1{animation:tick 1.5s steps(1) infinite}.c-factcheck.run .t2{animation:tick 1.5s steps(1) infinite -.5s}.c-factcheck.run .t3{animation:tick 1.5s steps(1) infinite -1s}
+.c-factcheck.run .k1{animation:tick 1s steps(1) infinite}.c-factcheck.run .k2{animation:tick 1s steps(1) infinite -.67s}.c-factcheck.run .k3{animation:tick 1s steps(1) infinite -.33s}
 @keyframes tick{0%{opacity:.15}33%{opacity:1}}
 .c-caveman.run .it{transform-origin:50% 100%;animation:strike .5s steps(1) infinite}
-.c-architect.run .ln{animation:blink 1s steps(1) infinite}
+.c-architect.run .bl{animation:blink 1s steps(1) infinite}
 .c-courier.run .it{animation:fly .5s ease-in-out infinite}
 @keyframes fly{50%{transform:translate(1px,-2px)}}
 @media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
@@ -760,7 +760,7 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
     glasses(f)
     stamp(f, 22, 4, ['..kk...', 'bbbbbbb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bbbbbbb'], { b: '#8B5A2B', w: '#F4F3EE', k: '#7A7A78' })
     f(25, 6, 3, 1, '#9a9a96'); f(25, 8, 3, 1, '#9a9a96'); f(25, 10, 3, 1, '#9a9a96')
-    f(23, 6, 1, 1, t, 't1'); f(23, 8, 1, 1, t, 't2'); f(23, 10, 1, 1, t, 't3')
+    f(23, 6, 1, 1, t, 'k1'); f(23, 8, 1, 1, t, 'k2'); f(23, 10, 1, 1, t, 'k3')
   },
   // Caveman crew: shaggy hair; the club swings.
   caveman: (f, t) => {
@@ -774,7 +774,7 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
     crabBody(f, -4)
     f(8, 8, 11, 2, '#F5C542'); f(19, 8, 1, 2, '#E8C9A0'); f(20, 8, 1, 2, '#3A3A3C'); f(7, 8, 1, 2, '#E58FA0')
     stamp(f, 22, 1, ['bbbbbbb', 'bllllbb', 'blbbblb', 'blbbblb', 'bllllbb', 'bbbblbb', 'bbbbbbb', 'ccccccc'], { b: t, l: '#BFD8F2', c: '#1E4E86' })
-    f(23, 2, 4, 1, '#FFFFFF', 'ln')
+    f(23, 2, 4, 1, '#FFFFFF', 'bl')
   },
   // Web fetcher: courier cap; the envelope flies.
   courier: (f, t) => {
@@ -792,11 +792,11 @@ const roleOf = (type: string): string => {
   const n = String(type || '').replace(/^[^:]*:/, '').toLowerCase()
   if (n === 'explore') return 'explore'
   if (/review|judge|critic/.test(n)) return 'judge'
-  if (/fact/.test(n)) return 'factcheck'
+  if (/fact.?check/.test(n)) return 'factcheck'
   if (/lisa|stark|invoice|faktur|admin|account/.test(n)) return 'accountant'
   if (/watson|john|marketing|analyst|\bads\b/.test(n)) return 'analyst'
   if (/greg|publish|photo|video|film/.test(n)) return 'photographer'
-  if (/irene|writer|author|copy/.test(n)) return 'writer'
+  if (/irene|writer|copywrit/.test(n)) return 'writer'
   if (/cave/.test(n)) return 'caveman'
   if (/^plan$|planner|architect/.test(n)) return 'architect'
   if (/fetch|courier/.test(n)) return 'courier'

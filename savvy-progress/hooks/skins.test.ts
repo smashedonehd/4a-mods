@@ -27,12 +27,26 @@ async function costumes($: Engine): Promise<string[]> {
 
 test('desktop pane: an agent named for its role wears that role', async ($, on) => {
   session(on)
-  const types = ['lisa-reviewer', 'lisa-stark', 'irene-factcheck', 'irene-writer', 'john-watson', 'greg', 'caveman:cavecrew-builder', 'Plan', 'web-fetch', 'Explore', 'savvy-careful']
-  for (const [i, t] of types.entries()) await spawn($, `a${i}`, t)
-  const worn = new Set(await costumes($))
-  for (const c of ['judge', 'accountant', 'factcheck', 'writer', 'analyst', 'photographer', 'caveman', 'architect', 'courier', 'explore', 'careful']) expect(worn.has(c)).toBe(true)
-  // Nobody of these falls back to the bare crab
-  expect(worn.has('other')).toBe(false)
+  const worn: [string, string][] = [
+    ['lisa-reviewer', 'judge'], ['lisa-stark', 'accountant'], ['irene-factcheck', 'factcheck'], ['irene-writer', 'writer'],
+    ['john-watson', 'analyst'], ['greg', 'photographer'], ['caveman:cavecrew-builder', 'caveman'], ['Plan', 'architect'],
+    ['web-fetch', 'courier'], ['Explore', 'explore'], ['savvy-careful', 'careful'],
+    // Names that only look like a role keep the model's costume
+    ['artifact-builder', 'medium'], ['writing-plans', 'medium'],
+  ]
+  for (const [i, [t]] of worn.entries()) await spawn($, `a${i}`, t)
+  // One crab per run, newest first as the pane lists them
+  expect(await costumes($)).toEqual(worn.map(([, c]) => c).reverse())
+})
+
+test('desktop pane: the judge holds its gavel, not the bare crab', async ($, on) => {
+  session(on)
+  await spawn($, 'j1', 'lisa-reviewer')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: pane })
+  const svg = (await ui.findAll({ type: 'Svg' })).map(el => String(el.props.source)).join('')
+  await ui.unmount()
+  // The gavel's head, in the judge's walnut
+  expect(svg).toContain('fill="#7A4A26"')
 })
 
 test('desktop pane: an agent with no role wears the tier its model matches', async ($, on) => {
