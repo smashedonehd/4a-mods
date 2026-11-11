@@ -146,7 +146,7 @@ const KILLERS = ['KillShell', 'KillBash', 'TaskStop']
 const AGENT_TOOLS = ['Agent', 'Task']
 // The Agent result's own line: a synchronous one ends with it, after a report
 // that may quote other agents' ids, so the last line-start match counts
-const AGENT_ID = /^agentId["':\s]+([A-Za-z0-9_-]{6,})/gm
+const AGENT_ID = /^agentId[ \t"':]+([A-Za-z0-9_-]{6,})/gm
 const AGENT_ID_JSON = /"agentId"\s*:\s*"([A-Za-z0-9_-]{6,})"/
 // An agent the live list names in one of these is done
 const AGENT_DONE = ['completed', 'failed', 'killed']
@@ -196,7 +196,8 @@ export function gatherFacts(messages) {
         if (id) shells.set(id, { id, what: clip(String(input.description || input.command || ''), 80), killed: false })
       }
       if (AGENT_TOOLS.includes(u.tool)) {
-        const id = typeof u.text === 'string' ? ([...u.text.matchAll(AGENT_ID)].pop() || [])[1] : (AGENT_ID_JSON.exec(JSON.stringify(u.result || '')) || [])[1]
+        const r = u.result && typeof u.result === 'object' ? u.result : null
+        const id = u.text ? ([...String(u.text).matchAll(AGENT_ID)].pop() || [])[1] : r && typeof r.agentId === 'string' ? r.agentId : (AGENT_ID_JSON.exec(JSON.stringify(u.result || '')) || [])[1]
         if (id) spawned.set(id, { model: String(input.model || ''), effort: String(input.effort || '') })
       }
       if (KILLERS.includes(u.tool)) {
