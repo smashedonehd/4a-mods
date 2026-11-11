@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, redact, draftText, forkPrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -522,7 +522,12 @@ async function runPipeline($, after = 'ask') {
     const reply = await runStep($, 3, async () => {
       // Saved first: a failed or interrupted model step still leaves this
       await saveDraft($, name, redact(draftText(g)).text)
-      const r = await $.model.fork({ prompt: forkPrompt(g) })
+      let r = await $.model.fork({ prompt: forkPrompt(g) })
+      // A chat resumed asleep (after a restart) has no snapshot to fork: the
+      // model reads the transcript as text instead, uncached
+      if (r && r.reason === 'nothing-to-fork' && messages.length) {
+        r = await $.model.complete({ model: S.model || 'opus', prompt: completePrompt(g), maxTokens: 16000, timeoutMs: 540000 })
+      }
       if (!r || !r.isAnswered || !String(r.text || '').trim()) throw new Error(forkFailure(r))
       return r
     }, () => `${Math.max(1, Math.round((now - P.stepAt) / 1000))} s`)
@@ -1036,6 +1041,18 @@ function ctxHue(n) {
 function limitHue(p) {
   return p >= 95 ? HUE.red : p >= 80 ? HUE.yellow : p >= 50 ? HUE.cyan : HUE.green
 }
+// A gauge stretched to its slot: a wide markup drawn without a width, as
+// the Toggles pane's bar is, so the surface sizes it and nothing is counted
+const STRETCH_W = 1000
+function stretchGaugeSvg(Svg, frac, fill, alt, ticks = []) {
+  const w = STRETCH_W
+  const f = Math.max(0, Math.min(1, frac))
+  const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
+  if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(20, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
+  for (const t of ticks) out.push(`<rect x="${(w * t).toFixed(1)}" y="0" width="3" height="8" fill="#8b949e" fill-opacity=".45"/>`)
+  return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="8" viewBox="0 0 ${w} 8" preserveAspectRatio="none">${out.join('')}</svg>`, height: 8, alt })
+}
+
 function gaugeSvg(Svg, frac, fill, alt, ticks = [], w = 64) {
   const h = 8
   const f = Math.max(0, Math.min(1, frac))
@@ -1183,27 +1200,6 @@ function ctxFloor(figure, limit, gauge, gap) {
   return { fixed, floor: Math.max(1, limit ? limit - fixed : gauge) }
 }
 
-// The cells left over on the line the context card lands on, at its
-// narrowest (ctxMin), when the row wraps as a flex row does: each card goes
-// on the current line if it fits there with a one-cell gap, else starts the
-// next. One line or several, the context card grows into what is left.
-function ctxLineRoom(columns, widths, at, ctxMin) {
-  const all = [...widths.slice(0, at), ctxMin, ...widths.slice(at)]
-  let used = 0
-  let ctxLine = -1
-  let line = 0
-  for (let i = 0; i < all.length; i++) {
-    if (used > 0 && used + 1 + all[i] > columns) {
-      if (line === ctxLine) return Math.max(0, columns - used)
-      line++
-      used = 0
-    }
-    used += (used > 0 ? 1 : 0) + all[i]
-    if (i === at) ctxLine = line
-  }
-  return Math.max(0, columns - used)
-}
-
 // How the desktop band gives way when its row would not fit, in order: the
 // context gauge narrows down to a limit card's width; then the captions and
 // the tags take their short form (also below NARROW_COLUMNS); then the
@@ -1224,16 +1220,16 @@ function deskBand($, e, els, state) {
   const columns = (e.props && e.props.bodyColumns) || (e.viewport && e.viewport.columns) || 200
   let band
   for (let level = columns < NARROW_COLUMNS ? BAND_NARROW : BAND_FULL; level <= BAND_COMPACT; level++) {
-    band = deskCards($, els, state, columns, level, false)
+    band = deskCards($, els, state, level, false)
     if (band.need <= columns) return band.rows
   }
-  return band.widest > columns ? deskCards($, els, state, columns, BAND_COMPACT, true).rows : band.rows
+  return band.widest > columns ? deskCards($, els, state, BAND_COMPACT, true).rows : band.rows
 }
 
 // The cards at one level of compaction; need: the cells one row of them
 // takes with the context card at its narrowest, widest: the widest card's
 // cells. squeeze: the cards may shrink.
-function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
+function deskCards($, els, { st, ttl, big }, level, squeeze) {
   const { Box, Text, Button, Select, Svg } = els
   const narrow = level >= BAND_NARROW
   const compact = level >= BAND_COMPACT
@@ -1342,12 +1338,11 @@ function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
   // The context card at its narrowest: its gauge at the floor
   const { fixed, floor } = ctxFloor(figure, limitCells, limitGauge, gap)
   const ctxMin = Math.max(CARD_CHROME + ctxCaption.length, fixed + floor)
-  // Its gauge fills what its line leaves, so a wrapped row's card is not a
-  // wide card around a stub of a gauge
-  const gauge = (ctxMin - fixed + ctxLineRoom(columns, widths, ctxAt, ctxMin)) * CELL_PX
+  // Its gauge grows into whatever the card has, on one line or a wrapped
+  // one; the cell count only keeps it from going below the floor
   cards.splice(ctxAt, 0, bandCard(els, 'card-ctx', ctxCaption, [
     value(figure, ctxTone(S.ctx)),
-    Svg && gaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8], gauge),
+    Svg && Box({ key: 'ctx-gauge', flexGrow: 1, width: 0, minWidth: floor, children: [stretchGaugeSvg(Svg, S.ctx / CTX_MAX, ctxHue(S.ctx), `context ${figure}`, [0.2, 0.4, 0.6, 0.8])] }),
   ], { tone: S.ctx >= CTX_URGENT && ctxHue(S.ctx), grow: true, squeeze, gap }))
   return {
     need: others + ctxMin,
