@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -472,12 +472,6 @@ function freshSteps() {
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
-
-// "1 skill or tool", "5 skills or tools": plural() would say "5 skill or tools"
-function skillsOrTools(n) {
-  return `${n} ${n === 1 ? 'skill or tool' : 'skills or tools'}`
-}
-
 // While a step runs, the card redraws twice a second: its seconds and its bar
 function startTicker($) {
   stopTicker()

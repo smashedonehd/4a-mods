@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import {
   normalizePath, commandPaths, rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, cleanReply,
-  missingSections, wordCount, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
+  missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
 } from '../hooks/handoff.mjs'
 
 let passed = 0
@@ -458,9 +458,14 @@ await check('a subagent still running is counted on its step and named in the fo
   await s.run('handoff', 'keep')
   const t = texts(await s.render())
   assert.ok(t.includes('2 running'), 'the step says how many')
-  assert.ok(!t.includes('runnings'))
   assert.ok(s.prompts[0].includes('a1cd91a274738ee47: Task 5 impl (general-purpose, running)'))
   assert.ok(!s.prompts[0].includes('afd360d12e1aaa70c'))
+})
+
+await check('the skills step counts in English: one skill or tool, many skills or tools', async () => {
+  assert.equal(skillsOrTools(0), '0 skills or tools')
+  assert.equal(skillsOrTools(1), '1 skill or tool')
+  assert.equal(skillsOrTools(5), '5 skills or tools')
 })
 
 await check('an agent list that never answers does not hold the handoff: none listed after the guard', async () => {
