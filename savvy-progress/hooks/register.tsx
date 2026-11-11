@@ -894,17 +894,22 @@ const PERSONAS: Record<string, Persona> = {
     },
     tool: (f, x, y) => stamp(f, x - 1, y, ['dddddd', 'dwwwwd', 'dwwwgd', 'dwgwgd', 'dggggd', 'dddddd'], { d: '#2B2A28', w: '#EAF2EE', g: '#3FB950' }),
   },
-  // Invoices and documents: a bun, glasses, a navy blazer, pearls, a tablet
+  // Invoices and documents: a sleek bob, thin gold glasses, rose lips, an
+  // emerald blazer over a silk blouse, a gold chain, a gold-framed tablet
   lisa: {
     name: 'Lisa Stark',
     accent: '#2E8B57',
     dress: f => {
-      jacket(f, '#1F3A5F', '#F4F3EE', '#16294A')
-      for (const x of [11, 13, 15, 17, 19]) f(x, x === 15 ? 16 : 15, 1, 1, '#F7F3E8')
-      stamp(f, 7, 4, ['......bbbb......', '.....bbbbbb.....', '......bbbb......', '..bbbbbbbbbbbb..', '.bbbbbbbbbbbbbb.', 'bbbbbbbbbbbbbbbb', 'bb............bb', 'bb............bb', 'b..............b'], { b: '#3A2418' })
-      stamp(f, 8, 11, ['kkkk......kkkk', 'k..kkkkkkkk..k', 'kkkk......kkkk'], { k: '#B8862B' })
+      stamp(f, 6, 5, ['.....hhhhhhhh.....', '...hhhhhhhhhhhh...', '..hhhhhlhhhhhhhh..', '.hhhhhllhhhhhhhhh.', '.hhhhh.....hhhhhh.', 'hhh............hhh', 'hhh.............hh', 'hh..............hh', 'hh..............hh', 'hhh............hhh', '.hh............hh.'], { h: '#4A2C1E', l: '#7A4A30' })
+      stamp(f, 8, 11, ['gggg......gggg', 'g..gggggggg..g', 'gggg......gggg'], { g: '#C9A24A' })
+      f(13, 14, 4, 1, '#C25A6E')
+      f(7, 16, 1, 1, '#E8C35A')
+      f(22, 16, 1, 1, '#E8C35A')
+      jacket(f, '#1E6B52', '#F6F1E7', '#15503D', '#C9A24A')
+      f(13, 16, 4, 1, '#E8C35A')
+      f(14, 17, 2, 1, '#E8C35A')
     },
-    tool: (f, x, y) => stamp(f, x - 1, y, ['dddddd', 'dwwwwd', 'dwggwd', 'dwwwwd', 'dwrrwd', 'dddddd'], { d: '#2B2A28', w: '#EAF2EE', g: '#2E8B57', r: '#9a9a96' }),
+    tool: (f, x, y) => stamp(f, x - 1, y, ['gggggg', 'gwwwwg', 'gwrrwg', 'gwwwwg', 'gwkkwg', 'gggggg'], { g: '#E8C35A', w: '#FFF7F7', r: '#C25A6E', k: '#9a9a96' }),
   },
   // Publishing and photos: a beanie, a scarf, a denim jacket, a camera on its strap
   greg: {
