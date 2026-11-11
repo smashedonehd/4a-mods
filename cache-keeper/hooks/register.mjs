@@ -1048,8 +1048,8 @@ function stretchGaugeSvg(Svg, frac, fill, alt, ticks = []) {
   const w = STRETCH_W
   const f = Math.max(0, Math.min(1, frac))
   const out = [`<rect x="0" y="1" width="${w}" height="6" rx="3" fill="#8b949e" fill-opacity=".22"/>`]
-  if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(12, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
-  for (const t of ticks) out.push(`<rect x="${(w * t).toFixed(1)}" y="0" width="2" height="8" fill="#8b949e" fill-opacity=".45"/>`)
+  if (f > 0) out.push(`<rect x="0" y="1" width="${Math.max(20, w * f).toFixed(1)}" height="6" rx="3" fill="${fill}"/>`)
+  for (const t of ticks) out.push(`<rect x="${(w * t).toFixed(1)}" y="0" width="3" height="8" fill="#8b949e" fill-opacity=".45"/>`)
   return Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="8" viewBox="0 0 ${w} 8" preserveAspectRatio="none">${out.join('')}</svg>`, height: 8, alt })
 }
 
@@ -1220,16 +1220,16 @@ function deskBand($, e, els, state) {
   const columns = (e.props && e.props.bodyColumns) || (e.viewport && e.viewport.columns) || 200
   let band
   for (let level = columns < NARROW_COLUMNS ? BAND_NARROW : BAND_FULL; level <= BAND_COMPACT; level++) {
-    band = deskCards($, els, state, columns, level, false)
+    band = deskCards($, els, state, level, false)
     if (band.need <= columns) return band.rows
   }
-  return band.widest > columns ? deskCards($, els, state, columns, BAND_COMPACT, true).rows : band.rows
+  return band.widest > columns ? deskCards($, els, state, BAND_COMPACT, true).rows : band.rows
 }
 
 // The cards at one level of compaction; need: the cells one row of them
 // takes with the context card at its narrowest, widest: the widest card's
 // cells. squeeze: the cards may shrink.
-function deskCards($, els, { st, ttl, big }, columns, level, squeeze) {
+function deskCards($, els, { st, ttl, big }, level, squeeze) {
   const { Box, Text, Button, Select, Svg } = els
   const narrow = level >= BAND_NARROW
   const compact = level >= BAND_COMPACT

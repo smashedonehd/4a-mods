@@ -310,8 +310,9 @@ ${TEMPLATE}`
 
 // The conversation as plain text for a completion that cannot fork it (a
 // session resumed asleep holds no snapshot to share): its newest part,
-// up to maxChars, each tool call a line with its result clipped
-export function transcriptText(messages, maxChars = 480000) {
+// up to maxChars (about 90k tokens, so a 200k model has room for the rest),
+// each tool call a line with its result clipped
+export function transcriptText(messages, maxChars = 300000) {
   const out = []
   for (const m of messages || []) {
     if (!m) continue
@@ -320,14 +321,15 @@ export function transcriptText(messages, maxChars = 480000) {
     if (text) lines.push(`${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`)
     for (const u of m.toolUses || []) {
       const input = clip(JSON.stringify(u.input || {}), 400)
-      const result = u.text ? ` -> ${clip(String(u.text).replace(/\s+/g, ' '), 600)}` : ''
+      const result = u.text ? ` -> ${clip(String(u.text), 600)}` : ''
       lines.push(`[tool ${u.tool} ${input}${result}]`)
     }
     if (lines.length) out.push(lines.join('\n'))
   }
   let all = out.join('\n\n')
   if (all.length > maxChars) all = '[earlier part left out]\n' + all.slice(all.length - maxChars)
-  return all
+  // A closing tag inside the chat must not end the framing early
+  return all.replace(/<\/transcript>/gi, '</transcript_>')
 }
 
 // The prompt for that completion: the transcript as data, then the fork's ask
