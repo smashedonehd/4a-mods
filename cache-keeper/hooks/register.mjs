@@ -559,14 +559,15 @@ function forkFailure(r) {
 // What follows a handoff, by strength: an earlier choice holds against a weaker one
 const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
 
-// The live agent list, or [] when the host does not answer in LIVE_TIMEOUT.
-// The guard's timer starts only when the list is not in at once.
-async function listAgentsSoon($) {
+// The live agent list, or `none` ([] by default) when the host fails or does
+// not answer in LIVE_TIMEOUT. The guard's timer starts only when the list is
+// not in at once.
+async function listAgentsSoon($, none = []) {
   let answered = false
-  const list = $.agent.list().catch(() => []).finally(() => (answered = true))
+  const list = $.agent.list().catch(() => none).finally(() => (answered = true))
   for (let i = 0; i < 3 && !answered; i++) await null
   if (answered) return list
-  return Promise.race([list, new Promise((done) => $.clock.after(LIVE_TIMEOUT, () => done([])))])
+  return Promise.race([list, new Promise((done) => $.clock.after(LIVE_TIMEOUT, () => done(none)))])
 }
 
 // Runs the six steps now, or once the running turn ends. after: see P.after.
@@ -1739,8 +1740,9 @@ async function heartbeat($, force) {
   if (!force && now - lastHeartbeat < 5000) return
   lastHeartbeat = now
   try {
-    const agents = await listAgentsSoon($)
-    S.agentsRunning = agents.filter((a) => a.status === 'running').length
+    // A failed or slow list keeps the last count
+    const agents = await listAgentsSoon($, null)
+    if (agents) S.agentsRunning = agents.filter((a) => a.status === 'running').length
   } catch {
     // agent list unavailable: keep the last count
   }
