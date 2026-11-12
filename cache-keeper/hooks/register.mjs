@@ -579,7 +579,10 @@ async function listAgentsSoon($, none = []) {
 }
 
 // Runs the six steps now, or once the running turn ends. after: see P.after.
-async function runPipeline($, after = 'ask') {
+// auto: started by the auto handoff. A run that starts or queues sets P.auto,
+// so it lasts through the countdown and a wait for the turn's end, and a run
+// the person starts later never inherits it.
+async function runPipeline($, after = 'ask', auto = false) {
   // A later press that only asks never overrides a choice made earlier: a clear
   // or a keep (so auto clear cannot clear a chat /handoff keep was for)
   const merged = (prev) => (AFTER_RANK[prev] > AFTER_RANK[after] ? prev : after)
@@ -590,7 +593,10 @@ async function runPipeline($, after = 'ask') {
   }
   if (S.working) {
     now = await $.clock.now()
-    if (!P.pending) startLanding()
+    if (!P.pending) {
+      startLanding()
+      P.auto = auto
+    }
     P.pending = merged(P.pending)
     $.ui.invalidate('ui.render')
     $.ui.toast('Session handoff queued: it starts when Claude finishes this turn.')
@@ -598,6 +604,7 @@ async function runPipeline($, after = 'ask') {
   }
   // Claimed before the first await: two presses must not both get past the check
   cancelAutoClear()
+  P.auto = auto
   Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
   H.clearDue = false
   startTicker($)
@@ -643,7 +650,6 @@ async function runPipeline($, after = 'ask') {
     Object.assign(P, { phase: 'ready', file: saved.path, words: wordCount(saved.text) })
     const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
     if (P.after === 'clear') {
-      P.auto = false
       // Set before anything awaits: the hold must not lapse before the clear
       H.clearDue = true
       $.ui.toast(`Handoff saved to ${saved.path}.${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
@@ -652,13 +658,12 @@ async function runPipeline($, after = 'ask') {
       if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
       // 'none' (keep) was an explicit choice: only a card that asks counts down
       if (P.after === 'ask' && autoEnds()) startAutoClear($)
-      else P.auto = false
       await settleHold($)
     }
   } catch (err) {
     const i = P.steps.findIndex((s) => s.status === 'run')
     if (i >= 0) P.steps[i] = { status: 'fail', detail: P.steps[i].detail }
-    Object.assign(P, { phase: 'failed', error: errText(err, 160), auto: false })
+    Object.assign(P, { phase: 'failed', error: errText(err, 160) })
     await settleHold($)
   } finally {
     // The countdown keeps the ticker for its seconds
@@ -875,7 +880,6 @@ function startAutoClear($) {
 // Stops it; true when a turn ran during the countdown (its handoff is out of date)
 function cancelAutoClear() {
   if (!autoClearArmed()) return false
-  P.auto = false
   const stale = P.autoStale
   P.autoAt = 0
   P.autoWait = false
@@ -922,14 +926,22 @@ function autoHandoffDue(e) {
   return !!settings.autoHandoff && e.reason !== 'interrupted' && !P.pending && !P.phase && offerShown()
 }
 
+// Off the hook, a moment after the turn's end: a turn that started meanwhile
+// (a queued message) must not get a landing note nobody asked for
 function startAutoHandoff($) {
+  if (S.working || !autoHandoffDue({})) return
   snoozeTo = S.ctx + SNOOZE
-  P.auto = true
-  return runPipeline($, 'ask')
+  return runPipeline($, 'ask', true)
 }
 
 async function setAutoHandoff($, on) {
   settings.autoHandoff = !!on
+  // Turned off: a countdown it started stops, as auto clear's does
+  if (!on && P.auto && !settings.autoClear) {
+    cancelAutoClear()
+    P.auto = false
+  }
+  await releaseIfFree($)
   await $.store.set('settings', settings)
   $.ui.invalidate('ui.render')
 }
@@ -1921,7 +1933,7 @@ function statusText() {
   lines.push(`Cold-send guard: ${settings.guard ? 'on' : 'off'} for contexts over ${tokens(settings.bigTokens)} tokens. Alerts: ${settings.alerts ? 'on' : 'off'}.`)
   lines.push(`Handoff offer: ${offerAt() ? `at ${tokens(offerAt())} tokens of context` : 'off'}${snoozeTo > offerAt() ? ` (hidden in this chat until ${tokens(snoozeTo)})` : ''}.`)
   lines.push(`Auto handoff: ${settings.autoHandoff ? (offerAt() ? `on (at ${tokens(offerAt())} tokens, a turn's end writes the handoff and clears this chat ${AUTO_CLEAR_MS / 1000} s later, unless you type or press Keep chat)` : 'on, but idle while the offer is off') : 'off (the offer only asks)'}.`)
-  lines.push(`Auto clear: ${settings.autoClear ? `on (a handoff from the band or the offer clears this chat ${AUTO_CLEAR_MS / 1000} s after it is in, unless you press Keep chat)` : 'off (the ready card waits for Clear and continue)'}.`)
+  lines.push(`Auto clear: ${settings.autoClear ? `on (a handoff from the band or the offer clears this chat ${AUTO_CLEAR_MS / 1000} s after it is in, unless you press Keep chat)` : `off (the ready card waits for Clear and continue${settings.autoHandoff ? ', except after an auto handoff' : ''})`}.`)
   lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}, /${names.cache} handoff auto on|off, /${names.cache} autoclear on|off. Board: /${names.board}.`)
   return lines.join('\n')
 }
@@ -1969,6 +1981,8 @@ export function register(on, options) {
     // A new chat: a hidden offer and a closed card start over; a handoff being
     // written for the old chat goes on and shows when it is in
     snoozeTo = 0
+    // A cleared chat starts small; its size comes with its first request
+    if (e.source === 'clear') S.ctx = 0
     cancelAutoClear()
     if (P.phase !== 'working') P.phase = ''
     // "Keep chat" was about the old chat
