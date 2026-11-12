@@ -2254,9 +2254,9 @@ export function register(on, options) {
       const n = parseTokens(value)
       if (n) settings.bigTokens = n
     } else if (key === 'handoff' && value === 'auto') {
-      const on = String(e.args || '').trim().toLowerCase().split(/\s+/)[2]
-      if (on !== 'on' && on !== 'off') return { text: 'Pick one of: on, off.' }
-      await setAutoHandoff($, on === 'on')
+      const pick = String(e.args || '').trim().toLowerCase().split(/\s+/)[2]
+      if (pick !== 'on' && pick !== 'off') return { text: 'Pick one of: on, off.' }
+      await setAutoHandoff($, pick === 'on')
       return { text: statusText() }
     } else if (key === 'handoff') {
       if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}, auto on|off.` }
