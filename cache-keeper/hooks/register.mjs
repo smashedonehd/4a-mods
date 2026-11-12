@@ -274,7 +274,9 @@ function holdsPrompts() {
 // start a turn waits too: that turn would put the handoff out of date and cost
 // a second one. What the person types is not held by this: it stops the clear.
 function autoHolds() {
-  return !!settings.autoClear && ((P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+  // queued behind the running turn too: a report that slips in as it ends would
+  // start a turn while the handoff is written, and the countdown wipes it
+  return !!settings.autoClear && (P.pending === 'ask' || (P.phase === 'working' && P.after === 'ask') || autoClearArmed())
 }
 
 // Sends what was held once nothing holds it any more. Never throws.
@@ -291,12 +293,11 @@ function canHold(e) {
   return !/(^|\s)@\S/.test(String(e.text || ''))
 }
 
-// A notification delivered into the running turn starts no turn, so it cannot
-// keep /clear from running. What the person typed over a turn may still wait
-// for a turn of its own.
-function joinsOtherTurn(e, fromUser) {
-  return !fromUser && S.working && !!e.turnId && e.turnId === S.turnId
-}
+// A notification carrying the running turn's id is held too: one queued in the
+// turn's last moments reaches the chat only after the turn ends, starts a turn
+// of its own there while the handoff is written, and the clear wipes it. Held,
+// it goes to the fresh chat. The running turn no longer sees it: the landing
+// note winds that turn down anyway, and the report carries its own context.
 
 // Sends the held prompts in the order they came; one that cannot be sent goes
 // to the prompt box rather than being lost. Never throws.
@@ -1979,7 +1980,7 @@ export function register(on, options) {
     // (typed while the handoff ran, a notification, a peer) waits and is sent
     // after the handoff. One that passes (see canHold) starts a turn, and the
     // clear waits for it.
-    if ((holdsPrompts() || (!fromUser && autoHolds())) && canHold(e) && !joinsOtherTurn(e, fromUser)) {
+    if ((holdsPrompts() || (!fromUser && autoHolds())) && canHold(e)) {
       const why = holdsPrompts() ? 'Held until this chat clears: it is sent after the handoff.' : 'Held for the auto clear: it is sent after the handoff, or at once if the clear is stopped.'
       held.push(fromUser ? { text: e.text, asUser: true } : { text: e.text })
       await saveHeld($)

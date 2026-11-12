@@ -711,6 +711,19 @@ await check('asked while Claude works: queued, shown, and run when the turn ends
   assert.ok(cleared(s.log))
 })
 
+await check('queued behind a turn: a report carrying that turn\'s id is held and sent after the handoff, not lost to the clear', async () => {
+  const s = await boot('/w/q3', 'q0000003-0', { working: true })
+  await s.run('handoff')
+  const r = await s.fire('prompt.submit', { text: 'late report', turnId: 'busy', origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held, though it names the running turn')
+  await s.end({ turnId: 'busy' })
+  await settle()
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 2)
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent[1], { text: 'late report' })
+})
+
 await check('a press that only asks never cancels a queued clear', async () => {
   const s = await boot('/w/q2', 'q0000002-0', { working: true })
   await s.run('handoff')
@@ -1024,6 +1037,33 @@ const armed = async (id) => {
 }
 
 const peer = (s, text) => s.fire('prompt.submit', { text, origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+
+await check('auto clear on: armed through a turn, a report carrying that turn\'s id waits for the clear too', async () => {
+  store.set('settings', { autoClear: true })
+  const { s, timers } = await armed('ac000224-0')
+  const r = await s.fire('prompt.submit', { text: 'late report', turnId: 't7', origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held, though it names the running turn')
+  await s.end({ turnId: 't7' })
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.deepEqual(s.sent[s.sent.length - 1], { text: 'late report' })
+  store.delete('settings')
+})
+
+await check('auto clear on: started from the card while Claude works, a report as the turn ends waits for the clear', async () => {
+  store.set('settings', { autoClear: true })
+  const timers = []
+  const s = await boot('/w/ac12', 'ac000225-0', { timers, working: true })
+  await startFromCard(s, timers)
+  const r = await s.fire('prompt.submit', { text: 'late report', turnId: 'busy', origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held while the handoff is queued behind the turn')
+  await s.end({ turnId: 'busy' })
+  await flush(timers)
+  await settle()
+  assert.ok(cleared(s.log))
+  assert.deepEqual(s.sent[s.sent.length - 1], { text: 'late report' })
+  store.delete('settings')
+})
 
 await check('auto clear on: a subagent report in the countdown waits for the clear; one handoff, then the report', async () => {
   store.set('settings', { autoClear: true })
