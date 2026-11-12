@@ -962,7 +962,7 @@ const WORK_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell
 const poseOfTool = (tool: string): Pose => (tool === 'Agent' || tool === 'Task' ? 'delegate' : WORK_TOOLS.has(tool) ? 'write' : 'think')
 
 // Only a change is written, so the pane redraws seldom
-async function pose($: EngineInterface, next: Pose): Promise<void> {
+async function setPose($: EngineInterface, next: Pose): Promise<void> {
   if ((await read($, mainPose)) !== next) await update($, mainPose, () => next)
 }
 
@@ -1130,6 +1130,14 @@ const progressOf = (a: AgentRun): number | null => {
   return null
 }
 
+// The reported steps; a finished run counts all of them, its last note gone,
+// so the text agrees with its full bar even when the worker stopped reporting.
+const stepsOf = (a: AgentRun, sep: string): string => {
+  if (!a.stepTotal) return ''
+  if (a.status === 'done') return `${a.stepTotal}/${a.stepTotal}`
+  return `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? sep + a.stepNote : ''}`
+}
+
 const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
 const agentSvg = (W: number, a: AgentRun, at: number): string => {
@@ -1144,7 +1152,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const barW = textW
   const progress = progressOf(a)
   const stats = `${s.ctx} ${ctx}% · ${fmtTokens(a.contextTokens)}  ≈${fmtCost(a.costUsd)}  ${fmtTime(elapsed(a, at))}`
-  const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
+  const steps = stepsOf(a, ' · ')
   const stepsW = Math.max(0, barW - textWidth(stats, 11) - 12)
   // Without reported steps the bar falls back to the context, drawn grey.
   const fillW = Math.round(barW * (progress ?? ctx / 100))
@@ -1350,11 +1358,11 @@ export const register: Register = (on, options) => {
   // the person. A prompt alone moves nothing: one dropped before its turn
   // would leave the avatar thinking while idle.
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await pose($, 'think')
+    if (e.agentId === undefined) await setPose($, 'think')
     return next(e)
   })
   on('tool.call', async ($, e, next) => {
-    if (e.agentId === undefined) await pose($, poseOfTool(String(e.tool)))
+    if (e.agentId === undefined) await setPose($, poseOfTool(String(e.tool)))
     return next(e)
   })
 
@@ -1427,7 +1435,7 @@ export const register: Register = (on, options) => {
   // live context, tokens and cost.
   on('turn.step', async function* ($, e, next) {
     // Back to thinking once a tool's result goes to the model
-    if (e.agentId === undefined) await pose($, 'think')
+    if (e.agentId === undefined) await setPose($, 'think')
     const result = yield* next(e)
     const agentId = e.agentId
     const usage = result.usage
@@ -1467,7 +1475,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
-    if (!agentId) await pose($, 'wait')
+    if (!agentId) await setPose($, 'wait')
     if (agentId) {
       await foundRun($, agentId, e.usage?.model || '')
       const at = await $.clock.now()
@@ -1599,7 +1607,7 @@ export const register: Register = (on, options) => {
       const ctx = ctxOf(a)
       const progress = progressOf(a)
       const model = runModel(a)
-      const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' ' + a.stepNote : ''} · ` : ''
+      const steps = a.stepTotal ? `${stepsOf(a, ' ')} · ` : ''
       return (
         <Box key={a.id} flexDirection="column" marginBottom={1}>
           <Box flexDirection="row" gap={1}>
