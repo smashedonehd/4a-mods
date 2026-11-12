@@ -711,6 +711,19 @@ await check('asked while Claude works: queued, shown, and run when the turn ends
   assert.ok(cleared(s.log))
 })
 
+await check('queued behind a turn: a report carrying that turn\'s id is held and sent after the handoff, not lost to the clear', async () => {
+  const s = await boot('/w/q3', 'q0000003-0', { working: true })
+  await s.run('handoff')
+  const r = await s.fire('prompt.submit', { text: 'late report', turnId: 'busy', origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
+  assert.ok(r && r.drop, 'held, though it names the running turn')
+  await s.end({ turnId: 'busy' })
+  await settle()
+  assert.ok(cleared(s.log))
+  assert.equal(s.sent.length, 2)
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent[1], { text: 'late report' })
+})
+
 await check('a press that only asks never cancels a queued clear', async () => {
   const s = await boot('/w/q2', 'q0000002-0', { working: true })
   await s.run('handoff')
