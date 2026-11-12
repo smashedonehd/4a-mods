@@ -162,7 +162,7 @@ const H = {
 
 // The pipeline and its card. after: what follows a written handoff: 'clear'
 // clears and continues on its own, 'none' (keep) and 'ask' leave the choice
-// to the card's buttons.
+// to the card's buttons, 'auto' (the auto handoff's) asks with a countdown.
 const STEP_LABELS = ['Reading the conversation', 'Finding the files you used', 'Listing skills, tools and links', 'Checking running subagents', 'Writing the handoff', 'Saving and checking']
 const WRITE_STEP = 4 // the model step: its ring nears full with its seconds
 const FILES_MAX = 25 // files the handoff lists
@@ -182,7 +182,6 @@ const P = {
   autoAt: 0, // auto clear: when the ready card's countdown ends (0: none runs)
   autoStale: false, // a turn started during the countdown
   autoWait: false, // the countdown ended in a turn: the clear waits for its end
-  auto: false, // started by the auto handoff: counts down even with auto clear off
 }
 const AUTO_CLEAR_MS = 5000
 let ticker = null
@@ -278,13 +277,13 @@ function holdsPrompts() {
 function autoHolds() {
   // queued behind the running turn too: a report that slips in as it ends would
   // start a turn while the handoff is written, and the countdown wipes it
-  return autoEnds() && (P.pending === 'ask' || (P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+  return countsDown(P.pending) || (P.phase === 'working' && countsDown(P.after)) || autoClearArmed()
 }
 
-// A handoff the card asks about ends in the countdown: auto clear is on, or
-// the auto handoff started it
-function autoEnds() {
-  return !!settings.autoClear || P.auto
+// Whether a handoff with this ending counts down to its clear once it is in:
+// the auto handoff's while that is on, any that asks while auto clear is on
+function countsDown(after) {
+  return (after === 'auto' && !!settings.autoHandoff) || ((after === 'ask' || after === 'auto') && !!settings.autoClear)
 }
 
 // Sends what was held once nothing holds it any more. Never throws.
@@ -565,7 +564,7 @@ function forkFailure(r) {
 }
 
 // What follows a handoff, by strength: an earlier choice holds against a weaker one
-const AFTER_RANK = { '': -1, ask: 0, none: 1, clear: 2 }
+const AFTER_RANK = { '': -1, ask: 0, auto: 1, none: 2, clear: 3 }
 
 // The live agent list, or `none` ([] by default) when the host fails or does
 // not answer in LIVE_TIMEOUT. The guard's timer starts only when the list is
@@ -579,10 +578,7 @@ async function listAgentsSoon($, none = []) {
 }
 
 // Runs the six steps now, or once the running turn ends. after: see P.after.
-// auto: started by the auto handoff. A run that starts or queues sets P.auto,
-// so it lasts through the countdown and a wait for the turn's end, and a run
-// the person starts later never inherits it.
-async function runPipeline($, after = 'ask', auto = false) {
+async function runPipeline($, after = 'ask') {
   // A later press that only asks never overrides a choice made earlier: a clear
   // or a keep (so auto clear cannot clear a chat /handoff keep was for)
   const merged = (prev) => (AFTER_RANK[prev] > AFTER_RANK[after] ? prev : after)
@@ -593,10 +589,7 @@ async function runPipeline($, after = 'ask', auto = false) {
   }
   if (S.working) {
     now = await $.clock.now()
-    if (!P.pending) {
-      startLanding()
-      P.auto = auto
-    }
+    if (!P.pending) startLanding()
     P.pending = merged(P.pending)
     $.ui.invalidate('ui.render')
     $.ui.toast('Session handoff queued: it starts when Claude finishes this turn.')
@@ -604,7 +597,6 @@ async function runPipeline($, after = 'ask', auto = false) {
   }
   // Claimed before the first await: two presses must not both get past the check
   cancelAutoClear()
-  P.auto = auto
   Object.assign(P, { phase: 'working', pending: '', after, steps: freshSteps(), file: '', draft: '', words: 0, error: '' })
   H.clearDue = false
   startTicker($)
@@ -657,7 +649,7 @@ async function runPipeline($, after = 'ask', auto = false) {
     } else {
       if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
       // 'none' (keep) was an explicit choice: only a card that asks counts down
-      if (P.after === 'ask' && autoEnds()) startAutoClear($)
+      if (countsDown(P.after)) startAutoClear($)
       await settleHold($)
     }
   } catch (err) {
@@ -922,37 +914,30 @@ function autoClearLeft() {
 // threshold starts the handoff the offer would ask about, which then counts
 // down to its clear. Once per crossing: it snoozes the offer as it starts, so
 // a stopped one waits for another SNOOZE of context.
-function autoHandoffDue(e) {
-  return !!settings.autoHandoff && e.reason !== 'interrupted' && !P.pending && !P.phase && offerShown()
+function autoHandoffDue() {
+  return !!settings.autoHandoff && offerShown()
 }
 
 // Off the hook, a moment after the turn's end: a turn that started meanwhile
 // (a queued message) must not get a landing note nobody asked for
 function startAutoHandoff($) {
-  if (S.working || !autoHandoffDue({})) return
+  if (S.working || !autoHandoffDue()) return
   snoozeTo = S.ctx + SNOOZE
-  return runPipeline($, 'ask', true)
+  return runPipeline($, 'auto')
 }
 
-async function setAutoHandoff($, on) {
-  settings.autoHandoff = !!on
-  // Turned off: a countdown it started stops, as auto clear's does
-  if (!on && P.auto && !settings.autoClear) {
-    cancelAutoClear()
-    P.auto = false
-  }
-  await releaseIfFree($)
-  await $.store.set('settings', settings)
-  $.ui.invalidate('ui.render')
-}
-
-async function setAutoClear($, on) {
-  settings.autoClear = !!on
-  if (!on) cancelAutoClear()
+// Auto clear or the auto handoff turned on or off: a countdown that no longer
+// counts down for the ready card's handoff stops, and what it held goes on
+async function setAutoSetting($, key, on) {
+  settings[key] = !!on
+  if (!countsDown(P.after)) cancelAutoClear()
   await $.store.set('settings', settings)
   await releaseIfFree($)
   $.ui.invalidate('ui.render')
 }
+
+const setAutoHandoff = ($, on) => setAutoSetting($, 'autoHandoff', on)
+const setAutoClear = ($, on) => setAutoSetting($, 'autoClear', on)
 
 // The due clear, once a turn ran since its handoff: sent now, that handoff
 // would leave out what the turn did. One fresh handoff is written for the
@@ -1052,7 +1037,8 @@ async function cardAction($, key) {
     case 'ck-ho-start':
       return P.phase === '' ? runPipeline($, 'ask') : undefined
     case 'ck-ho-retry':
-      return P.phase === 'failed' ? runPipeline($, P.after) : undefined
+      // Retry is a press: an auto run's retry asks like the card's own
+      return P.phase === 'failed' ? runPipeline($, P.after === 'auto' ? 'ask' : P.after) : undefined
     case 'ck-ho-hide':
       snoozeTo = S.ctx + SNOOZE
       $.ui.toast(`Handoff offer hidden until the context reaches ${tokens(snoozeTo)}. /${names.handoff} runs it any time.`, { timeoutMs: 8000 })
@@ -2165,7 +2151,7 @@ export function register(on, options) {
       if (P.phase === 'ready' && !H.continuing) autoClearGo($, true)
       else offHook($, () => releaseIfFree($))
     } else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
-    else if (!overlapped && autoHandoffDue(e)) offHook($, () => startAutoHandoff($), 50)
+    else if (!overlapped && e.reason !== 'interrupted' && autoHandoffDue()) offHook($, () => startAutoHandoff($), 50)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
     return r
@@ -2259,7 +2245,7 @@ export function register(on, options) {
 
   on('command.run', { command: ['cache', 'ck-cache'] }, async ($, e) => {
     now = await $.clock.now()
-    const [key, value] = String(e.args || '').trim().toLowerCase().split(/\s+/)
+    const [key, value, pick] = String(e.args || '').trim().toLowerCase().split(/\s+/)
     if (key === 'ttl') {
       settings.ttlMin = value === '5' ? 5 : value === '60' ? 60 : 0
     } else if (key === 'guard' || key === 'alerts') {
@@ -2268,7 +2254,6 @@ export function register(on, options) {
       const n = parseTokens(value)
       if (n) settings.bigTokens = n
     } else if (key === 'handoff' && value === 'auto') {
-      const pick = String(e.args || '').trim().toLowerCase().split(/\s+/)[2]
       if (pick !== 'on' && pick !== 'off') return { text: 'Pick one of: on, off.' }
       await setAutoHandoff($, pick === 'on')
       return { text: statusText() }
