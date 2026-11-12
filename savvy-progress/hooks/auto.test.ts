@@ -385,3 +385,12 @@ test('steps: a finished run counts all its steps and drops the last note', async
   expect(svg).toContain('>4/4<')
   expect(svg).not.toContain('reading')
 })
+
+// A failed run did not finish its plan: it keeps where it stopped, as its bar does.
+test('steps: a failed run keeps the steps it reached and its note', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await $.tool.call({ tool: STEP, agentId: 'a', total: 4, done: 1, note: 'reading' } as never)
+  await finish($, 'a', 'error')
+  expect(await panelTexts($)).toContain('1/4 reading · ')
+})
