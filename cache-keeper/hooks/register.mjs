@@ -274,7 +274,9 @@ function holdsPrompts() {
 // start a turn waits too: that turn would put the handoff out of date and cost
 // a second one. What the person types is not held by this: it stops the clear.
 function autoHolds() {
-  return !!settings.autoClear && ((P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+  // queued behind the running turn too: a report that slips in as it ends would
+  // start a turn while the handoff is written, and the countdown wipes it
+  return !!settings.autoClear && (P.pending === 'ask' || (P.phase === 'working' && P.after === 'ask') || autoClearArmed())
 }
 
 // Sends what was held once nothing holds it any more. Never throws.
@@ -294,7 +296,8 @@ function canHold(e) {
 // A notification carrying the running turn's id is held too: one queued in the
 // turn's last moments reaches the chat only after the turn ends, starts a turn
 // of its own there while the handoff is written, and the clear wipes it. Held,
-// it goes to the fresh chat, which the handoff tells about that subagent.
+// it goes to the fresh chat. The running turn no longer sees it: the landing
+// note winds that turn down anyway, and the report carries its own context.
 
 // Sends the held prompts in the order they came; one that cannot be sent goes
 // to the prompt box rather than being lost. Never throws.
