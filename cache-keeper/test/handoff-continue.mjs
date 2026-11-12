@@ -1568,9 +1568,21 @@ await check('auto handoff stopped by Keep chat: a later Start handoff, a Retry, 
   await s.step('t1', 310000)
   await s.end({ turnId: 't1' })
   await tick(timers)
+  assert.ok((await peer(s, 'report'))?.drop)
   await s.run('cache', 'handoff auto off')
   await flush(timers)
   assert.ok(!cleared(s.log))
+  assert.deepEqual(s.sent, [{ text: 'report' }], 'what it held goes at once')
+  // with auto clear on, turning it off leaves auto clear's countdown
+  store.set('settings', { autoHandoff: true, autoClear: true })
+  timers = []
+  s = await boot('/w/ah14', 'ah000014-0', { timers })
+  await s.step('t1', 310000)
+  await s.end({ turnId: 't1' })
+  await tick(timers)
+  await s.run('cache', 'handoff auto off')
+  await flush(timers)
+  assert.ok(cleared(s.log))
   store.delete('settings')
 })
 
