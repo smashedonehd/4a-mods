@@ -1586,6 +1586,29 @@ await check('auto handoff stopped by Keep chat: a later Start handoff, a Retry, 
   store.delete('settings')
 })
 
+await check('auto handoff being written: /handoff keep wins (no countdown), a press that only asks keeps the countdown', async () => {
+  store.set('settings', { autoHandoff: true })
+  for (const [how, clears] of [['keep', false], ['ask', true]]) {
+    let open
+    const gate = new Promise((r) => (open = r))
+    const timers = []
+    const s = await boot('/w/ah15' + how, 'ah00015' + (how === 'keep' ? '1' : '2') + '-0', { timers, fork: async () => (await gate, { isAnswered: true, text: GOOD, usage: {} }) })
+    await s.step('t1', 310000)
+    await s.end({ turnId: 't1' })
+    await tick(timers)
+    assert.match(texts(await s.render()), /Writing the handoff/)
+    if (how === 'keep') await s.run('handoff', 'keep')
+    else s.buttons.get('handoff').onPress()
+    await tick(timers) // both reach runPipeline off their hook
+    assert.equal(s.prompts.length, 1, 'merged into the run, not a second one')
+    open()
+    await settle()
+    await flush(timers)
+    assert.equal(cleared(s.log), clears, how)
+  }
+  store.delete('settings')
+})
+
 await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle, kept across a reload', async () => {
   store.delete('settings')
   let s = await boot('/w/ah6', 'ah000006-0', {})
