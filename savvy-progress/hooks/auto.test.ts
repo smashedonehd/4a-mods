@@ -15,6 +15,8 @@ function session(on: On) {
   const clock = { now: T0 }
   on('clock.now', () => ({ value: clock.now }) as never)
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  // A band that draws nothing falls through to the host, here an empty box
+  on('ui.render', () => ({ type: 'Box', props: {}, children: [] }) as never)
   on('agent.spawn', (_$, e) => ({ model: 'claude-opus-5-5', agentId: (e as { tool_use_id: string }).tool_use_id }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
   on('turn.step', async function* () {
@@ -360,4 +362,35 @@ test('unseen: a /clear leaves a teammate to its own events', async ($, on) => {
   expect(await panelTexts($)).toContain('No subagents yet.')
   await step($, 't')
   expect(await panelTexts($)).toContain('Old t')
+})
+
+// ---- a worker's reported steps ----
+
+const STEP = 'mcp__savvy-progress__step'
+
+// A worker that reported its plan and stopped reporting reads as complete once it
+// ends, on both surfaces, so the text agrees with the full bar.
+test('steps: a finished run counts all its steps and drops the last note', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  expect(await $.tool.call({ tool: STEP, agentId: 'a', total: 4, done: 0, note: 'reading' } as never)).toMatchObject({ result: 'ok' })
+  expect(await panelTexts($)).toContain('0/4 reading · ')
+  await finish($, 'a')
+  const texts = await panelTexts($)
+  expect(texts).toContain('4/4 · ')
+  expect(texts).not.toContain('reading')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: pane })
+  const svg = (await ui.findAll({ type: 'Svg' })).map(el => String(el.props.source)).join('')
+  await ui.unmount()
+  expect(svg).toContain('>4/4<')
+  expect(svg).not.toContain('reading')
+})
+
+// A failed run did not finish its plan: it keeps where it stopped, as its bar does.
+test('steps: a failed run keeps the steps it reached and its note', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await $.tool.call({ tool: STEP, agentId: 'a', total: 4, done: 1, note: 'reading' } as never)
+  await finish($, 'a', 'error')
+  expect(await panelTexts($)).toContain('1/4 reading · ')
 })
