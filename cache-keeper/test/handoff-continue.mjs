@@ -1418,6 +1418,103 @@ await check('desktop: a handoff queued over a ready one keeps the steps, stop no
   for (const b of ['ck-ho-clear', 'ck-ho-keep', 'ck-ho-open']) assert.ok(buttons.has(b), b)
 })
 
+// ======================= auto handoff =======================
+
+// One round of the collected timers: what the turn's end scheduled, not what
+// those add (the countdown)
+const tick = async (timers) => {
+  for (const f of timers.splice(0)) await f()
+  await settle()
+  await settle()
+}
+
+await check('auto handoff on, past the threshold: a turn\'s end writes it, counts down with auto clear off, clears; a report waits', async () => {
+  store.set('settings', { autoHandoff: true })
+  const timers = []
+  const s = await boot('/w/ah1', 'ah000001-0', { timers })
+  await s.step('t1', 310000)
+  await s.end({ turnId: 't1' })
+  await tick(timers)
+  assert.equal(s.prompts.length, 1, 'the handoff was written')
+  assert.match(texts(await s.render()), /Handoff ready/)
+  assert.ok(!cleared(s.log), 'not before the countdown')
+  assert.ok((await peer(s, 'report'))?.drop, 'held through the countdown')
+  await flush(timers)
+  assert.ok(cleared(s.log))
+  assert.ok(s.sent[0].text.includes('# Session Handoff'))
+  assert.deepEqual(s.sent.at(-1), { text: 'report' })
+  store.delete('settings')
+})
+
+await check('auto handoff: under the threshold, off (the default), or an interrupted turn starts nothing', async () => {
+  store.set('settings', { autoHandoff: true })
+  let timers = []
+  let s = await boot('/w/ah2', 'ah000002-0', { timers })
+  await s.step('t1', 250000)
+  await s.end({ turnId: 't1' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 0, 'under 300k')
+  timers = []
+  s = await boot('/w/ah3', 'ah000003-0', { timers })
+  await s.step('t1', 310000)
+  await s.end({ turnId: 't1', reason: 'interrupted' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 0, 'interrupted')
+  store.delete('settings')
+  timers = []
+  s = await boot('/w/ah4', 'ah000004-0', { timers })
+  await s.step('t1', 310000)
+  await s.end({ turnId: 't1' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 0, 'off: the offer only asks')
+  assert.ok(keys(await s.render()).has('ck-ho-offer'))
+})
+
+await check('auto handoff stopped by typing: no new one at the next turn\'s end, another only 100k later', async () => {
+  store.set('settings', { autoHandoff: true })
+  const timers = []
+  const s = await boot('/w/ah5', 'ah000005-0', { timers })
+  await s.step('t1', 310000)
+  await s.end({ turnId: 't1' })
+  await tick(timers)
+  assert.equal(s.prompts.length, 1)
+  await s.fire('prompt.submit', { text: 'wait', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
+  await flush(timers)
+  assert.ok(!cleared(s.log), 'typing stopped the countdown')
+  await s.step('t2', 330000)
+  await s.end({ turnId: 't2' })
+  await flush(timers)
+  assert.equal(s.prompts.length, 1, 'snoozed')
+  await s.step('t3', 420000)
+  await s.end({ turnId: 't3' })
+  await tick(timers)
+  assert.equal(s.prompts.length, 2, 'past the snooze')
+  store.delete('settings')
+})
+
+await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle, kept across a reload', async () => {
+  store.delete('settings')
+  let s = await boot('/w/ah6', 'ah000006-0', {})
+  let r = await s.run('cache', 'handoff auto on')
+  assert.match(r.text, /Auto handoff: on \(at 300k tokens/)
+  assert.equal(store.get('settings').autoHandoff, true)
+  r = await s.run('cache', 'handoff auto maybe')
+  assert.equal(r.text, 'Pick one of: on, off.')
+  s = await boot('/w/ah6', 'ah000007-0', {})
+  r = await s.run('cache')
+  assert.match(r.text, /Auto handoff: on/)
+  await s.run('cache', 'handoff auto off')
+  await s.step('t1', 310000)
+  await s.render()
+  s.buttons.get('tag-autohandoff').onPress()
+  await settle()
+  assert.equal(store.get('settings').autoHandoff, true, 'the card toggle turns it on')
+  r = await s.run('cache', 'handoff 400k')
+  assert.match(r.text, /Handoff offer: at 400k/, 'the threshold still parses')
+  store.delete('settings')
+  await s.run('cache', 'handoff 300k')
+})
+
 // ======================= the band, revive, live git, pruning =======================
 
 await check('clear and continue turns the marked plugins on again before the handoff', async () => {

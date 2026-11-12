@@ -54,8 +54,9 @@ const S = {
 }
 
 // autoClear: a handoff the card would ask about clears and continues on its
-// own after a short countdown the person can stop
-const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: false }
+// own after a short countdown the person can stop. autoHandoff: once the
+// context passes the offer's threshold, a turn's end starts that handoff itself
+const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: false, autoHandoff: false }
 const names = { cache: 'cache', keepwarm: 'keepwarm', board: 'board', handoff: 'handoff' }
 
 let now = 0
@@ -181,6 +182,7 @@ const P = {
   autoAt: 0, // auto clear: when the ready card's countdown ends (0: none runs)
   autoStale: false, // a turn started during the countdown
   autoWait: false, // the countdown ended in a turn: the clear waits for its end
+  auto: false, // started by the auto handoff: counts down even with auto clear off
 }
 const AUTO_CLEAR_MS = 5000
 let ticker = null
@@ -276,7 +278,13 @@ function holdsPrompts() {
 function autoHolds() {
   // queued behind the running turn too: a report that slips in as it ends would
   // start a turn while the handoff is written, and the countdown wipes it
-  return !!settings.autoClear && (P.pending === 'ask' || (P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+  return autoEnds() && (P.pending === 'ask' || (P.phase === 'working' && P.after === 'ask') || autoClearArmed())
+}
+
+// A handoff the card asks about ends in the countdown: auto clear is on, or
+// the auto handoff started it
+function autoEnds() {
+  return !!settings.autoClear || P.auto
 }
 
 // Sends what was held once nothing holds it any more. Never throws.
@@ -635,6 +643,7 @@ async function runPipeline($, after = 'ask') {
     Object.assign(P, { phase: 'ready', file: saved.path, words: wordCount(saved.text) })
     const lost = saved.latest ? '' : ' It will not survive a restart: the latest copy could not be written.'
     if (P.after === 'clear') {
+      P.auto = false
       // Set before anything awaits: the hold must not lapse before the clear
       H.clearDue = true
       $.ui.toast(`Handoff saved to ${saved.path}.${lost} Clearing this chat and continuing with it.`, { timeoutMs: 8000 })
@@ -642,13 +651,14 @@ async function runPipeline($, after = 'ask') {
     } else {
       if (lost) $.ui.toast('Handoff saved.' + lost, { timeoutMs: 8000 })
       // 'none' (keep) was an explicit choice: only a card that asks counts down
-      if (P.after === 'ask' && settings.autoClear) startAutoClear($)
+      if (P.after === 'ask' && autoEnds()) startAutoClear($)
+      else P.auto = false
       await settleHold($)
     }
   } catch (err) {
     const i = P.steps.findIndex((s) => s.status === 'run')
     if (i >= 0) P.steps[i] = { status: 'fail', detail: P.steps[i].detail }
-    Object.assign(P, { phase: 'failed', error: errText(err, 160) })
+    Object.assign(P, { phase: 'failed', error: errText(err, 160), auto: false })
     await settleHold($)
   } finally {
     // The countdown keeps the ticker for its seconds
@@ -865,6 +875,7 @@ function startAutoClear($) {
 // Stops it; true when a turn ran during the countdown (its handoff is out of date)
 function cancelAutoClear() {
   if (!autoClearArmed()) return false
+  P.auto = false
   const stale = P.autoStale
   P.autoAt = 0
   P.autoWait = false
@@ -901,6 +912,26 @@ function autoClearGo($, stale) {
 // Seconds left on the ready card's countdown
 function autoClearLeft() {
   return Math.max(1, Math.ceil((P.autoAt - now) / 1000))
+}
+
+// The auto handoff: a turn that ends with the context past the offer's
+// threshold starts the handoff the offer would ask about, which then counts
+// down to its clear. Once per crossing: it snoozes the offer as it starts, so
+// a stopped one waits for another SNOOZE of context.
+function autoHandoffDue(e) {
+  return !!settings.autoHandoff && e.reason !== 'interrupted' && !P.pending && !P.phase && offerShown()
+}
+
+function startAutoHandoff($) {
+  snoozeTo = S.ctx + SNOOZE
+  P.auto = true
+  return runPipeline($, 'ask')
+}
+
+async function setAutoHandoff($, on) {
+  settings.autoHandoff = !!on
+  await $.store.set('settings', settings)
+  $.ui.invalidate('ui.render')
 }
 
 async function setAutoClear($, on) {
@@ -1523,6 +1554,7 @@ function handoffCard($, e, els, Svg) {
       cardButton(Button, 'ck-ho-start', 'Start handoff', hot('h')),
       cardButton(Button, 'ck-ho-hide', 'Hide', { dimColor: true }),
       at,
+      dotTag(els, 'autohandoff', 'auto', settings.autoHandoff, () => setAutoHandoff($, !settings.autoHandoff)),
     ])
     return desk ? framed('ck-ho-offer-card', ACCENT, [offer]) : offer
   }
@@ -1888,8 +1920,9 @@ function statusText() {
   lines.push(calText())
   lines.push(`Cold-send guard: ${settings.guard ? 'on' : 'off'} for contexts over ${tokens(settings.bigTokens)} tokens. Alerts: ${settings.alerts ? 'on' : 'off'}.`)
   lines.push(`Handoff offer: ${offerAt() ? `at ${tokens(offerAt())} tokens of context` : 'off'}${snoozeTo > offerAt() ? ` (hidden in this chat until ${tokens(snoozeTo)})` : ''}.`)
+  lines.push(`Auto handoff: ${settings.autoHandoff ? (offerAt() ? `on (at ${tokens(offerAt())} tokens, a turn's end writes the handoff and clears this chat ${AUTO_CLEAR_MS / 1000} s later, unless you type or press Keep chat)` : 'on, but idle while the offer is off') : 'off (the offer only asks)'}.`)
   lines.push(`Auto clear: ${settings.autoClear ? `on (a handoff from the band or the offer clears this chat ${AUTO_CLEAR_MS / 1000} s after it is in, unless you press Keep chat)` : 'off (the ready card waits for Clear and continue)'}.`)
-  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}, /${names.cache} autoclear on|off. Board: /${names.board}.`)
+  lines.push(`Settings: /${names.cache} ttl 5|60|auto, /${names.cache} guard on|off, /${names.cache} big 150k, /${names.cache} alerts on|off, /${names.cache} handoff ${OFFER_CHOICES.join('|')}, /${names.cache} handoff auto on|off, /${names.cache} autoclear on|off. Board: /${names.board}.`)
   return lines.join('\n')
 }
 
@@ -1917,7 +1950,7 @@ export function register(on, options) {
     await loadRevive($)
     await loadHeld($)
     await readRecording($)
-    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off] [autoclear on|off]')) || names.cache
+    names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off|auto on|off] [autoclear on|off]')) || names.cache
     names.keepwarm = (await registerCommand($, 'keepwarm', 'Keep this session\'s prompt cache warm (default 4 hours), or /keepwarm off', '[hours|off]', true)) || names.keepwarm
     names.board = (await registerCommand($, 'board', 'Every local Claude Code session: state, context, cache, cost', '', true)) || names.board
     names.handoff = (await registerCommand($, 'handoff', 'Write a session handoff, then clear this chat and continue with it (/handoff keep: keep the chat, /handoff continue)', '[continue|keep]')) || names.handoff
@@ -2118,6 +2151,7 @@ export function register(on, options) {
       if (P.phase === 'ready' && !H.continuing) autoClearGo($, true)
       else offHook($, () => releaseIfFree($))
     } else if (H.clearDue && !H.continuing) clearAndContinueLater($, 300, true)
+    else if (!overlapped && autoHandoffDue(e)) offHook($, () => startAutoHandoff($), 50)
     await heartbeat($, true)
     $.ui.invalidate('ui.render')
     return r
@@ -2219,8 +2253,13 @@ export function register(on, options) {
     } else if (key === 'big') {
       const n = parseTokens(value)
       if (n) settings.bigTokens = n
+    } else if (key === 'handoff' && value === 'auto') {
+      const on = String(e.args || '').trim().toLowerCase().split(/\s+/)[2]
+      if (on !== 'on' && on !== 'off') return { text: 'Pick one of: on, off.' }
+      await setAutoHandoff($, on === 'on')
+      return { text: statusText() }
     } else if (key === 'handoff') {
-      if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}.` }
+      if (!(await setOfferAt($, value))) return { text: `Pick one of: ${OFFER_CHOICES.join(', ')}, auto on|off.` }
       return { text: statusText() }
     } else if (key === 'autoclear') {
       if (value !== 'on' && value !== 'off') return { text: 'Pick one of: on, off.' }
