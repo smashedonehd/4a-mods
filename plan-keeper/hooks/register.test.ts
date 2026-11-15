@@ -20,7 +20,11 @@ const PANE = {
 const posix = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 
 // Stands in for the engine beneath the mod: one plan file, an empty state
-function host(on: Parameters<Parameters<typeof test>[1]>[1]) {
+// The engine's own band beneath the mods: an empty Box unless a test says otherwise
+const emptyBand = ($: never, e: never) => ($ as { ui: { resolve: (e: never) => { Box: (p: object) => unknown } } }).ui.resolve(e).Box({})
+
+function host(on: Parameters<Parameters<typeof test>[1]>[1], beneath: (...a: never[]) => unknown = emptyBand) {
+  on('ui.render', beneath as never)
   const files: Record<string, string> = { [PLAN]: TEXT }
   const state: Record<string, unknown> = {}
   const panes = new Set<string>()
@@ -87,3 +91,33 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     await band.unmount()
   })
 }
+
+// Claude Code's own placeholder, or a band beneath that fails, is never nested:
+// the desktop drops a band that nests it. With no plan to show, the band hands
+// the placeholder on untouched.
+const ENGINE = { type: 'engine', ref: 0 }
+for (const [name, beneath] of [
+  ['the engine placeholder', () => ENGINE],
+  ['a band beneath that throws', () => { throw new Error('boom') }],
+] as const)
+  test(`the band stands alone over ${name}`, async ($, on) => {
+    host(on, beneath)
+    await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
+    await $.command.run({ command: 'plan-keeper', args: 'docs/plans/p.md' } as never)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const band = await $.ui.mount({ ...BAND, surface })
+      const tree = JSON.stringify(await band.drawn())
+      expect(tree).not.toContain('"engine"')
+      expect(tree).not.toContain('"ref"')
+      expect(await band.find({ key: 'pane' })).toBeDefined()
+      await band.unmount()
+    }
+  })
+
+test('no plan: the band hands the engine placeholder on untouched', async ($, on) => {
+  host(on, () => ENGINE)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.drawn()).toEqual(ENGINE)
+  await band.unmount()
+})

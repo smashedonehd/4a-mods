@@ -1045,21 +1045,25 @@ export function register(on, options) {
     }
   })
 
+  // Claude Code's own placeholder ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
+  // Same rule as the bands of prompt-translate and savvy-progress (hooks/register.tsx): change them together.
+  // Drawing nothing of its own, the band hands on what lies beneath untouched.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const below = await next(e)
+    const drawn = await Promise.resolve(next(e)).catch(() => null)
+    const below = drawn && typeof drawn === 'object' && drawn.type !== 'engine' ? drawn : null
     try {
       await ready($)
-      if (!bandOn || ui.hidden || !plan || (e.props && e.props.hasSurvey)) return below
+      if (!bandOn || ui.hidden || !plan || (e.props && e.props.hasSurvey)) return drawn
       // Read here without asking for another draw: this is one
       if (view === null) await load($)
-      if (!view || !view.total) return below
+      if (!view || !view.total) return drawn
       const busy = await savvyBusy($)
       const els = $.ui.resolve(e)
       // The terminal's element table may hold an Svg that draws nothing: test the surface too
       const mine = e.surface !== 'terminal' && els.Svg ? drawDeskRow($, els, e, busy) : drawBand($, els, busy)
       return below ? els.Box({ flexDirection: 'column', children: [mine, below] }) : mine
     } catch {
-      return below
+      return drawn
     }
   })
 

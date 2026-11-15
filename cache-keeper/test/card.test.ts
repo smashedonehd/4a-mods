@@ -11,7 +11,11 @@ const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: f
 // engine's five cells wider
 const laidOut = (columns: number) => ({ ...BAND, props: { ...(BAND.props as object), bodyColumns: columns } as never, viewport: { columns: columns + 5, rows: 40 } })
 
-async function session($: Engine, on: On, ctx = 320000) {
+// The engine's own band beneath the mods: an empty Box unless a test says otherwise
+const emptyBand = ($: never, e: never) => ($ as { ui: { resolve: (e: never) => { Box: (p: object) => unknown } } }).ui.resolve(e).Box({})
+
+async function session($: Engine, on: On, ctx = 320000, beneath: (...a: never[]) => unknown = emptyBand) {
+  on('ui.render', beneath as never)
   const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
   mock.env(on, { HOME: '/home/t' })
   mock.store(on)
@@ -223,8 +227,8 @@ test('a plain /clear after Keep chat brings "clear and continue" back: the choic
 // ---- the desktop band: a row of captioned cards ---------------------------
 
 // A session whose main loop reads `ctx` tokens from the cache each request
-async function sized($: Engine, on: On, ctx: number) {
-  const s = await session($, on, ctx)
+async function sized($: Engine, on: On, ctx: number, beneath?: (...a: never[]) => unknown) {
+  const s = await session($, on, ctx, beneath)
   await step($)
   return s
 }
@@ -541,4 +545,31 @@ test('desktop band: a cache cooling on a big context turns its card yellow and o
   expect((await kept.find({ key: 'card-cache' } as never))?.props.borderColor).toBe('#39c5cf')
   expect(await kept.find({ key: 'keepwarm' } as never)).toBeFalsy()
   await kept.unmount()
+})
+
+// Claude Code's own placeholder, or a band beneath that fails, is never nested:
+// the desktop drops a band that nests it. Drawing nothing of its own (a survey
+// up), the band hands the placeholder on untouched.
+const ENGINE = { type: 'engine', ref: 0 }
+for (const [name, beneath] of [
+  ['the engine placeholder', () => ENGINE],
+  ['a band beneath that throws', () => { throw new Error('boom') }],
+] as const)
+  test(`the band and the handoff card stand alone over ${name}`, async ($: Engine, on: On) => {
+    await session($, on, 320000, beneath)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+      const tree = JSON.stringify(await ui.drawn())
+      expect(tree).not.toContain('"engine"')
+      expect(tree).not.toContain('"ref"')
+      expect(await ui.find({ key: 'ck-ho-start' } as never)).toBeTruthy()
+      await ui.unmount()
+    }
+  })
+
+test('a survey up: the band hands the engine placeholder on untouched', async ($: Engine, on: On) => {
+  await session($, on, 320000, () => ENGINE)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, props: { ...(BAND.props as object), hasSurvey: true } as never })
+  expect(await ui.drawn()).toEqual(ENGINE)
+  await ui.unmount()
 })
