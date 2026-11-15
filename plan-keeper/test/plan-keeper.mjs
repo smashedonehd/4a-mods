@@ -1327,10 +1327,10 @@ test('on the desktop the band is one drawn row: name, count pill, next item, per
   assert.match(await source({ bodyColumns: 120 }), /opacity="0\.6"/)
   s.state.delete('flow')
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, { content: 'Fix A & B', status: 'completed' }, ...items('Test A')], scope: 'continuation' })
-  await s.call('mcp__ccd_turn__wrap_up', {})
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r', ask: 'More?' }) // a question: only the completed step ticks
   assert.match(await source({ bodyColumns: 120 }), />2\/3</)
   // The terminal keeps its text row
-  assert.match(flat(await s.band()), /1\/3/)
+  assert.match(flat(await s.band()), /2\/3/)
 })
 
 test('the drawn row says done and open as the text row does', () => {
