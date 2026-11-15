@@ -151,7 +151,8 @@ export function planView(text) {
     by.set(it.head, s)
   }
   const open = items.filter((it) => !it.done)
-  return { open: open.length, total: items.length, next: open.length ? open[0].text.trim() : '', sections: [...by.values()] }
+  const top = heads.find((h) => h.level === 1)
+  return { open: open.length, total: items.length, next: open.length ? open[0].text.trim() : '', sections: [...by.values()], title: top ? top.text.trim() : '' }
 }
 
 const clip = (s, max = 120) => (s.length > max ? s.slice(0, max - 1) + '…' : s)
@@ -718,7 +719,9 @@ async function startNote($, source) {
 
 // ---- the band and the pane
 
-const planName = () => basename(plan.path).replace(/\.md$/i, '')
+// A generated plan's file name carries a date and a session id: its "# " title
+// reads better
+const planName = () => (isGenerated(plan.path) && view && view.title) || basename(plan.path).replace(/\.md$/i, '')
 const hhmm = (ms) => {
   const d = new Date(ms)
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')

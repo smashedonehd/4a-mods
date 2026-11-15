@@ -1,6 +1,6 @@
 {
   "name": "plan-keeper",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Keeps a session's plan file honest: writes one from a task list of three or more steps, ticks a plan item once the task-list step of the same text is done, shows the plan's progress in a band above the prompt and a pane (/plan-keeper), and tells Claude when a task list ends with plan items still open",
   "author": {
     "name": "4AM"

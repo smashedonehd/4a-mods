@@ -1111,6 +1111,10 @@ test('steps already completed are written ticked; a continuation adds new steps;
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A')] })
   const first = genPath(disk)
   assert.match(disk.text(first), /- \[x\] Look around\n- \[ \] Fix A/)
+  // The band names a generated plan by its title, not its dated file name
+  const band = flat(await s.band())
+  assert.match(band, /▣ Look around/)
+  assert.doesNotMatch(band, /\d{4}-\d\d-\d\d/)
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A', 'Ship A')], scope: 'continuation' })
   assert.match(disk.text(first), /- \[ \] Test A\n- \[ \] Ship A\n$/)
   assert.equal((disk.text(first).match(/Fix A/g) || []).length, 1)
