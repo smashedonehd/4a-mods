@@ -10,13 +10,14 @@ const BAND = {
 // A prompt box holding `drafts` in turn (the last one stays), the fills it
 // takes, the model asks it saw and the toasts shown. `reply` answers each ask,
 // a function of it when the answer depends on the ask.
-const box = (on: any, drafts: string[], reply: any) => {
+const box = (on: any, drafts: string[], reply: any, beneath?: () => any) => {
   const filled: { text: string; mode: string }[] = []
   const asked: any[] = []
   const shown: string[] = []
   let i = 0
   // The engine's own band beneath the plugin.
   on('ui.render', ($: any, e: any) => {
+    if (beneath) return beneath()
     const { Box } = $.ui.resolve(e)
     return <Box />
   })
@@ -158,3 +159,20 @@ test('the other bands keep the full width, EN goes on its own line below', async
   expect((await ui.find({ key: 'translate' }))?.props.label).toBe('🌐 EN')
   await ui.unmount()
 })
+
+// Claude Code's own placeholder, or a band beneath that fails, is never nested:
+// the column then holds EN's row alone.
+for (const [name, beneath] of [
+  ['the engine placeholder', () => ({ type: 'engine', ref: 0 })],
+  ['a band beneath that throws', () => { throw new Error('boom') }],
+] as const)
+  test(`EN stands alone over ${name}`, async ($, on) => {
+    box(on, ['Ahoj'], ok('Hello'), beneath)
+    const ui = await $.ui.mount(BAND)
+    const [root, row, ...rest] = (await ui.findAll({ type: 'Box' })) as any[]
+    expect(rest).toEqual([])
+    expect(root.children.length).toBe(1)
+    expect(row.props).toEqual({ flexDirection: 'row', justifyContent: 'flex-end' })
+    expect((await ui.find({ key: 'translate' }))?.props.label).toBe('🌐 EN')
+    await ui.unmount()
+  })
