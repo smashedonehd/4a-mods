@@ -77,7 +77,7 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options, 
     ui: {
       toast: (t) => void toasts.push(t),
       invalidate: () => void draws++,
-      resolve: () => ({ Box: el('Box'), Text: el('Text'), Button: el('Button') }),
+      resolve: () => ({ Box: el('Box'), Text: el('Text'), Button: el('Button'), Svg: el('Svg') }),
       panes: async () => [...panes].map((id) => ({ id })),
       open: async ({ id }) => void panes.add(id),
       close: async ({ id }) => void panes.delete(id),
@@ -545,7 +545,7 @@ test('the band shows the plan, its count and the next open item; none without a 
   assert.equal(await s.band(), null, 'no plan yet: only what lies below')
   await s.start()
   const text = flat(await s.band())
-  assert.match(text, /▣ s/)
+  assert.match(text, /▣ P━/, "a plan with a title is named by it")
   assert.match(text, /0\/3/)
   assert.match(text, /next: Write the parser/)
   assert.equal(flat(await s.band({ hasSurvey: true })), '', 'a survey has the row')
@@ -604,7 +604,7 @@ test('the closing note ticks first, comes again when the state changes, and neve
   assert.match(await s.batch(), /1 of 3 checkbox items open/)
   await s.call('TodoWrite', { todos: [{ content: 'Write the parser', status: 'completed' }, { content: 'Test the parser', status: 'completed' }, { content: 'Task 2', status: 'completed' }] })
   assert.equal(await s.batch(), undefined, 'nothing open: no note')
-  assert.match(flat(await s.band()), /✓ s/)
+  assert.match(flat(await s.band()), /✓ P━/)
   assert.match(flat(await s.band()), /3\/3· plan complete/)
   assert.match(s.toasts.at(-1), /the plan is complete/)
 })
@@ -664,7 +664,7 @@ test('/plan-keeper with a path tracks that plan; a file without items or one tha
   await s.start()
   assert.match(await s.cmd('notes/missing.md'), /could not read D:\/work\/app\/notes\/missing\.md/)
   assert.match(await s.cmd('notes/prose.md'), /has no checkbox items/)
-  assert.match(flat(await s.band()), /▣ s/, 'the plan stays')
+  assert.match(flat(await s.band()), /▣ P━/, 'the plan stays')
   assert.equal(await s.cmd('"notes/todo.md"'), 'Plan Keeper tracks D:/work/app/notes/todo.md: 1 of 2 items open.')
   assert.match(flat(await s.band()), /▣ todo/)
   assert.match(flat(await s.band()), /1\/2/)
@@ -701,7 +701,7 @@ test('the pane\'s buttons: switch plan offers the folder\'s other plans, stop tr
   await button(await s.pane(), 'stop').props.onPress()
   assert.equal(await s.band(), null)
   await button(await s.pane(), 'start').props.onPress()
-  assert.match(flat(await s.band()), /▣ s/, 'tracking again picks the newest plan')
+  assert.match(flat(await s.band()), /▣ P━/, 'tracking again picks the newest plan')
 })
 
 test('a complete plan is let go at the next prompt and not picked again', async () => {
@@ -1066,7 +1066,7 @@ test('/resume with a plan tracked ticks nothing: the list of the chat left is go
 
 // ---- plans written from the task list
 
-const { djb2, slugOf } = await import('../hooks/register.mjs?helpers')
+const { djb2, slugOf, planRowSvg } = await import('../hooks/register.mjs?helpers')
 const GEN = `${HOME}/.claude/mods-data/plan-keeper/plans/app-${djb2('d:/work/app')}`
 const UP = 'mcp__ccd_turn__update_plan'
 const items = (...texts) => texts.map((content, k) => ({ content, status: k ? 'pending' : 'in_progress' }))
@@ -1111,6 +1111,10 @@ test('steps already completed are written ticked; a continuation adds new steps;
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A')] })
   const first = genPath(disk)
   assert.match(disk.text(first), /- \[x\] Look around\n- \[ \] Fix A/)
+  // The band names a generated plan by its title, not its dated file name
+  const band = flat(await s.band())
+  assert.match(band, /▣ Look around/)
+  assert.doesNotMatch(band, /\d{4}-\d\d-\d\d/)
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A', 'Ship A')], scope: 'continuation' })
   assert.match(disk.text(first), /- \[ \] Test A\n- \[ \] Ship A\n$/)
   assert.equal((disk.text(first).match(/Fix A/g) || []).length, 1)
@@ -1301,6 +1305,57 @@ test('a TodoWrite list that replaces one ticks what the old list completed first
   await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed' }] })
   await s.call('TodoWrite', { todos: [{ content: 'Other', status: 'pending' }] })
   assert.match(disk.text(PLANS + '/a.md'), /- \[x\] Ship it/)
+})
+
+test('on the desktop the band is one drawn row: name, count pill, next item, percent', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A & B', 'Test A')] })
+  const tree = await s.render({ component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 100 } }, null)
+  const svg = tree.props.children.find((c) => c.type === 'Svg')
+  assert.ok(svg, 'an Svg row')
+  assert.match(svg.props.source, />Look around</)
+  assert.match(svg.props.source, />1\/3</)
+  assert.match(svg.props.source, />Fix A &amp; B</, 'the next item, escaped')
+  assert.match(svg.props.source, />33%</)
+  assert.ok(button(tree, 'pane') && button(tree, 'hide'))
+  // A changed plan, width or dimming draws new markup, not the last one
+  const source = async (props) => (await s.render({ component: 'AbovePrompt', surface: 'desktop', props }, null)).props.children.find((c) => c.type === 'Svg').props.source
+  assert.match(await source({ bodyColumns: 100 }), /width="690"/)
+  assert.match(await source({ bodyColumns: 120 }), /width="850"/)
+  s.state.set('flow', { isFinished: false, total: 2 })
+  assert.match(await source({ bodyColumns: 120 }), /opacity="0\.6"/)
+  s.state.delete('flow')
+  assert.doesNotMatch(await source({ bodyColumns: 120 }), /opacity="0\.6"/, 'undimmed once the flow ends')
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, { content: 'Fix A & B', status: 'completed' }, ...items('Test A')], scope: 'continuation' })
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'r', ask: 'More?' }) // a question: only the completed step ticks
+  assert.match(await source({ bodyColumns: 120 }), />2\/3</)
+  // The terminal keeps its text row
+  assert.match(flat(await s.band()), /2\/3/)
+})
+
+test('the drawn row says done and open as the text row does', () => {
+  const done = planRowSvg({ name: 'P', done: 3, total: 3, next: '', state: 'done' }, 400)
+  assert.match(done, />done</)
+  assert.match(done, />100%</)
+  const open = planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'stuck' }, 400)
+  assert.match(open, />2 open</)
+  assert.doesNotMatch(open, />Two</, 'no next item once the list ended')
+  // A long name is cut, the ellipsis inside its slot (32% of the row)
+  const long = planRowSvg({ name: 'x'.repeat(80), done: 1, total: 3, next: '', state: 'run' }, 300).match(/font-weight="500">([^<]*)</)[1]
+  assert.match(long, /…$/)
+  assert.ok(0.56 * 13 * [...long].length <= 300 * 0.32, long)
+  assert.equal(long, 'x'.repeat(12) + '…', 'as much of the name as fits')
+  // A wide character takes a whole em
+  const wide = planRowSvg({ name: '字'.repeat(40), done: 1, total: 3, next: '', state: 'run' }, 300).match(/font-weight="500">([^<]*)</)[1]
+  assert.equal(wide, '字'.repeat(6) + '…')
+  // Dimmed under savvy-progress's band
+  assert.match(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400, true), /opacity="0\.6"/)
+  assert.doesNotMatch(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400), /opacity="0\.6"/)
+  // A tick under the next item's text is left out
+  const ticks = (svg) => (svg.match(/height="8" rx="0\.75"/g) || []).length
+  assert.equal(ticks(planRowSvg({ name: 'P', done: 1, total: 4, next: '', state: 'run' }, 600)), 2)
+  assert.equal(ticks(planRowSvg({ name: 'P', done: 1, total: 4, next: 'Fix the parser and the matcher', state: 'run' }, 600)), 1)
 })
 
 test('slugs and hashes are stable and plain', () => {
