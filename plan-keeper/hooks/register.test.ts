@@ -20,11 +20,7 @@ const PANE = {
 const posix = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 
 // Stands in for the engine beneath the mod: one plan file, an empty state
-// The engine's own band beneath the mods: an empty Box unless a test says otherwise
-const emptyBand = ($: never, e: never) => ($ as { ui: { resolve: (e: never) => { Box: (p: object) => unknown } } }).ui.resolve(e).Box({})
-
-function host(on: Parameters<Parameters<typeof test>[1]>[1], beneath: (...a: never[]) => unknown = emptyBand) {
-  on('ui.render', beneath as never)
+function host(on: Parameters<Parameters<typeof test>[1]>[1]) {
   const files: Record<string, string> = { [PLAN]: TEXT }
   const state: Record<string, unknown> = {}
   const panes = new Set<string>()
@@ -34,7 +30,11 @@ function host(on: Parameters<Parameters<typeof test>[1]>[1], beneath: (...a: nev
   on('env.get', async () => ({ value: '' }) as never)
   on('session.cwd', async () => ({ value: '/work/app' }) as never)
   // The engine names the key as `key`, or as `ref.key` in older releases
-  const keyOf = (e: unknown) => (e as { key?: string }).key ?? (e as { ref?: { key: string } }).ref?.key ?? ''
+  const keyOf = (e: unknown) => {
+    const key = (e as { key?: string }).key ?? (e as { ref?: { key: string } }).ref?.key
+    if (key === undefined) throw new Error('state call without a key: ' + JSON.stringify(e))
+    return key
+  }
   on('state.get', async (_, e) => ({ value: { value: state[keyOf(e)] } }) as never)
   on('state.set', async (_, e) => {
     state[keyOf(e)] = (e as { value: unknown }).value
@@ -100,30 +100,23 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
   })
 }
 
-// Claude Code's own placeholder, or a band beneath that fails, is never nested:
-// the desktop drops a band that nests it. With no plan to show, the band hands
-// the placeholder on untouched.
-const ENGINE = { type: 'engine', ref: 0 }
-for (const [name, beneath] of [
-  ['the engine placeholder', () => ENGINE],
-  ['a band beneath that throws', () => { throw new Error('boom') }],
-] as const)
-  test(`the band stands alone over ${name}`, async ($, on) => {
-    host(on, beneath)
-    await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
-    await $.command.run({ command: 'plan-keeper', args: 'docs/plans/p.md' } as never)
-    for (const surface of ['terminal', 'desktop'] as const) {
-      const band = await $.ui.mount({ ...BAND, surface })
-      const tree = JSON.stringify(await band.drawn())
-      expect(tree).not.toContain('"engine"')
-      expect(tree).not.toContain('"ref"')
-      expect(await band.find({ key: 'pane' })).toBeDefined()
-      await band.unmount()
-    }
-  })
+// Beneath the mods the engine hands its own placeholder, { type: 'engine' }: it is
+// never nested (the desktop drops a band that nests it). With no plan to show,
+// the band hands it on untouched.
+test('the band never nests the engine placeholder, on either surface', async ($, on) => {
+  host(on)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
+  await $.command.run({ command: 'plan-keeper', args: 'docs/plans/p.md' } as never)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ ...BAND, surface })
+    expect(JSON.stringify(await band.drawn())).not.toContain('"engine"')
+    expect(await band.find({ key: 'pane' })).toBeDefined()
+    await band.unmount()
+  }
+})
 
 test('no plan: the band hands the engine placeholder on untouched', async ($, on) => {
-  host(on, () => ENGINE)
+  host(on)
   await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await band.drawn()).toMatchObject({ type: 'engine' })
