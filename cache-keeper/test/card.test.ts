@@ -542,3 +542,30 @@ test('desktop band: a cache cooling on a big context turns its card yellow and o
   expect(await kept.find({ key: 'keepwarm' } as never)).toBeFalsy()
   await kept.unmount()
 })
+
+// The engine's placeholder is never nested; drawing nothing, the band hands it on (see hooks/register.mjs)
+const drawnAlone = async ($: Engine, key: string) => {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('"engine"')
+    expect(await ui.find({ key } as never)).toBeTruthy()
+    await ui.unmount()
+  }
+}
+
+test('the handoff card alone never nests the engine placeholder', async ($: Engine, on: On) => {
+  await session($, on)
+  await drawnAlone($, 'ck-ho-start')
+})
+
+test('the full band never nests the engine placeholder, on either surface', async ($: Engine, on: On) => {
+  await sized($, on, 320000)
+  await drawnAlone($, 'handoff')
+})
+
+test('a survey up: the band hands the engine placeholder on untouched', async ($: Engine, on: On) => {
+  await session($, on)
+  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, props: { ...(BAND.props as object), hasSurvey: true } as never })
+  expect(await ui.drawn()).toMatchObject({ type: 'engine' })
+  await ui.unmount()
+})

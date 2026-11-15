@@ -2351,9 +2351,12 @@ export function register(on, options) {
   })
 
   // The band above the prompt: this session's cache at a glance
+  // Claude Code's own placeholder ({ type: 'engine' }) is never nested, only handed on: the desktop drops
+  // a band that nests it. Same rule in cache-keeper, plan-keeper, prompt-translate and savvy-progress: change all four.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.props && e.props.hasSurvey) return below
+    const drawn = await Promise.resolve(next(e)).catch(() => null)
+    const below = drawn && typeof drawn === 'object' && drawn.type !== 'engine' ? drawn : null
+    if (e.props && e.props.hasSurvey) return drawn
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     // The terminal has no Svg: there the figures go without gauges
@@ -2362,7 +2365,7 @@ export function register(on, options) {
     // its running step counts seconds from now
     if (P.phase === 'working' || P.pending || P.autoAt) now = await $.clock.now()
     const card = handoffCard($, e, els, Svg)
-    if (!S.lastActivity && !S.keepWarm) return card ? Box({ flexDirection: 'column', children: [card, below].filter(Boolean) }) : below
+    if (!S.lastActivity && !S.keepWarm) return card ? Box({ flexDirection: 'column', children: [card, below].filter(Boolean) }) : drawn
     const hb = myHeartbeat()
     const st = cacheState(hb)
     const ttl = ttlMin()
