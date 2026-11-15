@@ -1118,11 +1118,12 @@ test('steps already completed are written ticked; a continuation adds new steps;
   const plan = s.state.get('plan')
   assert.notEqual(k(plan.path), k(first))
   assert.match(disk.text(plan.path), /# Plan B/)
-  // A new task of two steps lets the plan go and writes none
+  // A new task of two steps lets the plan go and writes none; its completed step ticks nothing in the old plan
   const before = disk.writes.length
-  await s.call(UP, { items: items('Quick one', 'Done'), scope: 'new_task' })
+  await s.call(UP, { items: [{ content: 'Build B', status: 'completed' }, ...items('Done')], scope: 'new_task' })
   assert.equal(s.state.get('plan'), null)
   assert.equal(disk.writes.length, before)
+  assert.match(disk.text(plan.path), /- \[ \] Build B/)
 })
 
 test('a plan with items stays the plan; a plan mode plan in prose is replaced and named as the source', async () => {
