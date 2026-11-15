@@ -782,7 +782,14 @@ async function applyNow($: any) {
     return
   }
   try {
-    await $.command.run({ command: 'reload-plugins' })
+    // A session the app drives (desktop, Remote Control) reloads only for a
+    // /reload-plugins the person typed: a plugin's run gets that refusal as
+    // its text, not as an error, and nothing is reloaded.
+    const { text } = await $.command.run({ command: 'reload-plugins' })
+    if (/isn't available/i.test(text ?? '')) {
+      $.ui.toast('This session reloads only when you type /reload-plugins yourself. The changes are saved.')
+      return
+    }
     await update($, dirty, () => 0)
     $.ui.toast('Plugins and skills reloaded.')
   } catch {
