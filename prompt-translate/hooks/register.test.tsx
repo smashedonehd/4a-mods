@@ -140,3 +140,21 @@ test('the band yields to a survey', async ($, on) => {
   expect(await ui.find({ type: 'Button', key: 'translate' })).toBeFalsy()
   await ui.unmount()
 })
+
+// EN never takes a column beside the other bands: they keep the full width and
+// EN sits on a line of its own beneath them, at the end.
+test('the other bands keep the full width, EN goes on its own line below', async ($, on) => {
+  box(on, ['Ahoj'], ok('Hello'))
+  const ui = await $.ui.mount(BAND)
+  // In drawing order: a column holding the band beneath, untouched, then EN
+  // alone on a row, at its end
+  const [root, band, row, ...rest] = (await ui.findAll({ type: 'Box' })) as any[]
+  expect(rest).toEqual([])
+  expect(root.props).toEqual({ flexDirection: 'column' })
+  expect(root.children.length).toBe(2)
+  expect(band.props).toEqual({})
+  expect(row.props).toEqual({ flexDirection: 'row', justifyContent: 'flex-end' })
+  expect(row.children.length).toBe(1)
+  expect((await ui.find({ key: 'translate' }))?.props.label).toBe('🌐 EN')
+  await ui.unmount()
+})
