@@ -18,7 +18,7 @@
     {
       "name": "plan-keeper",
       "source": "./plan-keeper",
-      "description": "Ticks a plan file's checkbox items once the task-list step of the same text is done, shows the plan's progress in a band and a pane (/plan-keeper), and tells Claude when a task list ends with plan items open"
+      "description": "Writes a plan from a task list of three or more steps, ticks a plan file's checkbox items once the task-list step of the same text is done, shows the plan's progress in a band and a pane (/plan-keeper), and tells Claude when a task list ends with plan items open"
     },
     {
       "name": "prompt-translate",
