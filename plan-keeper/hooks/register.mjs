@@ -719,9 +719,16 @@ async function startNote($, source) {
 
 // ---- the band and the pane
 
-// A generated plan's file name carries a date and a session id: its "# " title
-// reads better
-const planName = () => (isGenerated(plan.path) && view && view.title) || basename(plan.path).replace(/\.md$/i, '')
+// A plan's "# " title, else its file name (a generated one, or a superpowers
+// one, carries a date there)
+const planName = () => (view && view.title) || basename(plan.path).replace(/\.md$/i, '')
+// What the band shows of the plan: items done, and whether it runs, ended
+// short (the task list is done, items are open) or is done
+const rowState = () => ({ done: view.total - view.open, state: !view.open ? 'done' : stuck() ? 'stuck' : 'run' })
+const bandButtons = ($, Button) => [
+  Button({ key: 'pane', label: 'plan', plain: true, onPress: () => togglePane($) }),
+  Button({ key: 'hide', label: '✕', plain: true, role: 'dismiss', onPress: () => setHidden($, true) }),
+]
 const hhmm = (ms) => {
   const d = new Date(ms)
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
@@ -742,6 +749,7 @@ function bar(Text, done, total, n) {
 const ROW_H = 22
 const ROW_BAR_H = 16
 const ROW_CELL = 3
+const ROW_ROWS = Math.floor(ROW_BAR_H / ROW_CELL)
 const ROW_FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif"
 const ROW_HUE = { run: '#5b9fe6', done: '#5fbf8f', stuck: '#d29922' }
 
@@ -757,12 +765,16 @@ const WIDE =
   /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꥠ-꥿가-힣豈-﫿︰-﹏！-｠￠-￦\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u
 const charEm = (ch) => (WIDE.test(ch) ? 1 : /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[\p{Lu}mwшщжю@%]/u.test(ch) ? 0.72 : 0.56)
 const textWidth = (s, size) => [...s].reduce((w, ch) => w + charEm(ch) * size, 0)
+// Cut to fit maxW pixels, with an ellipsis when it had to cut
 function fitText(s, size, maxW) {
   if (maxW <= 0) return ''
   if (textWidth(s, size) <= maxW) return s
+  const room = maxW - charEm('…') * size
   let out = ''
+  let w = 0
   for (const ch of s) {
-    if (textWidth(out + ch + '…', size) > maxW) break
+    w += charEm(ch) * size
+    if (w > room) break
     out += ch
   }
   return out ? out + '…' : ''
@@ -777,17 +789,16 @@ export function planRowSvg({ name, done, total, next, state }, W, dim = false) {
   const ratio = total ? done / total : 0
   const fillW = Math.round(barW * ratio)
   const cols = Math.floor(fillW / ROW_CELL)
-  const rows = Math.floor(ROW_BAR_H / ROW_CELL)
   const dots = []
   for (let c = 0; c < cols; c++) {
     const density = 0.35 + 0.6 * Math.pow(c / Math.max(1, cols), 1.2)
-    for (let r = 0; r < rows; r++) if (noise(c, r) < density) dots.push(`<rect class="t${Math.floor(noise(r, c) * 4)}" x="${c * ROW_CELL + 1}" y="${r * ROW_CELL + 1}" width="2" height="2"/>`)
+    for (let r = 0; r < ROW_ROWS; r++) if (noise(c, r) < density) dots.push(`<rect class="t${Math.floor(noise(r, c) * 4)}" x="${c * ROW_CELL + 1}" y="${r * ROW_CELL + 1}" width="2" height="2"/>`)
   }
   // The item at work: a faint layer up to its end
   const faint = []
   const runW = state === 'run' && total ? Math.round((barW * Math.min(total, done + 1)) / total) : 0
   for (let c = cols; c < Math.floor(runW / ROW_CELL); c++) {
-    for (let r = 0; r < rows; r++) if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect x="${c * ROW_CELL + 1}" y="${r * ROW_CELL + 1}" width="1.7" height="1.7"/>`)
+    for (let r = 0; r < ROW_ROWS; r++) if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect x="${c * ROW_CELL + 1}" y="${r * ROW_CELL + 1}" width="1.7" height="1.7"/>`)
   }
   const pill = state === 'done' ? 'done' : state === 'stuck' ? `${total - done} open` : `${done}/${total}`
   const pillW = Math.round(18 + pill.length * 6.6)
@@ -830,21 +841,24 @@ ${nextText ? `<text class="m" x="${nextX}" y="${ROW_BAR_H / 2 + 4}" font-family=
 </svg>`
 }
 
-function drawDeskRow($, e, dim) {
-  const { Box, Button, Svg } = $.ui.resolve(e)
-  const done = view.total - view.open
-  const state = !view.open ? 'done' : stuck() ? 'stuck' : 'run'
+// The last row drawn: a draw with nothing changed reuses its markup
+let lastRow = { key: '', svg: '' }
+
+function drawDeskRow($, els, e, dim) {
+  const { Box, Button, Svg } = els
+  const { done, state } = rowState()
   // About 8 CSS px per reported column, less the two buttons and their gaps
   const W = Math.max(180, Math.min(1600, ((e.props && e.props.bodyColumns) || 100) * 8 - 110))
   const row = { name: planName(), done, total: view.total, next: view.next, state }
+  const key = JSON.stringify([row, W, dim])
+  if (lastRow.key !== key) lastRow = { key, svg: planRowSvg(row, W, dim) }
   return Box({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 1,
     children: [
-      Svg({ key: 'row', source: planRowSvg(row, W, dim), width: W, height: ROW_H, alt: `${row.name}: ${done} of ${view.total} done${state === 'run' ? ', next: ' + view.next : ''}` }),
-      Button({ key: 'pane', label: 'plan', plain: true, onPress: () => togglePane($) }),
-      Button({ key: 'hide', label: '✕', plain: true, role: 'dismiss', onPress: () => setHidden($, true) }),
+      Svg({ key: 'row', source: lastRow.svg, width: W, height: ROW_H, alt: `${row.name}: ${done} of ${view.total} done${state === 'run' ? ', next: ' + view.next : ''}` }),
+      ...bandButtons($, Button),
     ],
   })
 }
@@ -862,10 +876,9 @@ async function savvyBusy($) {
 // One row: the plan, its bar and count, then what is next, that the task list
 // ended short, or that the plan is complete. Compact under savvy-progress's
 // band: no bar, dimmed, the plan's name shortened.
-function drawBand($, e, compact = false) {
-  const { Box, Text, Button } = $.ui.resolve(e)
-  const done = view.total - view.open
-  const state = !view.open ? 'done' : stuck() ? 'stuck' : 'run'
+function drawBand($, els, compact = false) {
+  const { Box, Text, Button } = els
+  const { done, state } = rowState()
   const tail =
     state === 'done'
       ? Text({ color: 'green', children: ['· plan complete'] })
@@ -894,7 +907,7 @@ function drawBand($, e, compact = false) {
     flexDirection: 'row',
     columnGap: 1,
     flexShrink: 0,
-    children: [Button({ key: 'pane', label: 'plan', plain: true, onPress: () => togglePane($) }), Button({ key: 'hide', label: '✕', plain: true, onPress: () => setHidden($, true) })],
+    children: bandButtons($, Button),
   })
   return Box({ flexDirection: 'row', justifyContent: 'space-between', width: '100%', columnGap: 2, children: [left, right] })
 }
@@ -1041,9 +1054,10 @@ export function register(on, options) {
       if (view === null) await load($)
       if (!view || !view.total) return below
       const busy = await savvyBusy($)
+      const els = $.ui.resolve(e)
       // The terminal's element table may hold an Svg that draws nothing: test the surface too
-      const mine = e.surface !== 'terminal' && $.ui.resolve(e).Svg ? drawDeskRow($, e, busy) : drawBand($, e, busy)
-      return below ? $.ui.resolve(e).Box({ flexDirection: 'column', children: [mine, below] }) : mine
+      const mine = e.surface !== 'terminal' && els.Svg ? drawDeskRow($, els, e, busy) : drawBand($, els, busy)
+      return below ? els.Box({ flexDirection: 'column', children: [mine, below] }) : mine
     } catch {
       return below
     }
