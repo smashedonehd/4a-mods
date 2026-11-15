@@ -111,16 +111,23 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Button } = $.ui.resolve(e)
-    const busy = await read($, isBusy)
+    // The other mods' bands keep the full width above; EN sits on its own line at
+    // the end, next to the prompt it translates. Claude Code's own placeholder
+    // ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
+    // Same rule as savvy-progress's band (hooks/register.tsx): change both together.
+    const [busy, drawn] = await Promise.all([read($, isBusy), Promise.resolve(next(e)).catch(() => null)])
+    const below = typeof drawn === 'object' && (drawn as { type?: string } | null)?.type !== 'engine' ? drawn : null
     return (
-      <Box>
-        {await next(e)}
-        <Button
-          key="translate"
-          label={busy ? '🌐 Translating…' : '🌐 EN'}
-          dimColor={busy}
-          onPress={() => translateDraft($)}
-        />
+      <Box flexDirection="column">
+        {below}
+        <Box flexDirection="row" justifyContent="flex-end">
+          <Button
+            key="translate"
+            label={busy ? '🌐 Translating…' : '🌐 EN'}
+            dimColor={busy}
+            onPress={() => translateDraft($)}
+          />
+        </Box>
       </Box>
     )
   })
