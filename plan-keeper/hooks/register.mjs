@@ -245,16 +245,15 @@ async function folderPlans($, max) {
   const out = []
   const c = key(S.cwd)
   if (!c) return out
-  const shared = c !== key(S.home) && !/^([a-z]:)?$/.test(c)
-  const gen = genDir()
-  if (!shared && !gen) return out
-  const now = await $.clock.now()
   // Every recent .md of the plan folders, newest first; ~/.claude/plans' must name the folder
-  const dirs = [
-    ...(gen ? [[gen, false]] : []),
-    ...(shared && S.home ? [[join(S.home, '.claude/plans'), true]] : []),
-    ...(shared ? ['docs/superpowers/plans', 'docs/plans', 'plans'].map((d) => [join(S.cwd, d), false]) : []),
-  ]
+  const dirs = []
+  if (genDir()) dirs.push([genDir(), false])
+  if (c !== key(S.home) && !/^([a-z]:)?$/.test(c)) {
+    if (S.home) dirs.push([join(S.home, '.claude/plans'), true])
+    for (const d of ['docs/superpowers/plans', 'docs/plans', 'plans']) dirs.push([join(S.cwd, d), false])
+  }
+  if (!dirs.length) return out
+  const now = await $.clock.now()
   const lists = await Promise.all(dirs.map(([dir]) => $.fs.list(dir).catch(() => []))) // [] for no such folder
   const recent = lists
     .flatMap((list, k) => list.filter((f) => f.kind === 'file' && /\.md$/i.test(f.name) && now - f.mtimeMs <= RECENT).map((f) => ({ path: join(dirs[k][0], f.name), at: f.mtimeMs, mustName: dirs[k][1] })))
@@ -276,21 +275,21 @@ const BARE = /(?:^|[\s(<[])@?([^\s"'`<>()[\]]+?\.md)(?=$|[\s,;:!?)>\]]|\.(?:\s|$
 function namedPaths(text) {
   const t = String(text || '')
   const hits = [...t.matchAll(QUOTED), ...t.matchAll(BARE)].sort((a, b) => a.index - b.index)
-  return hits.map((m) => {
-    const p = m[1].replace(/^@/, '')
-    return /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
-  })
+  return hits.map((m) => resolvePath(m[1].replace(/^@/, '')))
 }
+
+// A path as written: ~/ under the home folder, relative under the session's folder
+const resolvePath = (p) => (/^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p))
 
 // The line Cache Keeper's continuation starts with when a plan was active
 const HANDOFF_PLAN = /^Plan: (.+\.md)\s*$/m
 
-// The plan of a handoff's "Plan:" line becomes the plan, wherever it lies,
-// once it has a checkbox item: Plan Keeper tracked it in the chat before
-async function attachHandoffPlan($, p) {
-  const path = /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
+// The file becomes the plan if it has a checkbox item; true when it did
+async function adoptPlan($, path, why) {
   const body = await readOr($, path)
-  if (body !== null && parsePlan(body).items.length) await setPlan($, path, 'handoff')
+  if (body === null || !parsePlan(body).items.length) return false
+  await setPlan($, path, why, { text: body })
+  return true
 }
 
 // The last plan file the prompt names becomes the plan: a .md with a checkbox
@@ -298,18 +297,19 @@ async function attachHandoffPlan($, p) {
 async function noteNamed($, text) {
   for (const path of namedPaths(text).reverse()) {
     if (!isPlanPath(path) && !/(?:^|[^a-z])plan/i.test(basename(path))) continue
-    const body = await readOr($, path)
-    if (body !== null && parsePlan(body).items.length) return setPlan($, path, 'named')
+    if (await adoptPlan($, path, 'named')) return
   }
 }
 
 // A new plan starts with every step completed so far held: those were done
-// before it, so they tick nothing in it
-async function setPlan($, path, why) {
+// before it, so they tick nothing in it. `ticked`: the old plan already got
+// what was done for it (the list that did it is gone); `text`: the new plan's,
+// just read or written.
+async function setPlan($, path, why, { text, ticked = false } = {}) {
   const same = plan && key(plan.path) === key(path)
   if (!same) {
     // The old plan gets what was done for it first
-    if (plan) await tick($)
+    if (plan && !ticked) await tick($)
     used = new Set(completed().map(norm))
     await saveUsed($)
     unmatched = []
@@ -322,12 +322,13 @@ async function setPlan($, path, why) {
   ui = { ...ui, off: false, ...(same ? {} : { tickedAt: 0 }) }
   await saveUi($)
   choices = null
-  await refresh($)
+  await refresh($, text)
 }
 
-// No plan is active: by /plan-keeper off, or once a finished plan is let go
-async function dropPlan($, off) {
-  if (plan) await tick($)
+// No plan is active: by /plan-keeper off, or once a finished plan is let go.
+// `ticked` as for setPlan.
+async function dropPlan($, off, { ticked = false } = {}) {
+  if (plan && !ticked) await tick($)
   plan = null
   await savePlan($)
   unmatched = []
@@ -381,6 +382,14 @@ async function forgetTasks($) {
   }
 }
 
+// A state value, undefined when nothing is kept or the host refuses it. The
+// get is passed with its ref written out: the validator lists what a module reads.
+const kept = async (get) => {
+  try {
+    return (await get()).value
+  } catch {}
+}
+
 function ready($) {
   return S.ready || (S.ready = init($))
 }
@@ -396,12 +405,6 @@ async function init($) {
     S.sid = String((await $.session.id()) || '')
   } catch {
     // no id: a generated plan's name goes without it
-  }
-  // undefined: nothing kept
-  const kept = async (get) => {
-    try {
-      return (await get()).value
-    } catch {}
   }
   const [p, t, u, m, v] = await Promise.all([
     kept(() => $.state.get(PLAN_REF)),
@@ -475,13 +478,14 @@ const stamp = (ms) => {
 }
 
 // A plan file written from a task list: a header naming its folder and
-// session, the first step as its title, one item per step
-export function generatedText(steps, { cwd, session, source }) {
+// session (for whoever opens the file), the first step as its title, the plan
+// it replaces, one item per step
+export function generatedText(steps, { cwd, session, replaces }) {
   const head = `<!-- plan-keeper ${JSON.stringify({ v: 1, cwd, session, source: 'task-list' })} -->`
   return [
     head,
     `# ${clip(oneLine(steps[0].text), 100)}`,
-    ...(source ? ['', `Source: ${source}`] : []),
+    ...(replaces ? ['', `Source: ${replaces}`] : []),
     '',
     ...steps.map((x) => `- [${x.status === 'completed' ? 'x' : ' '}] ${oneLine(x.text)}`),
     '',
@@ -491,18 +495,18 @@ export function generatedText(steps, { cwd, session, source }) {
 // A whole task list from update_plan: written down as this folder's plan
 // when no plan with items is active, added to the plan written for the last
 // one, or a new one for a new task. True when it set or changed the plan.
+// observe ticked the old plan with the old list before this list replaced it.
 async function maybeGenerate($, e) {
   if (!Array.isArray(e.items) || ui.off) return false
-  const steps = uniqueSteps(tasks)
   const gen = !!plan && isGenerated(plan.path)
-  let source = ''
   if (plan && !gen) {
     // A plan with items stays the plan; one without (a plan mode plan in
     // prose) or one that cannot be read any more is replaced
     if (view === null) await load($)
     if (view && view.total) return false
-    source = plan.path
   }
+  const replaces = plan && !gen ? plan.path : ''
+  const steps = uniqueSteps(tasks)
   // More of the same task: added to the plan this chat wrote or a handoff
   // brought (a cleared chat's first list says first_task and goes on with it).
   // A plan picked by folder from an earlier chat grows only by a list that
@@ -510,12 +514,11 @@ async function maybeGenerate($, e) {
   const carried = plan && (plan.why === 'generated' || plan.why === 'handoff')
   const grows = e.scope === 'continuation' || (carried && e.scope !== 'new_task')
   if (gen && grows) return appendItems($, steps)
-  // Another task: its list's completed steps were not done for the plan
-  // that goes, so they tick nothing in it
-  if (gen) for (const s of completed()) used.add(norm(s))
+  // Another task from here on: its list's completed steps were not done for
+  // the plan that goes, so they tick nothing in it (ticked)
   if (steps.length < GEN_MIN) {
     // A new task of few steps: the last task's plan goes, none is written
-    if (gen) await dropPlan($, false)
+    if (gen) await dropPlan($, false, { ticked: true })
     return gen
   }
   const dir = genDir()
@@ -523,8 +526,9 @@ async function maybeGenerate($, e) {
   const base = join(dir, `${stamp(await $.clock.now())}-${slugOf(steps[0].text)}${S.sid ? '-' + slugOf(S.sid, 8) : ''}`)
   let path = base + '.md'
   for (let n = 2; await $.fs.exists(path); n++) path = `${base}-${n}.md`
-  if (!(await writeOrToast($, path, generatedText(steps, { cwd: S.cwd, session: S.sid, source })))) return false
-  await setPlan($, path, 'generated')
+  const text = generatedText(steps, { cwd: S.cwd, session: S.sid, replaces })
+  if (!(await writeOrToast($, path, text))) return false
+  await setPlan($, path, 'generated', { text, ticked: true })
   return true
 }
 
@@ -595,8 +599,11 @@ async function observe($, e, result) {
     return
   }
   if (t === 'ExitPlanMode' && result && result.filePath) return setPlan($, result.filePath, 'written')
-  if (t === 'TodoWrite') tasks = toTasks(e.todos || [], '')
-  else if (t === 'TaskCreate') tasks.push({ id: String((result && result.task && result.task.id) || ''), text: String(e.subject || ''), status: 'pending' })
+  if (t === 'TodoWrite') {
+    // A whole new list replaces the old one: what the old one completed ticks first
+    await tick($)
+    tasks = toTasks(e.todos || [], '')
+  } else if (t === 'TaskCreate') tasks.push({ id: String((result && result.task && result.task.id) || ''), text: String(e.subject || ''), status: 'pending' })
   else if (t === 'TaskUpdate') {
     const x = tasks.find((k) => k.id && k.id === String(e.taskId))
     if (!x || (result && result.success === false)) return
@@ -727,18 +734,8 @@ function bar(Text, done, total, n) {
 // not finished, or a subagent at work. Its bar shows the progress then, so the
 // plan's row goes under it without a bar of its own.
 async function savvyBusy($) {
-  // Each ref written out: the validator lists what a module reads
-  const value = (p) =>
-    Promise.resolve(p)
-      .then((r) => r && r.value)
-      .catch(() => null)
-  let flow = null
-  let agents = null
-  try {
-    ;[flow, agents] = await Promise.all([value($.state.get(SAVVY_FLOW_REF)), value($.state.get(SAVVY_AGENTS_REF))])
-  } catch {
-    // no savvy-progress: the band as it is alone
-  }
+  // savvy-progress's own values: undefined without it, then the band is as alone
+  const [flow, agents] = await Promise.all([kept(() => $.state.get(SAVVY_FLOW_REF)), kept(() => $.state.get(SAVVY_AGENTS_REF))])
   if (flow && typeof flow === 'object' && !flow.isFinished && Number(flow.total) > 0) return true
   return Array.isArray(agents) && agents.some((a) => a && a.status === 'running')
 }
@@ -887,11 +884,11 @@ async function command($, args) {
     return word === 'hide' ? 'The plan band is hidden in this chat.' : 'The plan band is shown.'
   }
   const p = a.replace(/^["'`]|["'`]$/g, '')
-  const path = /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
+  const path = resolvePath(p)
   const body = await readOr($, path)
   if (body === null) return `Plan Keeper could not read ${path}.`
   if (!parsePlan(body).items.length) return `${path} has no checkbox items, so it is not tracked.`
-  await setPlan($, path, 'named')
+  await setPlan($, path, 'named', { text: body })
   return `Plan Keeper tracks ${plan.path}: ${view ? view.open : 0} of ${view ? view.total : 0} items open.`
 }
 
@@ -988,11 +985,12 @@ export function register(on, options) {
     const kind = e.origin && e.origin.kind
     // Cache Keeper's handoff after a clear: only its "Plan:" line names the
     // plan, the handoff's other paths are files it mentions
-    const handoff = kind === 'plugin' && /^cache-keeper(?:@|$)/.test(String(e.origin.name || '')) && String(e.text || '').match(HANDOFF_PLAN)
+    const handoff = kind === 'plugin' && /^cache-keeper(?:@|$)/.test(String(e.origin.name || '')) ? String(e.text || '').match(HANDOFF_PLAN) : null
     if (handoff) {
       try {
         await ready($)
-        if (!ui.off) await attachHandoffPlan($, handoff[1].trim())
+        // Wherever it lies: Plan Keeper tracked it in the chat before
+        if (!ui.off) await adoptPlan($, resolvePath(handoff[1]), 'handoff')
       } catch {
         // the plan stays as it was
       }

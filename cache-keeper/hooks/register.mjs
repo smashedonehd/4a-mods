@@ -602,13 +602,15 @@ async function runPipeline($, after = 'ask') {
   startTicker($)
   try {
     now = await $.clock.now()
+    // Read alongside the steps; it never rejects
+    const planP = activePlan($)
     const read = await runStep($, 0, () => readMessages($), (r) => plural(r.messages.length, 'message') + (r.fromFile ? ' (transcript file)' : ''))
     const messages = read.messages
     const files = await runStep($, 1, () => existingFiles($, messages), (fs) => plural(fs.length, 'file'))
     const found = await runStep($, 2, async () => gatherFacts(messages), (f) => [skillsOrTools(f.skills.length + f.servers.length), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
     // Still at work, their reports arrive in the fresh chat: the handoff names them
     const agents = await runStep($, 3, async () => runningAgents(await listAgentsSoon($), found.spawned), (a) => (a.length ? `${a.length} running` : 'none running'))
-    const facts = { ...found, agents, plan: await activePlan($) }
+    const facts = { ...found, agents, plan: await planP }
     const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
     const name = await handoffName($)
     const reply = await runStep($, WRITE_STEP, async () => {
@@ -722,7 +724,9 @@ function continuationHead(plan) {
 
 // Plan Keeper's active plan: its path, its checkbox counts and up to 8 open
 // items, or null (no Plan Keeper, no plan, a file that cannot be read or holds
-// no item). Code blocks are skipped, as Plan Keeper skips them.
+// no item). Code blocks are skipped, as Plan Keeper skips them. A copy of Plan
+// Keeper's CHECKBOX, FENCE and parsePlan (plan-keeper/hooks/register.mjs),
+// since one mod cannot import another: change both together.
 const PLAN_KEEPER_REF = { plugin: 'plan-keeper', key: 'plan' }
 const PLAN_BOX = /^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$/
 const PLAN_FENCE = /^\s*(`{3,}|~{3,})/
@@ -747,7 +751,7 @@ export function planFacts(path, text) {
   }
   if (!items.length) return null
   const open = items.filter((it) => !it.done)
-  const rows = open.slice(0, PLAN_ROWS).map((it) => '- [ ] ' + (it.text.length > 120 ? it.text.slice(0, 119) + '…' : it.text))
+  const rows = open.slice(0, PLAN_ROWS).map((it) => '- [ ] ' + clip(it.text, 120))
   if (open.length > PLAN_ROWS) rows.push(`- and ${open.length - PLAN_ROWS} more`)
   return { path, open: open.length, total: items.length, rows }
 }
@@ -817,9 +821,9 @@ async function clearAndContinue($) {
 async function clearAndSend($) {
   if (!(await handoffReady($))) return
   // Taken before /clear empties H; git reads while the chat clears
+  const live = liveState($).catch(() => '')
   const head = continuationHead(await activePlan($))
   const body = H.text
-  const live = liveState($).catch(() => '')
   const path = H.path
   const fid = H.fid
   const again = REVIVE_ORDER.filter((k) => revive.has(k)).map((k) => revive.get(k))

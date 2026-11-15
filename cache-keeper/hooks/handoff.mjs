@@ -306,9 +306,11 @@ function userRequests(messages, max = 20) {
 
 // Plan Keeper's active plan as facts lines: its path and counts, then its open
 // items; [] with none
+const planCount = (plan) => `${plan.open} of ${plan.total} items open`
+
 export function planLines(plan) {
-  if (!plan || !plan.path) return []
-  return [`Active plan (Plan Keeper): ${plan.path}, ${plan.open} of ${plan.total} items open`, ...(plan.rows || []).map((r) => '  ' + r)]
+  if (!plan) return []
+  return [`Active plan (Plan Keeper): ${plan.path}, ${planCount(plan)}`, ...plan.rows.map((r) => '  ' + r)]
 }
 
 // The facts block the fork reads and the draft is built from
@@ -403,7 +405,7 @@ ${first}
 - unknown: the model step did not finish
 
 ## Key files for next session
-${g.facts.plan && g.facts.plan.path ? `- Plan file: \`${g.facts.plan.path}\` (${g.facts.plan.open} of ${g.facts.plan.total} items open)\n` : ''}${list(g.files.slice(0, 15).map((f) => `\`${f.path}\`: ${f.edited ? 'changed' : 'read'} in the previous chat`))}
+${list([...(g.facts.plan ? [`Plan file: \`${g.facts.plan.path}\` (${planCount(g.facts.plan)})`] : []), ...g.files.slice(0, 15).map((f) => `\`${f.path}\`: ${f.edited ? 'changed' : 'read'} in the previous chat`)])}
 
 ## Running state
 - Background processes: ${g.facts.shells.length ? g.facts.shells.map(shellLine).join('; ') : 'none'}

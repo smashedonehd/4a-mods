@@ -1293,6 +1293,15 @@ test('a step listed twice is written once; a name taken in the same minute gets 
   assert.match(b.toasts.join('\n'), /could not write .*: EACCES/)
 })
 
+test('a TodoWrite list that replaces one ticks what the old list completed first', async () => {
+  const disk = makeFs(folderSeed())
+  const s = await boot(disk)
+  await s.start()
+  await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed' }] })
+  await s.call('TodoWrite', { todos: [{ content: 'Other', status: 'pending' }] })
+  assert.match(disk.text(PLANS + '/a.md'), /- \[x\] Ship it/)
+})
+
 test('slugs and hashes are stable and plain', () => {
   assert.equal(slugOf('Přidat **ověření** do API: krok 1.'), 'pridat-overeni-do-api-krok-1')
   assert.equal(slugOf('***'), 'plan')
