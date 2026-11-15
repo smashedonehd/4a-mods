@@ -1045,9 +1045,8 @@ export function register(on, options) {
     }
   })
 
-  // Claude Code's own placeholder ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
-  // Same rule as the bands of prompt-translate and savvy-progress (hooks/register.tsx): change them together.
-  // Drawing nothing of its own, the band hands on what lies beneath untouched.
+  // Claude Code's own placeholder ({ type: 'engine' }) is never nested, only handed on: the desktop drops
+  // a band that nests it. Same rule in cache-keeper, plan-keeper, prompt-translate and savvy-progress: change all four.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const below = drawn && typeof drawn === 'object' && drawn.type !== 'engine' ? drawn : null
