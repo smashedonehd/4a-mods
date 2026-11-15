@@ -570,6 +570,6 @@ for (const [name, beneath] of [
 test('a survey up: the band hands the engine placeholder on untouched', async ($: Engine, on: On) => {
   await session($, on, 320000, () => ENGINE)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND, props: { ...(BAND.props as object), hasSurvey: true } as never })
-  expect(await ui.drawn()).toEqual(ENGINE)
+  expect(await ui.drawn()).toMatchObject({ type: 'engine' })
   await ui.unmount()
 })

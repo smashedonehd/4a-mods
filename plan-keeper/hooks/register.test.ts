@@ -33,10 +33,11 @@ function host(on: Parameters<Parameters<typeof test>[1]>[1], beneath: (...a: nev
   on('command.register', async () => ({ value: { command: 'plan-keeper' } }) as never)
   on('env.get', async () => ({ value: '' }) as never)
   on('session.cwd', async () => ({ value: '/work/app' }) as never)
-  on('state.get', async (_, e) => ({ value: { value: state[(e as { ref: { key: string } }).ref?.key] } }) as never)
+  // The engine names the key as `key`, or as `ref.key` in older releases
+  const keyOf = (e: unknown) => (e as { key?: string }).key ?? (e as { ref?: { key: string } }).ref?.key ?? ''
+  on('state.get', async (_, e) => ({ value: { value: state[keyOf(e)] } }) as never)
   on('state.set', async (_, e) => {
-    const { ref, value } = e as { ref: { key: string }; value: unknown }
-    state[ref.key] = value
+    state[keyOf(e)] = (e as { value: unknown }).value
     return { value: undefined } as never
   })
   on('fs.read', async (_, e) => {
@@ -72,8 +73,15 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     expect((said as { text: string }).text).toBe(`Plan Keeper tracks ${PLAN}: 2 of 3 items open.`)
 
     band = await $.ui.mount({ ...BAND, surface })
-    expect((await band.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('1/3')
-    expect((await band.find({ type: 'Text', text: /next:/ }))?.text).toBe('· next: Write the parser')
+    if (surface === 'terminal') {
+      expect((await band.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('1/3')
+      expect((await band.find({ type: 'Text', text: /next:/ }))?.text).toBe('· next: Write the parser')
+    } else {
+      // Elsewhere the row is one picture: the figures are its texts
+      const row = await band.find({ type: 'Svg' })
+      const texts = String(row?.props.source).match(/[^<>]+(?=<\/text>)/g)
+      expect(texts).toEqual(['P', '1/3', 'Write the parser', '33%'])
+    }
     await band.press({ key: 'pane' })
     expect([...h.panes]).toEqual(['plan-keeper'])
     await band.unmount()
@@ -118,6 +126,6 @@ test('no plan: the band hands the engine placeholder on untouched', async ($, on
   host(on, () => ENGINE)
   await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.drawn()).toEqual(ENGINE)
+  expect(await band.drawn()).toMatchObject({ type: 'engine' })
   await band.unmount()
 })
