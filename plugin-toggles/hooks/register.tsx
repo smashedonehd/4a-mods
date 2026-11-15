@@ -784,10 +784,12 @@ async function applyNow($: any) {
   try {
     // A session the app drives (desktop, Remote Control) reloads only for a
     // /reload-plugins the person typed: a plugin's run gets that refusal as
-    // its text, not as an error, and nothing is reloaded.
-    const { text } = await $.command.run({ command: 'reload-plugins' })
-    if (/isn't available/i.test(text ?? '')) {
-      $.ui.toast('This session reloads only when you type /reload-plugins yourself. The changes are saved.')
+    // its text, not as an error, and nothing is reloaded. Claude Code 2.1.321
+    // words it "/reload-plugins isn't available over a remote connection in
+    // this session."; recheck the match when that wording changes.
+    const res = await $.command.run({ command: 'reload-plugins' })
+    if (/isn't available/i.test(res?.text ?? '')) {
+      $.ui.toast('Type /reload-plugins in this chat to load them. The changes are saved.')
       return
     }
     await update($, dirty, () => 0)
