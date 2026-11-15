@@ -54,7 +54,7 @@ const RULES = `Rules:
 1. Write in English, whatever language the chat used. Keep quoted identifiers, file names and the user's own key words as they are.
 2. Review the whole conversation, not the last few turns.
 3. Never invent state. A section with nothing to report says "none"; never drop a section.
-4. Absolute paths always. If a plan file drove the session, name it first under "Key files".
+4. Absolute paths always. If a plan file drove the session, name it first under "Key files". When the facts list an active plan from Plan Keeper, that is the plan file: write its path exactly as listed.
 5. Every open item says who wants it: "User asked" (the user's own request), "My own idea (confirm with the user before acting)" (anything you proposed or noticed), "Deferred by rule (the user does this)" (a rule, hook or permission kept you from it; name the rule), "Open (needs the user's answer)".
 6. Background shell IDs go under "Running state" with how to stop them. So does every subagent the facts list as still running: its ID (SendMessage reaches it by that ID), its task, and what the next agent does with its report, which arrives in the fresh chat.
 7. No git state from memory (branch, dirty files, last commits): Cache Keeper reads git live when the handoff is sent. Say what you changed, not what git would say.
@@ -304,11 +304,21 @@ function userRequests(messages, max = 20) {
     .slice(-max)
 }
 
+// Plan Keeper's active plan as facts lines: its path and counts, then its open
+// items; [] with none
+const planCount = (plan) => `${plan.open} of ${plan.total} items open`
+
+export function planLines(plan) {
+  if (!plan) return []
+  return [`Active plan (Plan Keeper): ${plan.path}, ${planCount(plan)}`, ...plan.rows.map((r) => '  ' + r)]
+}
+
 // The facts block the fork reads and the draft is built from
 function factsBlock(g) {
   return [
     `Working directory: ${g.cwd}`,
     `Messages: ${g.messages}, tool calls: ${g.facts.tools}`,
+    ...planLines(g.facts.plan),
     'Files read or changed, most used first (they exist now):',
     list(g.files.map((f) => `${f.path}${f.edited ? ' (changed)' : ''}`)),
     'Skills and slash commands:',
@@ -395,7 +405,7 @@ ${first}
 - unknown: the model step did not finish
 
 ## Key files for next session
-${list(g.files.slice(0, 15).map((f) => `\`${f.path}\`: ${f.edited ? 'changed' : 'read'} in the previous chat`))}
+${list([...(g.facts.plan ? [`Plan file: \`${g.facts.plan.path}\` (${planCount(g.facts.plan)})`] : []), ...g.files.slice(0, 15).map((f) => `\`${f.path}\`: ${f.edited ? 'changed' : 'read'} in the previous chat`)])}
 
 ## Running state
 - Background processes: ${g.facts.shells.length ? g.facts.shells.map(shellLine).join('; ') : 'none'}

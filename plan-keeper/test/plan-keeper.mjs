@@ -55,7 +55,7 @@ const button = (t, key) => {
 }
 const el = (type) => (props) => ({ type, props })
 
-async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options } = {}) {
+async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options, sid } = {}) {
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }), options)
@@ -66,7 +66,7 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options }
     clock: { now: async () => T },
     fs: disk.fs,
     env: { get: async (n) => (n === 'USERPROFILE' ? HOME : '') },
-    session: { cwd: async () => cwd },
+    session: { cwd: async () => cwd, ...(sid !== undefined && { id: async () => sid }) },
     state: {
       get: (ref) => {
         if (refuse.includes(ref.key)) throw new Error('refused ' + ref.key)
@@ -103,6 +103,7 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options }
     call: (tool, args = {}, { result = {}, isError, agentId } = {}) =>
       fire('tool.call', { tool, tool_use_id: 'u' + ++n, ...(agentId && { agentId }), ...args }, isError ? { result, text: 'failed', isError: true } : { result }),
     prompt: (text, kind = 'composer') => fire('prompt.submit', { text, origin: { kind } }, { text }),
+    promptFrom: (text, origin) => fire('prompt.submit', { text, origin }, { text }),
     // The band above the prompt: its tree, or what lies below when it draws nothing
     band: (props = {}) => fire('ui.render', { component: 'AbovePrompt', surface: 'terminal', props }, null),
     pane: () => fire('ui.render', { component: 'Pane', requestId: 'plan-keeper', surface: 'terminal', props: {} }, null),
@@ -1061,6 +1062,252 @@ test('/resume with a plan tracked ticks nothing: the list of the chat left is go
   await s.start('resume')
   assert.deepEqual(disk.writes, [])
   assert.equal(s.state.get('plan'), null)
+})
+
+// ---- plans written from the task list
+
+const { djb2, slugOf } = await import('../hooks/register.mjs?helpers')
+const GEN = `${HOME}/.claude/mods-data/plan-keeper/plans/app-${djb2('d:/work/app')}`
+const UP = 'mcp__ccd_turn__update_plan'
+const items = (...texts) => texts.map((content, k) => ({ content, status: k ? 'pending' : 'in_progress' }))
+const genPath = (disk) => disk.writes.find((p) => k(p).startsWith(k(GEN) + '/'))
+
+test('a task list of three steps gets a plan written for it; two steps get none', async () => {
+  const two = makeFs({})
+  const s2 = await boot(two, { sid: 'abcdef1234' })
+  await s2.call(UP, { items: items('Look around', 'Fix it') })
+  assert.deepEqual(two.writes, [])
+  assert.ok(!s2.state.get('plan'))
+
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 'abcdef1234' })
+  await s.call(UP, { items: items('Read the code', 'Write the fix', 'Run the tests'), scope: 'first_task' })
+  const path = genPath(disk)
+  assert.ok(path, 'a plan file is written under the generated plans folder')
+  assert.match(path, /\/2026-11-01-\d{4}-read-the-code-abcdef12\.md$/)
+  const text = disk.text(path)
+  assert.match(text, /^<!-- plan-keeper \{"v":1,"cwd":"D:\/work\/app","session":"abcdef1234","source":"task-list"\} -->\n# Read the code\n\n- \[ \] Read the code\n- \[ \] Write the fix\n- \[ \] Run the tests\n$/)
+  assert.deepEqual(s.state.get('plan'), { path, why: 'generated' })
+  assert.match(flat(await s.band()), /0\/3/)
+})
+
+test('the generated plan ticks as its steps complete', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Read the code', 'Write the fix', 'Run the tests') })
+  const path = genPath(disk)
+  await s.call(UP, { advance: true })
+  await s.call(UP, { done: [2] })
+  await s.turnEnd()
+  assert.match(disk.text(path), /- \[x\] Read the code\n- \[x\] Write the fix\n- \[ \] Run the tests/)
+  await s.call(UP, { start: 3 })
+  await s.call('mcp__ccd_turn__wrap_up', { recap: 'done' })
+  assert.match(disk.text(path), /- \[x\] Run the tests/)
+})
+
+test('steps already completed are written ticked; a continuation adds new steps; a new task starts a new plan', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A')] })
+  const first = genPath(disk)
+  assert.match(disk.text(first), /- \[x\] Look around\n- \[ \] Fix A/)
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A', 'Test A', 'Ship A')], scope: 'continuation' })
+  assert.match(disk.text(first), /- \[ \] Test A\n- \[ \] Ship A\n$/)
+  assert.equal((disk.text(first).match(/Fix A/g) || []).length, 1)
+  await s.call(UP, { items: items('Plan B', 'Build B', 'Check B'), scope: 'new_task' })
+  const plan = s.state.get('plan')
+  assert.notEqual(k(plan.path), k(first))
+  assert.match(disk.text(plan.path), /# Plan B/)
+  // A new task of two steps lets the plan go and writes none; its completed step ticks nothing in the old plan
+  const before = disk.writes.length
+  await s.call(UP, { items: [{ content: 'Build B', status: 'completed' }, ...items('Done')], scope: 'new_task' })
+  assert.equal(s.state.get('plan'), null)
+  assert.equal(disk.writes.length, before)
+  assert.match(disk.text(plan.path), /- \[ \] Build B/)
+})
+
+test('a plan with items stays the plan; a plan mode plan in prose is replaced and named as the source', async () => {
+  const disk = makeFs(folderSeed())
+  const s = await boot(disk, { sid: 's1' })
+  await s.start()
+  await s.call(UP, { items: items('Write tests', 'Fix', 'Ship') })
+  assert.match(s.state.get('plan').path, /plans\/a\.md$/)
+  assert.equal(genPath(disk), undefined)
+
+  const prose = PLANS + '/prose.md'
+  const d2 = makeFs({ [prose]: '# Plan\n\nJust prose, no boxes.\n' })
+  const s2 = await boot(d2, { sid: 's1' })
+  await s2.call('ExitPlanMode', {}, { result: { filePath: prose } })
+  await s2.call(UP, { items: items('One', 'Two', 'Three') })
+  const path = genPath(d2)
+  assert.ok(path)
+  assert.match(d2.text(path), new RegExp('Source: ' + prose.replace(/[.]/g, '\\.')))
+  assert.equal(s2.state.get('plan').why, 'generated')
+})
+
+test('a subagent\'s task list and a chat with tracking off write no plan', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk)
+  await s.call(UP, { items: items('A', 'B', 'C') }, { agentId: 'sub1' })
+  assert.deepEqual(disk.writes, [])
+  await s.cmd('off')
+  await s.call(UP, { items: items('A', 'B', 'C') })
+  assert.deepEqual(disk.writes, [])
+})
+
+test('after a reload or a restart the generated plan with open items is picked again, from the home folder too', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk)
+  await s.call(UP, { items: items('A one', 'B two', 'C three') })
+  const path = genPath(disk)
+  assert.ok(!/-\.md$/.test(path), 'no id: no trailing dash')
+  const fresh = await boot(disk)
+  assert.match(await fresh.start(), new RegExp('the active plan is ' + path.replace(/[.]/g, '\\.') + ' \\(the newest plan for this folder'))
+
+  const home = makeFs({})
+  const h = await boot(home, { cwd: HOME })
+  await h.call(UP, { items: items('A one', 'B two', 'C three') })
+  assert.ok(home.writes.length === 1)
+  const again = await boot(home, { cwd: HOME })
+  assert.match(await again.start(), /mods-data\/plan-keeper\/plans\/u-/)
+})
+
+test('cache keeper\'s continuation reattaches the plan of its "Plan:" line, and no other path in it', async () => {
+  const disk = makeFs({ ...folderSeed(), [PLANS + '/other-plan.md']: '- [ ] Other\n' })
+  const s = await boot(disk)
+  const text = `Handoff from my previous session. Plan: ${PLANS}/a.md\nKey files: ${PLANS}/other-plan.md`
+  await s.promptFrom(text, { kind: 'plugin', name: 'cache-keeper' })
+  assert.equal(s.state.get('plan'), undefined, 'a "Plan:" that is not its own line names nothing')
+  await s.promptFrom(`Handoff from my previous session.\nPlan: ${PLANS}/a.md\n\nKey files: ${PLANS}/other-plan.md`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.match(s.state.get('plan').path, /plans\/a\.md$/)
+  // Another plugin's prompt names nothing
+  const t = await boot(disk)
+  await t.promptFrom(`Plan: ${PLANS}/a.md`, { kind: 'plugin', name: 'other' })
+  assert.equal(t.state.get('plan'), undefined)
+})
+
+test('under a busy savvy-progress band the plan row is compact, with no bar of its own', async () => {
+  const disk = makeFs({})
+  const state = new Map()
+  const s = await boot(disk, { state })
+  await s.call(UP, { items: items('Read the code', 'Write the fix', 'Run the tests') })
+  const full = await s.band()
+  assert.ok(flat(full).includes('━'))
+  state.set('flow', { title: 'x', total: 2, done: 0, isFinished: false })
+  const compact = flat(await s.band())
+  assert.ok(!compact.includes('━'))
+  assert.match(compact, /plan .*0\/3/)
+  state.set('flow', { title: 'x', total: 2, done: 2, isFinished: true })
+  assert.ok(flat(await s.band()).includes('━'))
+  state.set('agents', [{ status: 'running' }])
+  assert.ok(!flat(await s.band()).includes('━'))
+})
+
+test('a generated plan in its own folder is reattached by cache keeper\'s "Plan:" line', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('A one', 'B two', 'C three') })
+  const path = genPath(disk)
+  const fresh = await boot(disk, { cwd: 'D:/elsewhere' })
+  await fresh.promptFrom(`Handoff from my previous session.\nPlan: ${path}\n\nbody`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.deepEqual(fresh.state.get('plan'), { path, why: 'handoff' })
+  // The fresh chat's first list goes on with the plan it was handed
+  await fresh.call(UP, { items: items('B two', 'D four', 'E five'), scope: 'first_task' })
+  assert.equal(fresh.state.get('plan').path, path)
+  assert.match(disk.text(path), /- \[ \] C three\n- \[ \] D four\n- \[ \] E five\n$/)
+  // A "Plan:" file with no checkbox item is not attached
+  const prose = PLANS + '/prose.md'
+  const d2 = makeFs({ [prose]: '# Just prose\n' })
+  const t = await boot(d2)
+  await t.promptFrom(`Handoff.\nPlan: ${prose}\n`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.ok(!t.state.get('plan'))
+})
+
+test('the chat that wrote a plan grows it by a first_task or unscoped list, also after a /clear; a restarted chat\'s unscoped list starts a new one', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('A one', 'B two', 'C three'), scope: 'first_task' })
+  const path = genPath(disk)
+  await s.call(UP, { items: items('A one', 'B two', 'C three', 'D four'), scope: 'first_task' })
+  await s.start('clear')
+  await s.call(UP, { items: items('E five', 'F six', 'G seven') })
+  assert.equal(s.state.get('plan').path, path)
+  assert.match(disk.text(path), /- \[ \] D four\n- \[ \] E five\n- \[ \] F six\n- \[ \] G seven\n$/)
+  const fresh = await boot(disk, { sid: 's2' })
+  await fresh.start()
+  assert.equal(fresh.state.get('plan').why, 'folder')
+  await fresh.call(UP, { items: items('X one', 'Y two', 'Z three') })
+  assert.notEqual(fresh.state.get('plan').path, path)
+  assert.ok(!disk.text(path).includes('X one'))
+})
+
+test('a new task\'s list: the old list\'s completions tick the old plan, the new list\'s tick nothing there', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const old = genPath(disk)
+  await s.call(UP, { done: [1, 2, 3] })
+  await s.call(UP, { items: [{ content: 'Zeta', status: 'completed' }, { content: 'Beta', status: 'completed' }, ...items('Delta', 'Eps')], scope: 'new_task' })
+  assert.match(disk.text(old), /- \[x\] Alpha\n- \[x\] Beta\n- \[x\] Gamma/)
+  const d2 = makeFs({})
+  const t = await boot(d2, { sid: 's1' })
+  await t.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const o2 = genPath(d2)
+  await t.call(UP, { items: [{ content: 'Beta', status: 'completed' }, ...items('Delta', 'Eps')], scope: 'new_task' })
+  assert.match(d2.text(o2), /- \[ \] Beta/)
+})
+
+test('a fresh chat\'s first task does not grow a plan picked from an earlier chat; a continuation does', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 'old1' })
+  await s.call(UP, { items: items('Old A', 'Old B', 'Old C') })
+  const old = genPath(disk)
+  const fresh = await boot(disk, { sid: 'new1' })
+  await fresh.start()
+  assert.equal(fresh.state.get('plan').path, old)
+  await fresh.call(UP, { items: items('New X', 'New Y', 'New Z'), scope: 'first_task' })
+  assert.ok(!disk.text(old).includes('New X'))
+  assert.match(disk.text(fresh.state.get('plan').path), /# New X/)
+  const back = await boot(disk, { sid: 'new3' })
+  await back.cmd(old)
+  await back.call(UP, { items: items('Old A', 'Old D', 'Old E'), scope: 'continuation' })
+  assert.match(disk.text(old), /- \[ \] Old C\n- \[ \] Old D\n- \[ \] Old E\n$/)
+})
+
+test('a step listed twice is written once; a name taken in the same minute gets a number; a failed write toasts', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [...items('Run tests', 'Fix', 'Ship'), { content: 'run tests', status: 'completed' }] })
+  const first = genPath(disk)
+  assert.equal((disk.text(first).match(/run tests/gi) || []).length, 2, 'the title and one item')
+  assert.match(disk.text(first), /- \[x\] Run tests\n- \[ \] Fix\n- \[ \] Ship\n$/)
+  await s.call(UP, { items: items('Run tests', 'Fix', 'Ship'), scope: 'new_task' })
+  assert.match(s.state.get('plan').path, /-s1-2\.md$/)
+
+  const bad = makeFs({})
+  bad.fs.write = async () => {
+    throw new Error('EACCES')
+  }
+  const b = await boot(bad, { sid: 's1' })
+  await b.call(UP, { items: items('A', 'B', 'C') })
+  assert.ok(!b.state.get('plan'))
+  assert.match(b.toasts.join('\n'), /could not write .*: EACCES/)
+})
+
+test('a TodoWrite list that replaces one ticks what the old list completed first', async () => {
+  const disk = makeFs(folderSeed())
+  const s = await boot(disk)
+  await s.start()
+  await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed' }] })
+  await s.call('TodoWrite', { todos: [{ content: 'Other', status: 'pending' }] })
+  assert.match(disk.text(PLANS + '/a.md'), /- \[x\] Ship it/)
+})
+
+test('slugs and hashes are stable and plain', () => {
+  assert.equal(slugOf('Přidat **ověření** do API: krok 1.'), 'pridat-overeni-do-api-krok-1')
+  assert.equal(slugOf('***'), 'plan')
+  assert.equal(djb2('d:/work/app'), djb2('d:/work/app'))
+  assert.match(djb2('x'), /^[0-9a-f]{8}$/)
 })
 
 let failed = 0

@@ -7,6 +7,7 @@ import {
   normalizePath, commandPaths, rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, cleanReply,
   missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
 } from '../hooks/handoff.mjs'
+import { planFacts } from '../hooks/register.mjs'
 
 let passed = 0
 const check = async (name, fn) => {
@@ -492,6 +493,36 @@ await check('ready card: Clear and continue clears and sends the handoff with it
   assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
   assert.equal(s.sent[0].asUser, true)
   assert.equal(texts(await s.render()).includes('Handoff ready'), false)
+})
+
+await check('Plan Keeper\'s active plan: in the facts the fork reads, and on its own line of the continuation', async () => {
+  const plan = 'C:/Users/u/.claude/mods-data/plan-keeper/plans/pk-1/2026-11-10-1000-fix-s1.md'
+  files.set(plan, '# Fix\n\n- [x] Read\n- [ ] Fix the parser\n```\n- [ ] not an item\n```\n- [ ] Ship\n')
+  states.set('pk000001-0:plan', { value: { path: plan, why: 'generated' }, version: 1 })
+  const s = await boot('/w/pk', 'pk000001-0', {})
+  await s.run('handoff', 'keep')
+  assert.ok(s.prompts[0].includes(`Active plan (Plan Keeper): ${plan}, 2 of 3 items open\n  - [ ] Fix the parser\n  - [ ] Ship`), s.prompts[0].slice(0, 400))
+  await s.press('ck-ho-clear')
+  assert.match(s.sent[0].text, new RegExp(`^Handoff from my previous session [^\\n]*\\nPlan: ${plan.replace(/[.]/g, '\\.')}\\n`))
+  // No plan: no line
+  const n = await boot('/w/pk2', 'pk000002-0', {})
+  await n.run('handoff', 'keep')
+  await n.press('ck-ho-clear')
+  assert.ok(!/\nPlan: /.test(n.sent[0].text.split('\n\n')[0]))
+  assert.ok(!n.prompts[0].includes('Active plan'))
+  files.delete(plan)
+  states.delete('pk000001-0:plan')
+})
+
+await check('planFacts counts items outside code blocks and lists at most 8 open ones; the draft names the plan first', async () => {
+  assert.equal(planFacts('p.md', '# none\n'), null)
+  const many = Array.from({ length: 10 }, (_, i) => `- [ ] item ${i}`).join('\n')
+  const f = planFacts('p.md', many)
+  assert.equal(f.open, 10)
+  assert.equal(f.rows.length, 9)
+  assert.equal(f.rows[8], '- and 2 more')
+  const draft = draftText({ cwd: '/w', messages: 0, rawMessages: [], files: [], facts: { tools: 0, skills: [], servers: [], shells: [], agents: [], prs: [], links: [], plan: { path: '/p/plan.md', open: 1, total: 2, rows: [] } } })
+  assert.match(draft, /## Key files for next session\n- Plan file: `\/p\/plan\.md` \(1 of 2 items open\)\n/)
 })
 
 await check('ready card: Keep chat closes it and keeps the handoff for /handoff continue', async () => {
