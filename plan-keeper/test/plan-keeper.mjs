@@ -1202,6 +1202,69 @@ test('under a busy savvy-progress band the plan row is compact, with no bar of i
   assert.ok(!flat(await s.band()).includes('━'))
 })
 
+test('a generated plan in its own folder is reattached by cache keeper\'s "Plan:" line', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('A one', 'B two', 'C three') })
+  const path = genPath(disk)
+  const fresh = await boot(disk, { cwd: 'D:/elsewhere' })
+  await fresh.promptFrom(`Handoff from my previous session.\nPlan: ${path}\n\nbody`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.equal(fresh.state.get('plan').path, path)
+})
+
+test('a new task\'s list: the old list\'s completions tick the old plan, the new list\'s tick nothing there', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const old = genPath(disk)
+  await s.call(UP, { done: [1, 2, 3] })
+  await s.call(UP, { items: [{ content: 'Zeta', status: 'completed' }, { content: 'Beta', status: 'completed' }, ...items('Delta', 'Eps')], scope: 'new_task' })
+  assert.match(disk.text(old), /- \[x\] Alpha\n- \[x\] Beta\n- \[x\] Gamma/)
+  const d2 = makeFs({})
+  const t = await boot(d2, { sid: 's1' })
+  await t.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const o2 = genPath(d2)
+  await t.call(UP, { items: [{ content: 'Beta', status: 'completed' }, ...items('Delta', 'Eps')], scope: 'new_task' })
+  assert.match(d2.text(o2), /- \[ \] Beta/)
+})
+
+test('a fresh chat\'s first task does not grow a plan picked from an earlier chat; a continuation does', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 'old1' })
+  await s.call(UP, { items: items('Old A', 'Old B', 'Old C') })
+  const old = genPath(disk)
+  const fresh = await boot(disk, { sid: 'new1' })
+  await fresh.start()
+  assert.equal(fresh.state.get('plan').path, old)
+  await fresh.call(UP, { items: items('New X', 'New Y', 'New Z'), scope: 'first_task' })
+  assert.ok(!disk.text(old).includes('New X'))
+  assert.match(disk.text(fresh.state.get('plan').path), /# New X/)
+  const back = await boot(disk, { sid: 'new3' })
+  await back.cmd(old)
+  await back.call(UP, { items: items('Old A', 'Old D', 'Old E'), scope: 'continuation' })
+  assert.match(disk.text(old), /- \[ \] Old C\n- \[ \] Old D\n- \[ \] Old E\n$/)
+})
+
+test('a step listed twice is written once; a name taken in the same minute gets a number; a failed write toasts', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [...items('Run tests', 'Fix', 'Ship'), { content: 'run tests', status: 'completed' }] })
+  const first = genPath(disk)
+  assert.equal((disk.text(first).match(/run tests/gi) || []).length, 2, 'the title and one item')
+  assert.match(disk.text(first), /- \[x\] Run tests\n- \[ \] Fix\n- \[ \] Ship\n$/)
+  await s.call(UP, { items: items('Run tests', 'Fix', 'Ship'), scope: 'new_task' })
+  assert.match(s.state.get('plan').path, /-s1-2\.md$/)
+
+  const bad = makeFs({})
+  bad.fs.write = async () => {
+    throw new Error('EACCES')
+  }
+  const b = await boot(bad, { sid: 's1' })
+  await b.call(UP, { items: items('A', 'B', 'C') })
+  assert.ok(!b.state.get('plan'))
+  assert.match(b.toasts.join('\n'), /could not write .*: EACCES/)
+})
+
 test('slugs and hashes are stable and plain', () => {
   assert.equal(slugOf('Přidat **ověření** do API: krok 1.'), 'pridat-overeni-do-api-krok-1')
   assert.equal(slugOf('***'), 'plan')

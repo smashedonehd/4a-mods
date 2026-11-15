@@ -285,6 +285,14 @@ function namedPaths(text) {
 // The line Cache Keeper's continuation starts with when a plan was active
 const HANDOFF_PLAN = /^Plan: (.+\.md)\s*$/m
 
+// The plan of a handoff's "Plan:" line becomes the plan, wherever it lies,
+// once it has a checkbox item: Plan Keeper tracked it in the chat before
+async function attachHandoffPlan($, p) {
+  const path = /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
+  const body = await readOr($, path)
+  if (body !== null && parsePlan(body).items.length) await setPlan($, path, 'named')
+}
+
 // The last plan file the prompt names becomes the plan: a .md with a checkbox
 // item, in a plans folder or with "plan" in its name (no template or README)
 async function noteNamed($, text) {
@@ -485,7 +493,7 @@ export function generatedText(steps, { cwd, session, source }) {
 // one, or a new one for a new task. True when it set or changed the plan.
 async function maybeGenerate($, e) {
   if (!Array.isArray(e.items) || ui.off) return false
-  const steps = tasks.filter((x) => oneLine(x.text))
+  const steps = uniqueSteps(tasks)
   const gen = !!plan && isGenerated(plan.path)
   let source = ''
   if (plan && !gen) {
@@ -495,7 +503,13 @@ async function maybeGenerate($, e) {
     if (view && view.total) return false
     source = plan.path
   }
-  if (gen && e.scope !== 'new_task') return appendItems($, steps)
+  // More of the same task: added to the plan this chat wrote. A plan picked
+  // from an earlier chat grows only by a list that says it goes on with it.
+  const grows = e.scope === 'continuation' || (plan && plan.why === 'generated' && e.scope !== 'new_task' && e.scope !== 'first_task')
+  if (gen && grows) return appendItems($, steps)
+  // Another task: its list's completed steps were not done for the plan
+  // that goes, so they tick nothing in it
+  if (gen) for (const s of completed()) used.add(norm(s))
   if (steps.length < GEN_MIN) {
     // A new task of few steps: the last task's plan goes, none is written
     if (gen) await dropPlan($, false)
@@ -503,10 +517,37 @@ async function maybeGenerate($, e) {
   }
   const dir = genDir()
   if (!dir) return false
-  const path = join(dir, `${stamp(await $.clock.now())}-${slugOf(steps[0].text)}${S.sid ? '-' + slugOf(S.sid, 8) : ''}.md`)
-  await $.fs.write(path, generatedText(steps, { cwd: S.cwd, session: S.sid, source }))
+  const base = join(dir, `${stamp(await $.clock.now())}-${slugOf(steps[0].text)}${S.sid ? '-' + slugOf(S.sid, 8) : ''}`)
+  let path = base + '.md'
+  for (let n = 2; await $.fs.exists(path); n++) path = `${base}-${n}.md`
+  if (!(await writeOrToast($, path, generatedText(steps, { cwd: S.cwd, session: S.sid, source })))) return false
   await setPlan($, path, 'generated')
   return true
+}
+
+// The task list's steps with text, each text once: a step done anywhere in
+// the list counts as done
+function uniqueSteps(list) {
+  const by = new Map()
+  for (const x of list) {
+    const n = norm(x.text)
+    if (!n) continue
+    const had = by.get(n)
+    if (!had) by.set(n, { text: x.text, status: x.status })
+    else if (x.status === 'completed') had.status = 'completed'
+  }
+  return [...by.values()]
+}
+
+// Writes a file Plan Keeper makes; false, with a toast, when the write fails
+async function writeOrToast($, path, text) {
+  try {
+    await $.fs.write(path, text)
+    return true
+  } catch (err) {
+    $.ui.toast(`Plan Keeper could not write ${basename(path)}: ${String((err && err.message) || err)}`)
+    return false
+  }
 }
 
 // The steps the generated plan does not hold yet, added at its end
@@ -517,13 +558,13 @@ async function appendItems($, steps) {
   const add = []
   for (const x of steps) {
     const n = norm(x.text)
-    if (!n || have.has(n)) continue
+    if (have.has(n)) continue
     have.add(n)
     add.push(`- [ ] ${oneLine(x.text)}`)
   }
   if (!add.length) return false
   const out = text.replace(/\s*$/, '\n') + add.join('\n') + '\n'
-  await $.fs.write(plan.path, out)
+  if (!(await writeOrToast($, plan.path, out))) return false
   await refresh($, out)
   return true
 }
@@ -559,7 +600,11 @@ async function observe($, e, result) {
     if (e.subject) x.text = String(e.subject)
     if (e.status === 'deleted') tasks = tasks.filter((k) => k !== x)
     else if (e.status) x.status = e.status
-  } else if (t === PLAN_TOOL) applyPlanUpdate(e)
+  } else if (t === PLAN_TOOL) {
+    // A whole new list replaces the old one: what the old one completed ticks first
+    if (Array.isArray(e.items)) await tick($)
+    applyPlanUpdate(e)
+  }
   else if (t === WRAP_TOOL) {
     // The wrap-up checks the running step off, unless the turn stops on a question
     if (!e.blocked && !e.ask) for (const x of tasks) if (x.status === 'in_progress') x.status = 'completed'
@@ -678,12 +723,18 @@ function bar(Text, done, total, n) {
 // not finished, or a subagent at work. Its bar shows the progress then, so the
 // plan's row goes under it without a bar of its own.
 async function savvyBusy($) {
-  const get = (ref) =>
-    Promise.resolve()
-      .then(() => $.state.get(ref))
+  // Each ref written out: the validator lists what a module reads
+  const value = (p) =>
+    Promise.resolve(p)
       .then((r) => r && r.value)
       .catch(() => null)
-  const [flow, agents] = await Promise.all([get(SAVVY_FLOW_REF), get(SAVVY_AGENTS_REF)])
+  let flow = null
+  let agents = null
+  try {
+    ;[flow, agents] = await Promise.all([value($.state.get(SAVVY_FLOW_REF)), value($.state.get(SAVVY_AGENTS_REF))])
+  } catch {
+    // no savvy-progress: the band as it is alone
+  }
   if (flow && typeof flow === 'object' && !flow.isFinished && Number(flow.total) > 0) return true
   return Array.isArray(agents) && agents.some((a) => a && a.status === 'running')
 }
@@ -937,7 +988,7 @@ export function register(on, options) {
     if (handoff) {
       try {
         await ready($)
-        if (!ui.off) await noteNamed($, '"' + handoff[1].trim() + '"')
+        if (!ui.off) await attachHandoffPlan($, handoff[1].trim())
       } catch {
         // the plan stays as it was
       }
