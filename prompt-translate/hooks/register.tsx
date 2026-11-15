@@ -116,7 +116,7 @@ export const register: Register = on => {
     // ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
     // Same rule as savvy-progress's band (hooks/register.tsx): change both together.
     const [busy, drawn] = await Promise.all([read($, isBusy), Promise.resolve(next(e)).catch(() => null)])
-    const below = (drawn as { type?: string } | null)?.type === 'engine' ? null : drawn
+    const below = typeof drawn === 'object' && (drawn as { type?: string } | null)?.type !== 'engine' ? drawn : null
     return (
       <Box flexDirection="column">
         {below}
