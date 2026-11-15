@@ -1319,6 +1319,16 @@ test('on the desktop the band is one drawn row: name, count pill, next item, per
   assert.match(svg.props.source, />Fix A &amp; B</, 'the next item, escaped')
   assert.match(svg.props.source, />33%</)
   assert.ok(button(tree, 'pane') && button(tree, 'hide'))
+  // A changed plan, width or dimming draws new markup, not the last one
+  const source = async (props) => (await s.render({ component: 'AbovePrompt', surface: 'desktop', props }, null)).props.children.find((c) => c.type === 'Svg').props.source
+  assert.match(await source({ bodyColumns: 100 }), /width="690"/)
+  assert.match(await source({ bodyColumns: 120 }), /width="850"/)
+  s.state.set('flow', { isFinished: false, total: 2 })
+  assert.match(await source({ bodyColumns: 120 }), /opacity="0\.6"/)
+  s.state.delete('flow')
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, { content: 'Fix A & B', status: 'completed' }, ...items('Test A')], scope: 'continuation' })
+  await s.call('mcp__ccd_turn__wrap_up', {})
+  assert.match(await source({ bodyColumns: 120 }), />2\/3</)
   // The terminal keeps its text row
   assert.match(flat(await s.band()), /1\/3/)
 })
@@ -1330,6 +1340,10 @@ test('the drawn row says done and open as the text row does', () => {
   const open = planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'stuck' }, 400)
   assert.match(open, />2 open</)
   assert.doesNotMatch(open, />Two</, 'no next item once the list ended')
+  // A long name is cut, the ellipsis inside its slot (32% of the row)
+  const long = planRowSvg({ name: 'x'.repeat(80), done: 1, total: 3, next: '', state: 'run' }, 300).match(/font-weight="500">([^<]*)</)[1]
+  assert.match(long, /…$/)
+  assert.ok(0.56 * 13 * [...long].length <= 300 * 0.32, long)
   // Dimmed under savvy-progress's band
   assert.match(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400, true), /opacity="0\.6"/)
   assert.doesNotMatch(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400), /opacity="0\.6"/)
