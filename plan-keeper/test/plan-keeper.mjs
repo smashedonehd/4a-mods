@@ -77,7 +77,7 @@ async function boot(disk, { cwd = CWD, state = new Map(), refuse = [], options, 
     ui: {
       toast: (t) => void toasts.push(t),
       invalidate: () => void draws++,
-      resolve: () => ({ Box: el('Box'), Text: el('Text'), Button: el('Button') }),
+      resolve: () => ({ Box: el('Box'), Text: el('Text'), Button: el('Button'), Svg: el('Svg') }),
       panes: async () => [...panes].map((id) => ({ id })),
       open: async ({ id }) => void panes.add(id),
       close: async ({ id }) => void panes.delete(id),
@@ -1066,7 +1066,7 @@ test('/resume with a plan tracked ticks nothing: the list of the chat left is go
 
 // ---- plans written from the task list
 
-const { djb2, slugOf } = await import('../hooks/register.mjs?helpers')
+const { djb2, slugOf, planRowSvg } = await import('../hooks/register.mjs?helpers')
 const GEN = `${HOME}/.claude/mods-data/plan-keeper/plans/app-${djb2('d:/work/app')}`
 const UP = 'mcp__ccd_turn__update_plan'
 const items = (...texts) => texts.map((content, k) => ({ content, status: k ? 'pending' : 'in_progress' }))
@@ -1305,6 +1305,31 @@ test('a TodoWrite list that replaces one ticks what the old list completed first
   await s.call('TodoWrite', { todos: [{ content: 'Ship it', status: 'completed' }] })
   await s.call('TodoWrite', { todos: [{ content: 'Other', status: 'pending' }] })
   assert.match(disk.text(PLANS + '/a.md'), /- \[x\] Ship it/)
+})
+
+test('on the desktop the band is one drawn row: name, count pill, next item, percent', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Fix A & B', 'Test A')] })
+  const tree = await s.render({ component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 100 } }, null)
+  const svg = tree.props.children.find((c) => c.type === 'Svg')
+  assert.ok(svg, 'an Svg row')
+  assert.match(svg.props.source, />Look around</)
+  assert.match(svg.props.source, />1\/3</)
+  assert.match(svg.props.source, />Fix A &amp; B</, 'the next item, escaped')
+  assert.match(svg.props.source, />33%</)
+  assert.ok(button(tree, 'pane') && button(tree, 'hide'))
+  // The terminal keeps its text row
+  assert.match(flat(await s.band()), /1\/3/)
+})
+
+test('the drawn row says done and open as the text row does', () => {
+  const done = planRowSvg({ name: 'P', done: 3, total: 3, next: '', state: 'done' }, 400)
+  assert.match(done, />done</)
+  assert.match(done, />100%</)
+  const open = planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'stuck' }, 400)
+  assert.match(open, />2 open</)
+  assert.doesNotMatch(open, />Two</, 'no next item once the list ended')
 })
 
 test('slugs and hashes are stable and plain', () => {
