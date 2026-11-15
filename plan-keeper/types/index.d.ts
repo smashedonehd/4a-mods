@@ -4,7 +4,7 @@
 // completed steps that named no single item of it, and what the person chose
 // for this chat (the band hidden, tracking stopped) with the last tick's time
 // and the finished task list the closing note last went out for.
-export type PlanKeeperPlan = { path: string; why: 'named' | 'written' | 'folder' | 'generated' } | null
+export type PlanKeeperPlan = { path: string; why: 'named' | 'written' | 'folder' | 'generated' | 'handoff' } | null
 export type PlanKeeperTasks = { id?: string; text: string; status: string }[]
 export type PlanKeeperUsed = string[]
 export type PlanKeeperUnmatched = string[]

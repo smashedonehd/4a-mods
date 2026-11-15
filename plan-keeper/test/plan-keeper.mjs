@@ -1209,7 +1209,35 @@ test('a generated plan in its own folder is reattached by cache keeper\'s "Plan:
   const path = genPath(disk)
   const fresh = await boot(disk, { cwd: 'D:/elsewhere' })
   await fresh.promptFrom(`Handoff from my previous session.\nPlan: ${path}\n\nbody`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.deepEqual(fresh.state.get('plan'), { path, why: 'handoff' })
+  // The fresh chat's first list goes on with the plan it was handed
+  await fresh.call(UP, { items: items('B two', 'D four', 'E five'), scope: 'first_task' })
   assert.equal(fresh.state.get('plan').path, path)
+  assert.match(disk.text(path), /- \[ \] C three\n- \[ \] D four\n- \[ \] E five\n$/)
+  // A "Plan:" file with no checkbox item is not attached
+  const prose = PLANS + '/prose.md'
+  const d2 = makeFs({ [prose]: '# Just prose\n' })
+  const t = await boot(d2)
+  await t.promptFrom(`Handoff.\nPlan: ${prose}\n`, { kind: 'plugin', name: 'cache-keeper' })
+  assert.ok(!t.state.get('plan'))
+})
+
+test('the chat that wrote a plan grows it by a first_task or unscoped list, also after a /clear; a restarted chat\'s unscoped list starts a new one', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('A one', 'B two', 'C three'), scope: 'first_task' })
+  const path = genPath(disk)
+  await s.call(UP, { items: items('A one', 'B two', 'C three', 'D four'), scope: 'first_task' })
+  await s.start('clear')
+  await s.call(UP, { items: items('E five', 'F six', 'G seven') })
+  assert.equal(s.state.get('plan').path, path)
+  assert.match(disk.text(path), /- \[ \] D four\n- \[ \] E five\n- \[ \] F six\n- \[ \] G seven\n$/)
+  const fresh = await boot(disk, { sid: 's2' })
+  await fresh.start()
+  assert.equal(fresh.state.get('plan').why, 'folder')
+  await fresh.call(UP, { items: items('X one', 'Y two', 'Z three') })
+  assert.notEqual(fresh.state.get('plan').path, path)
+  assert.ok(!disk.text(path).includes('X one'))
 })
 
 test('a new task\'s list: the old list\'s completions tick the old plan, the new list\'s tick nothing there', async () => {

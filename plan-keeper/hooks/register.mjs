@@ -290,7 +290,7 @@ const HANDOFF_PLAN = /^Plan: (.+\.md)\s*$/m
 async function attachHandoffPlan($, p) {
   const path = /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
   const body = await readOr($, path)
-  if (body !== null && parsePlan(body).items.length) await setPlan($, path, 'named')
+  if (body !== null && parsePlan(body).items.length) await setPlan($, path, 'handoff')
 }
 
 // The last plan file the prompt names becomes the plan: a .md with a checkbox
@@ -503,9 +503,12 @@ async function maybeGenerate($, e) {
     if (view && view.total) return false
     source = plan.path
   }
-  // More of the same task: added to the plan this chat wrote. A plan picked
-  // from an earlier chat grows only by a list that says it goes on with it.
-  const grows = e.scope === 'continuation' || (plan && plan.why === 'generated' && e.scope !== 'new_task' && e.scope !== 'first_task')
+  // More of the same task: added to the plan this chat wrote or a handoff
+  // brought (a cleared chat's first list says first_task and goes on with it).
+  // A plan picked by folder from an earlier chat grows only by a list that
+  // says it goes on with it.
+  const carried = plan && (plan.why === 'generated' || plan.why === 'handoff')
+  const grows = e.scope === 'continuation' || (carried && e.scope !== 'new_task')
   if (gen && grows) return appendItems($, steps)
   // Another task: its list's completed steps were not done for the plan
   // that goes, so they tick nothing in it
@@ -676,6 +679,7 @@ const WHY = {
   written: 'this session wrote it',
   folder: 'the newest plan for this folder with open items',
   generated: 'Plan Keeper wrote it from the task list',
+  handoff: 'the Cache Keeper handoff named it',
 }
 
 // The note a fresh or cleared chat starts with, or null with nothing open
