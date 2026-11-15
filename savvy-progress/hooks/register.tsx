@@ -1692,7 +1692,8 @@ export const register: Register = (on, options) => {
     const f = bandFlow(reported, autoFlow(list, hidden))
     if (f === null || e.props.hasSurvey) return next(e)
     // Draw this row with the other mods' bands beneath it. Claude Code's own placeholder ({ type: 'engine' }) is
-    // never nested: the desktop drops a band that nests it.
+    // never nested: the desktop drops a band that nests it. Same rule in cache-keeper, plan-keeper,
+    // prompt-translate and savvy-progress: change all four.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const below = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
 

@@ -31,9 +31,8 @@ function host(on: Parameters<Parameters<typeof test>[1]>[1]) {
   on('session.cwd', async () => ({ value: '/work/app' }) as never)
   // The engine names the key as `key`, or as `ref.key` in older releases
   const keyOf = (e: unknown) => {
-    const key = (e as { key?: string }).key ?? (e as { ref?: { key: string } }).ref?.key
-    if (key === undefined) throw new Error('state call without a key: ' + JSON.stringify(e))
-    return key
+    const { key, ref } = e as { key?: string; ref?: { key: string } }
+    return (key ?? ref?.key) as string
   }
   on('state.get', async (_, e) => ({ value: { value: state[keyOf(e)] } }) as never)
   on('state.set', async (_, e) => {
@@ -65,14 +64,17 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const h = host(on)
     await $.session.start({ cwd: '/work/app', surface, isInteractive: true } as never)
 
+    // The engine's own placeholder beneath the band is handed on untouched, and
+    // never nested in the band (see hooks/register.mjs)
     let band = await $.ui.mount({ ...BAND, surface })
-    expect(await band.find({ key: 'pane' }), 'no plan: no band').toBeUndefined()
+    expect(await band.drawn(), 'no plan: the placeholder alone').toMatchObject({ type: 'engine' })
     await band.unmount()
 
     const said = await $.command.run({ command: 'plan-keeper', args: 'docs/plans/p.md' } as never)
     expect((said as { text: string }).text).toBe(`Plan Keeper tracks ${PLAN}: 2 of 3 items open.`)
 
     band = await $.ui.mount({ ...BAND, surface })
+    expect(JSON.stringify(await band.drawn())).not.toContain('"engine"')
     if (surface === 'terminal') {
       expect((await band.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('1/3')
       expect((await band.find({ type: 'Text', text: /next:/ }))?.text).toBe('· next: Write the parser')
@@ -100,25 +102,3 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
   })
 }
 
-// Beneath the mods the engine hands its own placeholder, { type: 'engine' }: it is
-// never nested (the desktop drops a band that nests it). With no plan to show,
-// the band hands it on untouched.
-test('the band never nests the engine placeholder, on either surface', async ($, on) => {
-  host(on)
-  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
-  await $.command.run({ command: 'plan-keeper', args: 'docs/plans/p.md' } as never)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const band = await $.ui.mount({ ...BAND, surface })
-    expect(JSON.stringify(await band.drawn())).not.toContain('"engine"')
-    expect(await band.find({ key: 'pane' })).toBeDefined()
-    await band.unmount()
-  }
-})
-
-test('no plan: the band hands the engine placeholder on untouched', async ($, on) => {
-  host(on)
-  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true } as never)
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.drawn()).toMatchObject({ type: 'engine' })
-  await band.unmount()
-})

@@ -543,26 +543,24 @@ test('desktop band: a cache cooling on a big context turns its card yellow and o
   await kept.unmount()
 })
 
-// Beneath the mods the engine hands its own placeholder, { type: 'engine' }: it is
-// never nested (the desktop drops a band that nests it). The card alone, the full
-// band on each surface: neither holds it. Drawing nothing of its own (a survey up),
-// the band hands it on untouched.
-const drawnAlone = async ($: Engine, surface: 'terminal' | 'desktop', key: string) => {
-  const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
-  const tree = JSON.stringify(await ui.drawn())
-  expect(tree).not.toContain('"engine"')
-  expect(await ui.find({ key } as never)).toBeTruthy()
-  await ui.unmount()
+// The engine's placeholder is never nested; drawing nothing, the band hands it on (see hooks/register.mjs)
+const drawnAlone = async ($: Engine, key: string) => {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'cache-keeper', surface, ...BAND })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('"engine"')
+    expect(await ui.find({ key } as never)).toBeTruthy()
+    await ui.unmount()
+  }
 }
 
 test('the handoff card alone never nests the engine placeholder', async ($: Engine, on: On) => {
   await session($, on)
-  for (const surface of ['terminal', 'desktop'] as const) await drawnAlone($, surface, 'ck-ho-start')
+  await drawnAlone($, 'ck-ho-start')
 })
 
 test('the full band never nests the engine placeholder, on either surface', async ($: Engine, on: On) => {
   await sized($, on, 320000)
-  for (const surface of ['terminal', 'desktop'] as const) await drawnAlone($, surface, 'handoff')
+  await drawnAlone($, 'handoff')
 })
 
 test('a survey up: the band hands the engine placeholder on untouched', async ($: Engine, on: On) => {
