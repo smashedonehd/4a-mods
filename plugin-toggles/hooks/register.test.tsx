@@ -890,6 +890,23 @@ test('Apply now reloads plugins and clears the pending count', async ($, on) => 
   await ui.unmount()
 })
 
+test('a reload the session refuses to a plugin keeps the pending count and says to type it', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('command.run', (): any => ({ text: "/reload-plugins isn't available over a remote connection in this session." }))
+  engine(on, disk(on, { [SETTINGS]: JSON.stringify({ enabledPlugins: { 'foo@bar': true } }) }))
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'plugins:foo@bar:off' })
+  expect(await ui.find({ type: 'Text', text: /1 change saved/ })).toBeTruthy()
+  await ui.press({ key: 'apply' })
+  expect(await ui.find({ type: 'Text', text: /1 change saved/ })).toBeTruthy()
+  expect(shown.join(' ')).toMatch(/Type \/reload-plugins in this chat/)
+  expect(shown.join(' ')).not.toMatch(/reloaded\./)
+  await ui.unmount()
+})
+
 test('Apply now reloads when a setting holds a list the engine has read in', async ($, on) => {
   on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
@@ -967,6 +984,24 @@ test('a skill switched back On is not reloaded while the engine still holds it o
   await ui.press({ key: 'skills:greg:on' })
   await ui.press({ key: 'apply' })
   expect(ran).toEqual([])
+  await ui.unmount()
+})
+
+test('an applied profile whose reload the session refuses keeps its change count', async ($, on) => {
+  on('command.list', () => ({ value: [{ name: 'reload-plugins', source: 'builtin' }] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('command.run', (): any => ({ text: "/reload-plugins isn't available over a remote connection in this session." }))
+  engine(on, disk(on, {
+    [SETTINGS]: '{}',
+    [PROFILES]: JSON.stringify({ Work: { plugins: { 'a@b': true }, skills: {} } }),
+  }))
+  const shown = toasts(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-profiles' })
+  await ui.press({ key: 'a-Work' })
+  expect(shown.join(' ')).toMatch(/Type \/reload-plugins in this chat/)
+  expect(await ui.find({ type: 'Text', text: /1 change saved/ })).toBeTruthy()
   await ui.unmount()
 })
 
