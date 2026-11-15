@@ -1326,6 +1326,7 @@ test('on the desktop the band is one drawn row: name, count pill, next item, per
   s.state.set('flow', { isFinished: false, total: 2 })
   assert.match(await source({ bodyColumns: 120 }), /opacity="0\.6"/)
   s.state.delete('flow')
+  assert.doesNotMatch(await source({ bodyColumns: 120 }), /opacity="0\.6"/, 'undimmed once the flow ends')
   await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, { content: 'Fix A & B', status: 'completed' }, ...items('Test A')], scope: 'continuation' })
   await s.call('mcp__ccd_turn__wrap_up', { recap: 'r', ask: 'More?' }) // a question: only the completed step ticks
   assert.match(await source({ bodyColumns: 120 }), />2\/3</)
@@ -1344,6 +1345,10 @@ test('the drawn row says done and open as the text row does', () => {
   const long = planRowSvg({ name: 'x'.repeat(80), done: 1, total: 3, next: '', state: 'run' }, 300).match(/font-weight="500">([^<]*)</)[1]
   assert.match(long, /…$/)
   assert.ok(0.56 * 13 * [...long].length <= 300 * 0.32, long)
+  assert.equal(long, 'x'.repeat(12) + '…', 'as much of the name as fits')
+  // A wide character takes a whole em
+  const wide = planRowSvg({ name: '字'.repeat(40), done: 1, total: 3, next: '', state: 'run' }, 300).match(/font-weight="500">([^<]*)</)[1]
+  assert.equal(wide, '字'.repeat(6) + '…')
   // Dimmed under savvy-progress's band
   assert.match(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400, true), /opacity="0\.6"/)
   assert.doesNotMatch(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400), /opacity="0\.6"/)
