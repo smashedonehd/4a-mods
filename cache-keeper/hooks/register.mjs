@@ -608,7 +608,7 @@ async function runPipeline($, after = 'ask') {
     const found = await runStep($, 2, async () => gatherFacts(messages), (f) => [skillsOrTools(f.skills.length + f.servers.length), plural(f.links.length, 'link'), f.shells.length && plural(f.shells.length, 'shell')].filter(Boolean).join(', '))
     // Still at work, their reports arrive in the fresh chat: the handoff names them
     const agents = await runStep($, 3, async () => runningAgents(await listAgentsSoon($), found.spawned), (a) => (a.length ? `${a.length} running` : 'none running'))
-    const facts = { ...found, agents }
+    const facts = { ...found, agents, plan: await activePlan($) }
     const g = { cwd: S.cwd, messages: messages.length, rawMessages: messages, files, facts }
     const name = await handoffName($)
     const reply = await runStep($, WRITE_STEP, async () => {
@@ -712,10 +712,54 @@ async function liveState($) {
 
 // The fresh chat's first line: the handoff's whereabouts and age, and how to
 // read its open items. Said by the user, so "my" is the user's; it holds for
-// a handoff written by an older skill too, whose items carry no labels.
-function continuationHead() {
+// a handoff written by an older skill too, whose items carry no labels. With a
+// plan active, a line of its own names it: Plan Keeper reattaches it from that.
+function continuationHead(plan) {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
-  return `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
+  const head = `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
+  return plan && plan.path ? `${head}\nPlan: ${plan.path}` : head
+}
+
+// Plan Keeper's active plan: its path, its checkbox counts and up to 8 open
+// items, or null (no Plan Keeper, no plan, a file that cannot be read or holds
+// no item). Code blocks are skipped, as Plan Keeper skips them.
+const PLAN_KEEPER_REF = { plugin: 'plan-keeper', key: 'plan' }
+const PLAN_BOX = /^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$/
+const PLAN_FENCE = /^\s*(`{3,}|~{3,})/
+const PLAN_ROWS = 8
+
+export function planFacts(path, text) {
+  const items = []
+  let fence = ''
+  for (const raw of String(text).split('\n')) {
+    const line = raw.replace(/\r$/, '')
+    const f = line.match(PLAN_FENCE)
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.slice(f[0].length).trim()) fence = ''
+      continue
+    }
+    if (f) {
+      fence = f[1]
+      continue
+    }
+    const m = line.match(PLAN_BOX)
+    if (m) items.push({ done: m[1] !== ' ', text: m[2].trim() })
+  }
+  if (!items.length) return null
+  const open = items.filter((it) => !it.done)
+  const rows = open.slice(0, PLAN_ROWS).map((it) => '- [ ] ' + (it.text.length > 120 ? it.text.slice(0, 119) + '…' : it.text))
+  if (open.length > PLAN_ROWS) rows.push(`- and ${open.length - PLAN_ROWS} more`)
+  return { path, open: open.length, total: items.length, rows }
+}
+
+async function activePlan($) {
+  try {
+    const { value } = await $.state.get(PLAN_KEEPER_REF)
+    if (!value || !value.path) return null
+    return planFacts(String(value.path), await $.fs.read(value.path))
+  } catch {
+    return null
+  }
 }
 
 // Whether there is a handoff to send now; toasts why not. A handoff loaded from
@@ -773,7 +817,7 @@ async function clearAndContinue($) {
 async function clearAndSend($) {
   if (!(await handoffReady($))) return
   // Taken before /clear empties H; git reads while the chat clears
-  const head = continuationHead()
+  const head = continuationHead(await activePlan($))
   const body = H.text
   const live = liveState($).catch(() => '')
   const path = H.path
