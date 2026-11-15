@@ -25,9 +25,13 @@ const UNMATCHED_MAX = 20 // completed steps that named no item, newest kept
 const BAR = 18 // the band's bar, in cells
 const PANE_BAR = 8
 const PANE_OPEN = 6 // open items listed under one section of the pane
+const GEN_MIN = 3 // a task list of at least this many steps gets a plan written for it
+const GEN_ROOT = '.claude/mods-data/plan-keeper/plans' // under the home folder, one folder per working folder
+const SAVVY_FLOW_REF = { plugin: 'savvy-progress', key: 'flow' }
+const SAVVY_AGENTS_REF = { plugin: 'savvy-progress', key: 'agents' }
 
-// This session: its home and folder, read once
-const S = { home: '', cwd: '', ready: null }
+// This session: its home, folder and id, read once
+const S = { home: '', cwd: '', sid: '', ready: null }
 // The active plan, { path, why }; the task list as the task-list tools left it,
 // { id?, text, status } each; and the completed steps already held against
 // this plan, which never tick it again (an item unticked by hand stays so).
@@ -234,14 +238,23 @@ async function folderPlan($) {
   return found ? { path: found.path, why: found.why } : null
 }
 
-// Up to max such plans, newest first, each with its open count
+// Up to max such plans, newest first, each with its open count. The plans
+// Plan Keeper wrote for this folder count from any folder: their own folder
+// already names it.
 async function folderPlans($, max) {
   const out = []
   const c = key(S.cwd)
-  if (!c || c === key(S.home) || /^([a-z]:)?$/.test(c)) return out
+  if (!c) return out
+  const shared = c !== key(S.home) && !/^([a-z]:)?$/.test(c)
+  const gen = genDir()
+  if (!shared && !gen) return out
   const now = await $.clock.now()
   // Every recent .md of the plan folders, newest first; ~/.claude/plans' must name the folder
-  const dirs = [...(S.home ? [[join(S.home, '.claude/plans'), true]] : []), ...['docs/superpowers/plans', 'docs/plans', 'plans'].map((d) => [join(S.cwd, d), false])]
+  const dirs = [
+    ...(gen ? [[gen, false]] : []),
+    ...(shared && S.home ? [[join(S.home, '.claude/plans'), true]] : []),
+    ...(shared ? ['docs/superpowers/plans', 'docs/plans', 'plans'].map((d) => [join(S.cwd, d), false]) : []),
+  ]
   const lists = await Promise.all(dirs.map(([dir]) => $.fs.list(dir).catch(() => []))) // [] for no such folder
   const recent = lists
     .flatMap((list, k) => list.filter((f) => f.kind === 'file' && /\.md$/i.test(f.name) && now - f.mtimeMs <= RECENT).map((f) => ({ path: join(dirs[k][0], f.name), at: f.mtimeMs, mustName: dirs[k][1] })))
@@ -268,6 +281,9 @@ function namedPaths(text) {
     return /^~[\\/]/.test(p) ? join(S.home, p.slice(2)) : isAbs(p) ? slash(p) : join(S.cwd, p)
   })
 }
+
+// The line Cache Keeper's continuation starts with when a plan was active
+const HANDOFF_PLAN = /^Plan: (.+\.md)\s*$/m
 
 // The last plan file the prompt names becomes the plan: a .md with a checkbox
 // item, in a plans folder or with "plan" in its name (no template or README)
@@ -368,6 +384,11 @@ async function init($) {
   } catch {
     // no folder: no plan is picked by folder
   }
+  try {
+    S.sid = String((await $.session.id()) || '')
+  } catch {
+    // no id: a generated plan's name goes without it
+  }
   // undefined: nothing kept
   const kept = async (get) => {
     try {
@@ -408,6 +429,105 @@ function applyPlanUpdate(e) {
   if (tasks[e.start - 1]) tasks[e.start - 1].status = 'in_progress'
 }
 
+// ---- plans written from the task list
+
+// The folder for this working folder's generated plans, '' with no home or folder
+function genDir() {
+  const c = key(S.cwd)
+  if (!S.home || !c) return ''
+  return join(S.home, `${GEN_ROOT}/${slugOf(basename(c) || 'root', 30)}-${djb2(c)}`)
+}
+
+const isGenerated = (p) => !!S.home && key(p).startsWith(key(join(S.home, GEN_ROOT)) + '/')
+
+export function djb2(s) {
+  let h = 5381
+  for (const ch of String(s)) h = (Math.imul(h, 33) ^ ch.codePointAt(0)) >>> 0
+  return h.toString(16).padStart(8, '0')
+}
+
+// A file name's part: ASCII letters and digits, accents dropped
+export function slugOf(s, max = 40) {
+  const t = norm(s)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, max)
+    .replace(/-+$/, '')
+  return t || 'plan'
+}
+
+const oneLine = (s) => String(s).replace(/\s+/g, ' ').trim()
+
+const stamp = (ms) => {
+  const d = new Date(ms)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
+// A plan file written from a task list: a header naming its folder and
+// session, the first step as its title, one item per step
+export function generatedText(steps, { cwd, session, source }) {
+  const head = `<!-- plan-keeper ${JSON.stringify({ v: 1, cwd, session, source: 'task-list' })} -->`
+  return [
+    head,
+    `# ${clip(oneLine(steps[0].text), 100)}`,
+    ...(source ? ['', `Source: ${source}`] : []),
+    '',
+    ...steps.map((x) => `- [${x.status === 'completed' ? 'x' : ' '}] ${oneLine(x.text)}`),
+    '',
+  ].join('\n')
+}
+
+// A whole task list from update_plan: written down as this folder's plan
+// when no plan with items is active, added to the plan written for the last
+// one, or a new one for a new task. True when it set or changed the plan.
+async function maybeGenerate($, e) {
+  if (!Array.isArray(e.items) || ui.off) return false
+  const steps = tasks.filter((x) => oneLine(x.text))
+  const gen = !!plan && isGenerated(plan.path)
+  let source = ''
+  if (plan && !gen) {
+    // A plan with items stays the plan; one without (a plan mode plan in
+    // prose) or one that cannot be read any more is replaced
+    if (view === null) await load($)
+    if (view && view.total) return false
+    source = plan.path
+  }
+  if (gen && e.scope !== 'new_task') return appendItems($, steps)
+  if (steps.length < GEN_MIN) {
+    // A new task of few steps: the last task's plan goes, none is written
+    if (gen) await dropPlan($, false)
+    return gen
+  }
+  const dir = genDir()
+  if (!dir) return false
+  const path = join(dir, `${stamp(await $.clock.now())}-${slugOf(steps[0].text)}${S.sid ? '-' + slugOf(S.sid, 8) : ''}.md`)
+  await $.fs.write(path, generatedText(steps, { cwd: S.cwd, session: S.sid, source }))
+  await setPlan($, path, 'generated')
+  return true
+}
+
+// The steps the generated plan does not hold yet, added at its end
+async function appendItems($, steps) {
+  const text = await readOr($, plan.path)
+  if (text === null) return false
+  const have = new Set(parsePlan(text).items.map((it) => norm(it.text)))
+  const add = []
+  for (const x of steps) {
+    const n = norm(x.text)
+    if (!n || have.has(n)) continue
+    have.add(n)
+    add.push(`- [ ] ${oneLine(x.text)}`)
+  }
+  if (!add.length) return false
+  const out = text.replace(/\s*$/, '\n') + add.join('\n') + '\n'
+  await $.fs.write(plan.path, out)
+  await refresh($, out)
+  return true
+}
+
 // A gh pr merge that merges now: one command of the line (after any VAR=value),
 // not --auto, which only queues it, nor --help; quoted text is not a flag
 const MERGE = /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*gh\s+pr\s+merge\b([^;&|\n]*)/
@@ -446,7 +566,7 @@ async function observe($, e, result) {
   } else return
   await saveTasks($)
   if (t === WRAP_TOOL) await tick($)
-  else await refresh($)
+  else if (!(t === PLAN_TOOL && (await maybeGenerate($, e)))) await refresh($)
 }
 
 // Ticks the items the newly completed steps name; writes only when one changes
@@ -510,6 +630,7 @@ const WHY = {
   named: 'you named it in a prompt',
   written: 'this session wrote it',
   folder: 'the newest plan for this folder with open items',
+  generated: 'Plan Keeper wrote it from the task list',
 }
 
 // The note a fresh or cleared chat starts with, or null with nothing open
@@ -553,9 +674,24 @@ function bar(Text, done, total, n) {
   return Text({ children: [Text({ key: 'on', color: 'green', children: ['━'.repeat(on)] }), Text({ key: 'off', dimColor: true, children: ['━'.repeat(n - on)] })] })
 }
 
+// Whether savvy-progress draws its band now: a flow it was told of and that is
+// not finished, or a subagent at work. Its bar shows the progress then, so the
+// plan's row goes under it without a bar of its own.
+async function savvyBusy($) {
+  const get = (ref) =>
+    Promise.resolve()
+      .then(() => $.state.get(ref))
+      .then((r) => r && r.value)
+      .catch(() => null)
+  const [flow, agents] = await Promise.all([get(SAVVY_FLOW_REF), get(SAVVY_AGENTS_REF)])
+  if (flow && typeof flow === 'object' && !flow.isFinished && Number(flow.total) > 0) return true
+  return Array.isArray(agents) && agents.some((a) => a && a.status === 'running')
+}
+
 // One row: the plan, its bar and count, then what is next, that the task list
-// ended short, or that the plan is complete
-function drawBand($, e) {
+// ended short, or that the plan is complete. Compact under savvy-progress's
+// band: no bar, dimmed, the plan's name shortened.
+function drawBand($, e, compact = false) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const done = view.total - view.open
   const state = !view.open ? 'done' : stuck() ? 'stuck' : 'run'
@@ -570,12 +706,18 @@ function drawBand($, e) {
     flexDirection: 'row',
     columnGap: 2,
     flexShrink: 1,
-    children: [
-      Text({ key: 'name', bold: true, wrap: 'truncate-end', children: [mark, clip(planName(), 44)] }),
-      Box({ key: 'bar', flexShrink: 0, children: [bar(Text, done, view.total, BAR)] }),
-      Text({ key: 'count', children: [`${done}/${view.total}`] }),
-      Box({ key: 'tail', flexShrink: 1, children: [tail] }),
-    ],
+    children: compact
+      ? [
+          Text({ key: 'name', dimColor: true, wrap: 'truncate-end', children: [mark, 'plan ', clip(planName(), 28)] }),
+          Text({ key: 'count', dimColor: true, children: [`${done}/${view.total}`] }),
+          Box({ key: 'tail', flexShrink: 1, children: [tail] }),
+        ]
+      : [
+          Text({ key: 'name', bold: true, wrap: 'truncate-end', children: [mark, clip(planName(), 44)] }),
+          Box({ key: 'bar', flexShrink: 0, children: [bar(Text, done, view.total, BAR)] }),
+          Text({ key: 'count', children: [`${done}/${view.total}`] }),
+          Box({ key: 'tail', flexShrink: 1, children: [tail] }),
+        ],
   })
   const right = Box({
     flexDirection: 'row',
@@ -597,7 +739,7 @@ function drawPane($, e) {
   } else if (!plan) {
     line({ bold: true }, 'Plan Keeper')
     line({ dimColor: true }, ui.off ? 'Tracking is stopped for this chat.' : 'No plan is active in this chat.')
-    line({ dimColor: true }, 'A plan becomes active when this session writes one into a plans folder, when you name one in a prompt, or with /plan-keeper <path>.')
+    line({ dimColor: true }, `A plan becomes active when a task list of ${GEN_MIN} or more steps starts (Plan Keeper writes it), when this session writes one into a plans folder, when you name one in a prompt, or with /plan-keeper <path>.`)
   } else {
     line({ bold: true }, `Plan Keeper  ${view.total - view.open}/${view.total}`)
     line({ dimColor: true }, plan.path)
@@ -727,7 +869,7 @@ export function register(on, options) {
       // Read here without asking for another draw: this is one
       if (view === null) await load($)
       if (!view || !view.total) return below
-      const mine = drawBand($, e)
+      const mine = drawBand($, e, await savvyBusy($))
       return below ? $.ui.resolve(e).Box({ flexDirection: 'column', children: [mine, below] }) : mine
     } catch {
       return below
@@ -789,6 +931,17 @@ export function register(on, options) {
   // A plan the person names in a prompt becomes the active one
   on('prompt.submit', async ($, e, next) => {
     const kind = e.origin && e.origin.kind
+    // Cache Keeper's handoff after a clear: only its "Plan:" line names the
+    // plan, the handoff's other paths are files it mentions
+    const handoff = kind === 'plugin' && /^cache-keeper(?:@|$)/.test(String(e.origin.name || '')) && String(e.text || '').match(HANDOFF_PLAN)
+    if (handoff) {
+      try {
+        await ready($)
+        if (!ui.off) await noteNamed($, '"' + handoff[1].trim() + '"')
+      } catch {
+        // the plan stays as it was
+      }
+    }
     if (kind === 'composer' || kind === 'bridge') {
       try {
         await ready($)
