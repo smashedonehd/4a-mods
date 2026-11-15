@@ -1330,6 +1330,13 @@ test('the drawn row says done and open as the text row does', () => {
   const open = planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'stuck' }, 400)
   assert.match(open, />2 open</)
   assert.doesNotMatch(open, />Two</, 'no next item once the list ended')
+  // Dimmed under savvy-progress's band
+  assert.match(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400, true), /opacity="0\.6"/)
+  assert.doesNotMatch(planRowSvg({ name: 'P', done: 1, total: 3, next: 'Two', state: 'run' }, 400), /opacity="0\.6"/)
+  // A tick under the next item's text is left out
+  const ticks = (svg) => (svg.match(/height="8" rx="0\.75"/g) || []).length
+  assert.equal(ticks(planRowSvg({ name: 'P', done: 1, total: 4, next: '', state: 'run' }, 600)), 2)
+  assert.equal(ticks(planRowSvg({ name: 'P', done: 1, total: 4, next: 'Fix the parser and the matcher', state: 'run' }, 600)), 1)
 })
 
 test('slugs and hashes are stable and plain', () => {

@@ -752,7 +752,10 @@ const noise = (x, y) => {
   return s - Math.floor(s)
 }
 // Rough advance of system UI text, in em: enough to size a slot
-const charEm = (ch) => (/[⺀-鿿가-힣豈-﫿！-｠]/.test(ch) ? 1 : /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽmw@%]/.test(ch) ? 0.72 : 0.56)
+// CJK, fullwidth forms and emoji advance about 1em (savvy-progress's WIDE)
+const WIDE =
+  /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꥠ-꥿가-힣豈-﫿︰-﹏！-｠￠-￦\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u
+const charEm = (ch) => (WIDE.test(ch) ? 1 : /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[\p{Lu}mwшщжю@%]/u.test(ch) ? 0.72 : 0.56)
 const textWidth = (s, size) => [...s].reduce((w, ch) => w + charEm(ch) * size, 0)
 function fitText(s, size, maxW) {
   if (maxW <= 0) return ''
