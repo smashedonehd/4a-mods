@@ -2323,7 +2323,7 @@ export function register(on, options) {
       return { text: statusText() }
     }
     if (key) {
-      await $.store.set('settings', settings).catch(() => {})
+      await $.store.set('settings', settings)
       $.ui.invalidate('ui.render')
     }
     return { text: statusText() }
