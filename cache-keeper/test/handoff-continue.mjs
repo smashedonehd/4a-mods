@@ -25,6 +25,9 @@ const DAY = 24 * HOUR
 const files = new Map() // path -> text, shared by every boot
 const mtimes = new Map() // path -> mtimeMs
 const store = new Map() // $.store, shared by every boot
+// Saved settings with both auto settings off, marked as written since they default to on
+const OFF = { autoClear: false, autoHandoff: false, autoV: 1 }
+store.set('settings', { ...OFF })
 const states = new Map() // session id -> what $.state kept
 let T = Date.UTC(2026, 10, 10, 10, 0)
 let instance = 0
@@ -948,8 +951,8 @@ const startFromCard = async (s, timers) => {
   await settle()
 }
 
-await check('auto clear off (the default): the ready card waits for a press, no countdown', async () => {
-  store.delete('settings')
+await check('auto clear off: the ready card waits for a press, no countdown', async () => {
+  store.set('settings', { ...OFF })
   const timers = []
   const s = await boot('/w/ac0', 'ac000000-0', { timers })
   await startFromCard(s, timers)
@@ -964,7 +967,7 @@ await check('auto clear off (the default): the ready card waits for a press, no 
 })
 
 await check('auto clear: the band tag turns it on and it is kept for the next chat', async () => {
-  store.delete('settings')
+  store.set('settings', { ...OFF })
   let s = await boot('/w/ac1', 'ac000001-0', { select: true })
   await s.step()
   await s.render('desktop')
@@ -984,11 +987,37 @@ await check('auto clear: the band tag turns it on and it is kept for the next ch
   assert.match((await s.run('cache', 'autoclear off')).text, /Auto clear: off/)
   assert.equal(store.get('settings').autoClear, false)
   assert.match((await s.run('cache', 'autoclear maybe')).text, /Pick one of: on, off/)
+  store.set('settings', { ...OFF })
+})
+
+await check('auto clear and auto handoff are on by default, and settings saved before that turn them on once', async () => {
   store.delete('settings')
+  let s = await boot('/w/ad0', 'ad000000-0', {})
+  await s.step()
+  let t = (await s.run('cache')).text
+  assert.match(t, /Auto handoff: on/)
+  assert.match(t, /Auto clear: on/)
+  // Saved by an older version: both off by the old default, other settings kept
+  store.set('settings', { autoClear: false, autoHandoff: false, ttlMin: 5 })
+  s = await boot('/w/ad1', 'ad000001-0', {})
+  await s.step()
+  t = (await s.run('cache')).text
+  assert.match(t, /Auto handoff: on/)
+  assert.match(t, /Auto clear: on/)
+  assert.deepEqual([store.get('settings').autoClear, store.get('settings').autoHandoff, store.get('settings').ttlMin, store.get('settings').autoV], [true, true, 5, 1])
+  // Turned off since: stays off in the next chat
+  await s.run('cache', 'autoclear off')
+  await s.run('cache', 'handoff auto off')
+  s = await boot('/w/ad2', 'ad000002-0', {})
+  await s.step()
+  t = (await s.run('cache')).text
+  assert.match(t, /Auto clear: off/)
+  assert.match(t, /Auto handoff: off/)
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: the ready card counts down with Keep chat, then clears and continues', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac2', 'ac000003-0', { timers })
   await startFromCard(s, timers)
@@ -1004,11 +1033,11 @@ await check('auto clear on: the ready card counts down with Keep chat, then clea
   assert.ok(cleared(s.log))
   assert.equal(s.sent.length, 1)
   assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: Keep chat or Close in the countdown stops it; /handoff keep never counts down', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   for (const [i, key] of ['ck-ho-keep', 'ck-ho-close'].entries()) {
     const timers = []
     const s = await boot('/w/ac3', `ac00004${i}-0`, { timers })
@@ -1038,11 +1067,11 @@ await check('auto clear on: Keep chat or Close in the countdown stops it; /hando
   await s2.run('cache', 'autoclear off')
   await flush(t2)
   assert.ok(!cleared(s2.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a turn in the countdown is waited for, then one fresh handoff and the clear', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac4', 'ac000060-0', { timers })
   await startFromCard(s, timers)
@@ -1054,7 +1083,7 @@ await check('auto clear on: a turn in the countdown is waited for, then one fres
   assert.equal(s.prompts.length, 2, 'the turn made the first handoff out of date')
   assert.ok(cleared(s.log))
   assert.equal(s.sent.length, 1)
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 // A countdown that ends inside a turn, held armed until the turn's end
@@ -1070,7 +1099,7 @@ const armed = async (id) => {
 const peer = (s, text) => s.fire('prompt.submit', { text, origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
 
 await check('auto clear on: armed through a turn, a report carrying that turn\'s id waits for the clear too', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000224-0')
   const r = await s.fire('prompt.submit', { text: 'late report', turnId: 't7', origin: { kind: 'peer' } }, (h) => h.name === 'prompt.submit')
   assert.ok(r && r.drop, 'held, though it names the running turn')
@@ -1078,11 +1107,11 @@ await check('auto clear on: armed through a turn, a report carrying that turn\'s
   await flush(timers)
   assert.ok(cleared(s.log))
   assert.deepEqual(s.sent[s.sent.length - 1], { text: 'late report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: started from the card while Claude works, a report as the turn ends waits for the clear', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac12', 'ac000225-0', { timers, working: true })
   await startFromCard(s, timers)
@@ -1093,11 +1122,11 @@ await check('auto clear on: started from the card while Claude works, a report a
   await settle()
   assert.ok(cleared(s.log))
   assert.deepEqual(s.sent[s.sent.length - 1], { text: 'late report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a subagent report in the countdown waits for the clear; one handoff, then the report', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac9', 'ac000200-0', { timers })
   await startFromCard(s, timers)
@@ -1109,11 +1138,11 @@ await check('auto clear on: a subagent report in the countdown waits for the cle
   assert.equal(s.sent.length, 2)
   assert.ok(s.sent[0].text.includes('# Session Handoff'))
   assert.deepEqual(s.sent[1], { text: 'subagent report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a subagent report while the handoff is written waits too; Keep chat sends it at once', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let release
   const gate = new Promise((r) => (release = r))
   const timers = []
@@ -1130,11 +1159,11 @@ await check('auto clear on: a subagent report while the handoff is written waits
   assert.deepEqual(s.sent, [{ text: 'early report' }])
   await flush(timers)
   assert.ok(!cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear off: a subagent report while the card handoff is written is not held', async () => {
-  store.delete('settings')
+  store.set('settings', { ...OFF })
   let release
   const gate = new Promise((r) => (release = r))
   const timers = []
@@ -1147,7 +1176,7 @@ await check('auto clear off: a subagent report while the card handoff is written
 })
 
 await check('auto clear on: a held report goes out once when the handoff fails', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let release
   const gate = new Promise((r) => (release = r))
   const timers = []
@@ -1160,11 +1189,11 @@ await check('auto clear on: a held report goes out once when the handoff fails',
   await flush(timers)
   assert.deepEqual(s.sent, [{ text: 'report' }])
   assert.ok(!cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: typing in the countdown stops it and sends the held report after the typed prompt', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac11', 'ac000221-0', { timers })
   await startFromCard(s, timers)
@@ -1174,11 +1203,11 @@ await check('auto clear on: typing in the countdown stops it and sends the held 
   await flush(timers)
   assert.deepEqual(s.sent, [{ text: 'report' }])
   assert.ok(!cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: turned off in the countdown, the held report goes at once', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac11', 'ac000222-0', { timers })
   await startFromCard(s, timers)
@@ -1191,11 +1220,11 @@ await check('auto clear on: turned off in the countdown, the held report goes at
   const s2 = await boot('/w/ac11', 'ac000222-0', { timers: t2 })
   await flush(t2)
   assert.deepEqual(s2.sent, [])
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: armed through a turn, a report that would start a new turn waits for the clear', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000223-0')
   assert.ok((await peer(s, 'report'))?.drop, 'no turnId: a turn of its own')
   await s.end({ turnId: 't7' })
@@ -1204,11 +1233,11 @@ await check('auto clear on: armed through a turn, a report that would start a ne
   assert.equal(s.sent.length, 2)
   assert.ok(s.sent[0].text.includes('# Session Handoff'))
   assert.deepEqual(s.sent[1], { text: 'report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('Clear now in the countdown: a report that comes while the chat clears is held', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let release
   const gate = new Promise((r) => (release = r))
   const timers = []
@@ -1225,11 +1254,11 @@ await check('Clear now in the countdown: a report that comes while the chat clea
   assert.ok(cleared(s.log))
   assert.equal(s.sent.length, 2)
   assert.deepEqual(s.sent[1], { text: 'late report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('a reload in the countdown loses no held report', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac12', 'ac000230-0', { timers })
   await startFromCard(s, timers)
@@ -1241,11 +1270,11 @@ await check('a reload in the countdown loses no held report', async () => {
   // The old module going on anyway does not send it again
   await flush(timers)
   assert.ok(!s.sent.some((p) => p.text === 'report'))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('a fresh handoff in the same minute gets its own file', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac10', 'ac000210-0', { timers })
   await startFromCard(s, timers)
@@ -1256,11 +1285,11 @@ await check('a fresh handoff in the same minute gets its own file', async () => 
   assert.equal(s.prompts.length, 2)
   const mds = [...files.keys()].filter((k) => k.includes('ac10-ac000210') && k.endsWith('.md') && !k.endsWith('.draft.md'))
   assert.equal(mds.length, 2, mds.join(', '))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: armed through a turn, the card says so and Keep chat, Close, Open file or the toggle still stop it', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let { s, timers } = await armed('ac000070-0')
   assert.ok(texts(await s.render()).includes('Clearing when this turn ends'))
   assert.ok(s.buttons.has('ck-ho-keep'))
@@ -1274,13 +1303,13 @@ await check('auto clear on: armed through a turn, the card says so and Keep chat
     await flush(timers)
     assert.ok(!cleared(s.log), stop)
     assert.equal(s.prompts.length, 1, stop + ': no fresh handoff either')
-    store.set('settings', { autoClear: true })
+    store.set('settings', { ...OFF, autoClear: true })
   }
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: armed, Clear now is gone, and its key press keeps the clear for the turn end', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000120-0')
   await s.render()
   assert.ok(!s.buttons.has('ck-ho-clear'), 'no button to clear sooner')
@@ -1292,11 +1321,11 @@ await check('auto clear on: armed, Clear now is gone, and its key press keeps th
   await flush(timers)
   assert.ok(cleared(s.log))
   assert.equal(s.prompts.length, 2)
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: Clear now in a countdown during a turn arms it; one handled after that turn writes a fresh handoff', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let timers = []
   let s = await boot('/w/ac8', 'ac000150-0', { timers })
   await startFromCard(s, timers)
@@ -1323,11 +1352,11 @@ await check('auto clear on: Clear now in a countdown during a turn arms it; one 
   assert.ok(cleared(s.log))
   assert.equal(s.prompts.length, 2, 'the turn made the first handoff out of date')
   assert.equal(s.log.filter((l) => l === 'run:clear').length, 1)
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: armed, an overlapped turn end waits for the turn that follows', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000130-0')
   await s.fire('turn.start', { turnId: 't8' })
   await s.end({ turnId: 't7' })
@@ -1337,11 +1366,11 @@ await check('auto clear on: armed, an overlapped turn end waits for the turn tha
   await s.end({ turnId: 't8' })
   await flush(timers)
   assert.ok(cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a /handoff keep queued over an armed card keeps the chat, also after later turns', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000140-0')
   await s.run('handoff', 'keep')
   await flush(timers)
@@ -1354,11 +1383,11 @@ await check('auto clear on: a /handoff keep queued over an armed card keeps the 
   await s.end({ turnId: 't9' })
   await flush(timers)
   assert.ok(!cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a message typed while it is armed, or one from Remote Control in the countdown, stops it', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const { s, timers } = await armed('ac000090-0')
   const r = await s.fire('prompt.submit', { text: 'wait, one more thing', origin: { kind: 'composer' } }, (h) => h.name === 'prompt.submit')
   assert.ok(!(r && r.drop), 'not held: no clear is due')
@@ -1371,11 +1400,11 @@ await check('auto clear on: a message typed while it is armed, or one from Remot
   await s2.fire('prompt.submit', { text: 'from the phone', origin: { kind: 'bridge' } }, (h) => h.name === 'prompt.submit')
   await flush(t2)
   assert.ok(!cleared(s2.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: a turn that starts and ends inside the countdown still gets a fresh handoff first', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   const timers = []
   const s = await boot('/w/ac6', 'ac000100-0', { timers })
   await startFromCard(s, timers)
@@ -1386,11 +1415,11 @@ await check('auto clear on: a turn that starts and ends inside the countdown sti
   await flush(timers)
   assert.equal(s.prompts.length, 2)
   assert.ok(cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto clear on: Try again after a failed /handoff keep, or a band press while it is written, keeps the chat', async () => {
-  store.set('settings', { autoClear: true })
+  store.set('settings', { ...OFF, autoClear: true })
   let n = 0
   const timers = []
   const s = await boot('/w/ac7', 'ac000110-0', { timers, fork: async () => (++n === 1 ? { isAnswered: false, reason: 'api-error', status: 500 } : { isAnswered: true, text: GOOD }) })
@@ -1418,7 +1447,7 @@ await check('auto clear on: Try again after a failed /handoff keep, or a band pr
   release()
   await flush(t2)
   assert.ok(!cleared(s2.log), 'the keep stands')
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('desktop: the ready title reads "Handoff ready · 1,234 words" and never breaks', async () => {
@@ -1460,7 +1489,7 @@ const tick = async (timers) => {
 }
 
 await check('auto handoff on, past the threshold: a turn\'s end writes it, counts down with auto clear off, clears; a report waits', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   const timers = []
   const s = await boot('/w/ah1', 'ah000001-0', { timers })
   await s.step('t1', 310000)
@@ -1474,11 +1503,11 @@ await check('auto handoff on, past the threshold: a turn\'s end writes it, count
   assert.ok(cleared(s.log))
   assert.ok(s.sent[0].text.includes('# Session Handoff'))
   assert.deepEqual(s.sent.at(-1), { text: 'report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
-await check('auto handoff: under the threshold, off (the default), or an interrupted turn starts nothing', async () => {
-  store.set('settings', { autoHandoff: true })
+await check('auto handoff: under the threshold, off, or an interrupted turn starts nothing', async () => {
+  store.set('settings', { ...OFF, autoHandoff: true })
   let timers = []
   let s = await boot('/w/ah2', 'ah000002-0', { timers })
   await s.step('t1', 250000)
@@ -1491,7 +1520,7 @@ await check('auto handoff: under the threshold, off (the default), or an interru
   await s.end({ turnId: 't1', reason: 'interrupted' })
   await flush(timers)
   assert.equal(s.prompts.length, 0, 'interrupted')
-  store.delete('settings')
+  store.set('settings', { ...OFF })
   timers = []
   s = await boot('/w/ah4', 'ah000004-0', { timers })
   await s.step('t1', 310000)
@@ -1502,7 +1531,7 @@ await check('auto handoff: under the threshold, off (the default), or an interru
 })
 
 await check('auto handoff stopped by typing: no new one at the next turn\'s end, another only 100k later', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   const timers = []
   const s = await boot('/w/ah5', 'ah000005-0', { timers })
   await s.step('t1', 310000)
@@ -1520,11 +1549,11 @@ await check('auto handoff stopped by typing: no new one at the next turn\'s end,
   await s.end({ turnId: 't3' })
   await tick(timers)
   assert.equal(s.prompts.length, 2, 'past the snooze')
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff, auto clear off: its countdown ends in a turn; a report in that turn is held, the clear comes at its end', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   const timers = []
   const s = await boot('/w/ah8', 'ah000008-0', { timers })
   await s.step('t1', 310000)
@@ -1538,11 +1567,11 @@ await check('auto handoff, auto clear off: its countdown ends in a turn; a repor
   await flush(timers)
   assert.ok(cleared(s.log))
   assert.deepEqual(s.sent.at(-1), { text: 'report' })
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff: a turn that starts right after the turn\'s end gets no landing note and nothing queued', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   const timers = []
   const s = await boot('/w/ah9', 'ah000009-0', { timers })
   await s.step('t1', 310000)
@@ -1551,11 +1580,11 @@ await check('auto handoff: a turn that starts right after the turn\'s end gets n
   await tick(timers)
   assert.equal(s.prompts.length, 0)
   assert.ok(!texts(await s.render()).includes('Handoff queued'))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff: a chat cleared another way starts small, its first turn with no usage starts nothing', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   const timers = []
   const s = await boot('/w/ah13', 'ah000013-0', { timers })
   await s.step('t1', 310000)
@@ -1564,11 +1593,11 @@ await check('auto handoff: a chat cleared another way starts small, its first tu
   await s.end({ turnId: 't2' })
   await flush(timers)
   assert.equal(s.prompts.length, 0)
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff stopped by Keep chat: a later Start handoff, a Retry, or a run turned off asks, no countdown', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   let timers = []
   let s = await boot('/w/ah10', 'ah000010-0', { timers })
   await s.step('t1', 310000)
@@ -1605,7 +1634,7 @@ await check('auto handoff stopped by Keep chat: a later Start handoff, a Retry, 
   assert.ok(!cleared(s.log))
   assert.deepEqual(s.sent, [{ text: 'report' }], 'what it held goes at once')
   // with auto clear on, turning it off leaves auto clear's countdown
-  store.set('settings', { autoHandoff: true, autoClear: true })
+  store.set('settings', { ...OFF, autoHandoff: true, autoClear: true })
   timers = []
   s = await boot('/w/ah14', 'ah000014-0', { timers })
   await s.step('t1', 310000)
@@ -1614,11 +1643,11 @@ await check('auto handoff stopped by Keep chat: a later Start handoff, a Retry, 
   await s.run('cache', 'handoff auto off')
   await flush(timers)
   assert.ok(cleared(s.log))
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff being written: /handoff keep wins (no countdown), a press that only asks keeps the countdown', async () => {
-  store.set('settings', { autoHandoff: true })
+  store.set('settings', { ...OFF, autoHandoff: true })
   for (const [how, clears] of [['keep', false], ['ask', true]]) {
     let open
     const gate = new Promise((r) => (open = r))
@@ -1637,11 +1666,11 @@ await check('auto handoff being written: /handoff keep wins (no countdown), a pr
     await flush(timers)
     assert.equal(cleared(s.log), clears, how)
   }
-  store.delete('settings')
+  store.set('settings', { ...OFF })
 })
 
 await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle, kept across a reload', async () => {
-  store.delete('settings')
+  store.set('settings', { ...OFF })
   let s = await boot('/w/ah6', 'ah000006-0', {})
   let r = await s.run('cache', 'handoff auto on')
   assert.match(r.text, /Auto handoff: on \(at 300k tokens/)
@@ -1659,7 +1688,7 @@ await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle,
   assert.equal(store.get('settings').autoHandoff, true, 'the card toggle turns it on')
   r = await s.run('cache', 'handoff 400k')
   assert.match(r.text, /Handoff offer: at 400k/, 'the threshold still parses')
-  store.delete('settings')
+  store.set('settings', { ...OFF })
   await s.run('cache', 'handoff 300k')
 })
 
