@@ -14,7 +14,8 @@ const laidOut = (columns: number) => ({ ...BAND, props: { ...(BAND.props as obje
 async function session($: Engine, on: On, ctx = 320000) {
   const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
   mock.env(on, { HOME: '/home/t' })
-  mock.store(on)
+  // Both auto settings off, as saved since they default to on: a ready card waits for a press
+  mock.store(on, { settings: { autoClear: false, autoHandoff: false, autoV: 1 } })
   const files = new Map<string, string>()
   on('session.id', () => ({ value: 'abcdef01-0000' }) as never)
   on('session.cwd', () => ({ value: '/repo' }) as never)

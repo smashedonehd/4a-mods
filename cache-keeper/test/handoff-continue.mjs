@@ -1007,9 +1007,12 @@ await check('auto clear and auto handoff are on by default, and settings saved b
   assert.deepEqual([store.get('settings').autoClear, store.get('settings').autoHandoff, store.get('settings').ttlMin, store.get('settings').autoV], [true, true, 5, 1])
   // Turned off since: stays off in the next chat
   await s.run('cache', 'autoclear off')
+  await s.run('cache', 'handoff auto off')
   s = await boot('/w/ad2', 'ad000002-0', {})
   await s.step()
-  assert.match((await s.run('cache')).text, /Auto clear: off/)
+  t = (await s.run('cache')).text
+  assert.match(t, /Auto clear: off/)
+  assert.match(t, /Auto handoff: off/)
   store.set('settings', { ...OFF })
 })
 
@@ -1503,7 +1506,7 @@ await check('auto handoff on, past the threshold: a turn\'s end writes it, count
   store.set('settings', { ...OFF })
 })
 
-await check('auto handoff: under the threshold, off (the default), or an interrupted turn starts nothing', async () => {
+await check('auto handoff: under the threshold, off, or an interrupted turn starts nothing', async () => {
   store.set('settings', { ...OFF, autoHandoff: true })
   let timers = []
   let s = await boot('/w/ah2', 'ah000002-0', { timers })

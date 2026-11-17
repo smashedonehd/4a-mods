@@ -1948,9 +1948,9 @@ async function loadSettings($) {
   const saved = await $.store.get('settings')
   if (saved && typeof saved === 'object') {
     Object.assign(settings, saved)
-    if (saved.autoV !== AUTO_V) {
+    if (!(saved.autoV >= AUTO_V)) {
       Object.assign(settings, { autoClear: true, autoHandoff: true, autoV: AUTO_V })
-      await $.store.set('settings', settings)
+      await $.store.set('settings', settings).catch(() => {})
     }
   }
   const rates = await $.store.get(CAL_KEY)
@@ -2323,7 +2323,7 @@ export function register(on, options) {
       return { text: statusText() }
     }
     if (key) {
-      await $.store.set('settings', settings)
+      await $.store.set('settings', settings).catch(() => {})
       $.ui.invalidate('ui.render')
     }
     return { text: statusText() }
