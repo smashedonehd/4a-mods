@@ -55,8 +55,11 @@ const S = {
 
 // autoClear: a handoff the card would ask about clears and continues on its
 // own after a short countdown the person can stop. autoHandoff: once the
-// context passes the offer's threshold, a turn's end starts that handoff itself
-const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: false, autoHandoff: false }
+// context passes the offer's threshold, a turn's end starts that handoff itself.
+// Both are on by default. autoV marks saved settings written since that default:
+// older ones held the old default off, so loading them turns both on once.
+const AUTO_V = 1
+const settings = { bigTokens: 150000, guard: true, ttlMin: 0, alerts: true, keepWarmHours: 4, autoClear: true, autoHandoff: true, autoV: AUTO_V }
 const names = { cache: 'cache', keepwarm: 'keepwarm', board: 'board', handoff: 'handoff' }
 
 let now = 0
@@ -1943,7 +1946,13 @@ async function tick($) {
 
 async function loadSettings($) {
   const saved = await $.store.get('settings')
-  if (saved && typeof saved === 'object') Object.assign(settings, saved)
+  if (saved && typeof saved === 'object') {
+    Object.assign(settings, saved)
+    if (saved.autoV !== AUTO_V) {
+      Object.assign(settings, { autoClear: true, autoHandoff: true, autoV: AUTO_V })
+      await $.store.set('settings', settings)
+    }
+  }
   const rates = await $.store.get(CAL_KEY)
   if (rates && typeof rates === 'object') cal = { ...rates }
   // The offer's threshold: /config's value, unless the mod's own control had to
