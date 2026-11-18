@@ -316,3 +316,12 @@ test('steps: a plan slot with no run draws no dots of its own', async ($, on) =>
   expect(source).toContain(`<g fill="${VIOLET}" opacity="0.45">`)
   expect(source).not.toContain(`<g fill="${TEAL}"`)
 })
+
+test('steps: with nothing filled the pill sits at the start, violet', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  const source = (await desktop($))?.source ?? ''
+  expect(Number(/<rect x="([\d.-]+)" width="\d+" height="16" rx="8" fill=/.exec(source)?.[1])).toBe(0)
+  expect(pillColor(source)).toBe(VIOLET)
+})
