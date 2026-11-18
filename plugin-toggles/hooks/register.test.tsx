@@ -498,7 +498,7 @@ test('mcp tab sizes a server by its loaded tool schemas only', async ($, on) => 
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('session.root', () => ({ value: 'C:/proj' }) as any)
   on('settings.read', () => ({ value: {} }))
-  on('fs.read', () => ({ value: JSON.stringify({ mcpServers: { linear: { url: 'https://x' } } }) }))
+  disk(on, { [GLOBAL]: JSON.stringify({ mcpServers: { linear: { url: 'https://x' } } }) })
   on(
     'session.usage',
     usage({
@@ -513,7 +513,7 @@ test('mcp tab sizes a server by its loaded tool schemas only', async ($, on) => 
   expect(await at(ui, 'mcp:linear', ['on', 'off'])).toEqual(['on'])
   expect(await ui.find({ type: 'Button', key: 'mcp:linear:user-invocable-only' })).toBeFalsy()
   expect(await ui.findAll({ type: 'Text', text: /^900$/ })).toHaveLength(2)
-  expect(await ui.find({ type: 'Text', text: /^SERVERS · 1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^USER · 1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^https:\/\/x$/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -1431,5 +1431,149 @@ test('some 45 skills of yours leave room for the plugins, counted by skill', asy
   // What is left is told in skills: about eight to a plugin here.
   const left = (await ui.find({ type: 'Text', text: /more, narrow the filter/ })) as any
   if (drawn < 37) expect(Number(String(left?.text).match(/(\d+) more/)?.[1])).toBeGreaterThan(37 - drawn)
+  await ui.unmount()
+})
+
+// ---- MCP tab: every source ----
+// A project's servers from every place Claude Code reads them, and a chat
+// whose tools add a connector, built-in servers, a mod's tools and servers
+// the desktop app supplies under names of its own.
+const mcpSetup = (on: any, live: string[] = [], project: Record<string, unknown> = {}) => {
+  on('command.list', () => ({ value: [] }) as any)
+  on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
+  on('session.root', () => ({ value: 'C:\\proj' }) as any)
+  on('clock.now', (): any => ({ value: (tick += 60_000) }))
+  const files = disk(on, {
+    [GLOBAL]: JSON.stringify({
+      mcpServers: { brain: { url: 'http://127.0.0.1:1/mcp' } },
+      claudeAiMcpEverConnected: ['claude.ai Google Calendar'],
+      projects: {
+        'C:/proj': {
+          mcpServers: { local: { command: 'srv', args: ['--x'] } },
+          disabledMcpServers: ['claude.ai Gmail', 'claude-in-chrome'],
+          disabledMcpjsonServers: ['rejected'],
+          ...project,
+        },
+      },
+    }),
+    'C:/proj/.mcp.json': JSON.stringify({ mcpServers: { shared: { command: 'npx' }, rejected: { command: 'r' } } }),
+    'C:/Users/x/.claude/mcp-needs-auth-cache.json': JSON.stringify({ 'claude.ai Notion': { timestamp: 1 } }),
+    [SETTINGS]: JSON.stringify({ enabledPlugins: { 'jev@m': true, 'gone@m': false } }),
+    [INSTALLED]: JSON.stringify({
+      plugins: {
+        'jev@m': [{ installPath: 'C:/p/jev' }],
+        'gone@m': [{ installPath: 'C:/p/gone' }],
+        'savvy-progress@4a-mods': [{ installPath: 'C:/p/savvy' }],
+      },
+    }),
+    'C:/p/jev/.claude-plugin/plugin.json': JSON.stringify({ name: 'jev', mcpServers: { jev: { command: 'node' } } }),
+    'C:/p/gone/.claude-plugin/plugin.json': JSON.stringify({ name: 'gone' }),
+    'C:/p/gone/.mcp.json': JSON.stringify({ mcpServers: { x: { command: 'x' } } }),
+    ...modAt('C:/p/savvy', 'savvy-progress', "$.tool.register({ name: 'progress' })"),
+  })
+  on('settings.read', (_: unknown, e: any): any => ({
+    value: e?.source === 'user' ? JSON.parse(files[SETTINGS] ?? '{}') : {},
+  }))
+  listing(on, files)
+  on(
+    'session.usage',
+    usage({
+      mcpTools: [
+        { name: 'mcp__plugin_jev_jev__a', serverName: 'plugin_jev_jev', tokens: 300, isLoaded: true },
+        ...live.map(s => ({ name: `mcp__${s}__a`, serverName: s, tokens: 40, isLoaded: true })),
+      ],
+    }),
+  )
+  return files
+}
+const projectIn = (files: Record<string, string>) => JSON.parse(files[GLOBAL] ?? '{}').projects['C:/proj']
+
+test('the MCP tab lists every server it can switch, by source', async ($, on) => {
+  mcpSetup(on, ['claude.ai Google Calendar', 'computer-use', 'claude-artifacts', 'savvy-progress', '015fd430-bbfa', 'ccd_session'], {
+    enabledMcpServers: ['computer-use'],
+  })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  for (const [title, n] of [
+    ['USER', 1],
+    ['PROJECT AND LOCAL', 3],
+    ['FROM PLUGINS', 1],
+    ['CLAUDE\\.AI CONNECTORS', 3],
+    ['BUILT IN', 3],
+    ['FROM MODS', 1],
+  ] as const)
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^${title} · ${n}$`) })).toBeTruthy()
+  for (const name of ['brain', 'local', 'shared', 'rejected', 'plugin:jev:jev', 'claude.ai Google Calendar', 'claude.ai Notion', 'claude-artifacts', 'computer-use'])
+    expect(await at(ui, `mcp:${name}`, ['on', 'off'])).toEqual(['on'])
+  for (const name of ['claude.ai Gmail', 'claude-in-chrome'])
+    expect(await at(ui, `mcp:${name}`, ['on', 'off'])).toEqual(['off'])
+  // A plugin's server is measured by the name its tools carry.
+  expect(await ui.find({ type: 'Text', text: /^300$/ })).toBeTruthy()
+  // A plugin switched off brings no server.
+  expect(await ui.find({ type: 'Button', key: 'mcp:plugin:gone:x:off' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Not approved for this project: approve it in \/mcp\.$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Needs you to sign in: run \/mcp\.$/ })).toBeTruthy()
+  // Servers the desktop app supplies get no row.
+  for (const name of ['015fd430-bbfa', 'ccd_session']) expect(await ui.find({ type: 'Button', key: `mcp:${name}:off` })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /015fd430|ccd_session/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("each source's switch writes the name /mcp uses", async ($, on) => {
+  const files = mcpSetup(on)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  for (const name of ['brain', 'local', 'shared', 'plugin:jev:jev', 'claude.ai Notion'])
+    await ui.press({ key: `mcp:${name}:off` })
+  await ui.press({ key: 'mcp:claude-in-chrome:on' })
+  expect(projectIn(files).disabledMcpServers).toEqual([
+    'claude.ai Gmail',
+    'brain',
+    'local',
+    'shared',
+    'plugin:jev:jev',
+    'claude.ai Notion',
+  ])
+  expect(projectIn(files).enabledMcpServers).toBeUndefined()
+  await ui.unmount()
+})
+
+test('computer-use is on only while enabledMcpServers lists it', async ($, on) => {
+  const files = mcpSetup(on, [], { enabledMcpServers: ['computer-use'] })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await at(ui, 'mcp:computer-use', ['on', 'off'])).toEqual(['on'])
+  await ui.press({ key: 'mcp:computer-use:off' })
+  expect(projectIn(files).enabledMcpServers).toEqual([])
+  expect(projectIn(files).disabledMcpServers).toEqual(['claude.ai Gmail', 'claude-in-chrome'])
+  expect(await at(ui, 'mcp:computer-use', ['on', 'off'])).toEqual(['off'])
+  await ui.press({ key: 'mcp:computer-use:on' })
+  expect(projectIn(files).enabledMcpServers).toEqual(['computer-use'])
+  await ui.unmount()
+})
+
+test("a mod's tools and an app-supplied computer-use get no switch and write nothing", async ($, on) => {
+  const files = mcpSetup(on, ['computer-use', 'savvy-progress'])
+  const before = files[GLOBAL]
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  for (const m of ['on', 'off']) expect(await ui.find({ type: 'Button', key: `mcp:computer-use:${m}` })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^On here because the app running this chat supplies it/ })).toBeTruthy()
+  for (const m of ['on', 'off']) expect(await ui.find({ type: 'Button', key: `mcp:savvy-progress:${m}` })).toBeFalsy()
+  await ui.press({ key: 'mcp:savvy-progress:goto' })
+  expect(await ui.find({ type: 'Text', text: /^Savvy Progress$/ })).toBeTruthy()
+  expect(files[GLOBAL]).toBe(before)
+  await ui.unmount()
+})
+
+test('the Plugins tab counts a server a plugin names in its manifest', async ($, on) => {
+  mcpSetup(on)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-plugins' })
+  expect(await ui.find({ type: 'Text', text: /1 MCP/ })).toBeTruthy()
   await ui.unmount()
 })
