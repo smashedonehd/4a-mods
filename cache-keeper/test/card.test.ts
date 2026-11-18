@@ -236,13 +236,15 @@ const captions = async (ui: { findAll: (m: never) => Promise<{ text: string }[]>
 test('desktop band: one row of captioned cards, each control inside its card', async ($: Engine, on: On) => {
   await sized($, on, 320000)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...BAND })
-  expect(await captions(ui)).toEqual(['Cache · warm', 'Rewrite cost', 'Context · of 1M', 'Next chat · turn on after clear'])
+  expect(await captions(ui)).toEqual(['Cache · warm', 'Rewrite cost', 'Context · of 1M', 'Next chat'])
   const row = await ui.find({ key: 'cards' } as never)
   expect(row?.props.flexWrap).toBe('wrap')
   for (const key of ['card-cache', 'card-cost', 'card-ctx', 'card-next']) expect((await ui.find({ key } as never))?.props.borderStyle).toBe('round')
   expect(await ui.find({ type: 'Text', text: '320k' } as never)).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^if cold ≈ / } as never)).toBeTruthy()
-  for (const key of ['keep-warm', 'tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) expect(await ui.find({ key } as never)).toBeTruthy()
+  for (const key of ['keep-warm', 'tag-autoclear', 'handoff']) expect(await ui.find({ key } as never)).toBeTruthy()
+  // The next chat turns no skills on again: no tags for them
+  for (const key of ['tags', 'tag-caveman', 'tag-jev', 'tag-lsp']) expect(await ui.find({ key } as never)).toBeFalsy()
   await ui.unmount()
 })
 
@@ -287,11 +289,10 @@ test('desktop band: a cache gone cold on a big context colours the cache and cos
   await ui.unmount()
 })
 
-test('desktop band: a narrow window shortens the captions and the tags', async ($: Engine, on: On) => {
+test('desktop band: a narrow window shortens the captions', async ($: Engine, on: On) => {
   await sized($, on, 320000)
   const ui = await $.ui.mount({ plugin: 'cache-keeper', surface: 'desktop', ...laidOut(80) } as never)
   expect(await captions(ui)).toEqual(['Cache', 'Rewrite', 'Context', 'Next chat'])
-  expect((await ui.find({ key: 'tag-caveman' } as never))?.text).toBe('cave')
   await ui.unmount()
 })
 

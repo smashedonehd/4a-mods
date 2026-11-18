@@ -72,71 +72,6 @@ const alerted = new Map() // sessionId -> state or warning key already announced
 let paneOpen = false
 let justCompacted = false
 
-// Skills "clear and continue" runs again in the fresh chat before the handoff,
-// but only those this chat turned on: key -> { command, args }. Mirrored in
-// $.state, which the host keeps for the session across a /reload-plugins.
-const REVIVE_ORDER = ['caveman', 'jev', 'lsp']
-const REVIVE_REF = { plugin: 'cache-keeper', key: 'revive' }
-const revive = new Map()
-
-// True when it may have changed what to revive
-function noteSkill(name, args) {
-  const n = String(name || '').replace(/^\//, '')
-  const a = String(args || '').trim()
-  if (/(^|:)caveman$/.test(n)) {
-    if (/^off$/i.test(a)) return revive.delete('caveman')
-    revive.set('caveman', { command: n, args: a })
-  } else if (n === 'jev:on') revive.set('jev', { command: n, args: '' })
-  else if (n === 'jev:off') return revive.delete('jev')
-  else if (/(^|:)navigating-code-with-lsp$/.test(n)) revive.set('lsp', { command: n, args: '' })
-  else return false
-  return true
-}
-
-async function noteAndSave($, name, args) {
-  if (noteSkill(name, args)) await saveRevive($)
-}
-
-async function saveRevive($) {
-  try {
-    await $.state.set(REVIVE_REF, [...revive])
-  } catch {
-    // not kept: a reload forgets it
-  }
-}
-
-async function loadRevive($) {
-  try {
-    const { value } = await $.state.get(REVIVE_REF)
-    if (Array.isArray(value)) for (const [k, s] of value) if (REVIVE_ORDER.includes(k) && s && s.command) revive.set(k, s)
-  } catch {
-    // nothing kept: start empty
-  }
-}
-
-// Queues the skills one after another without waiting for them; the engine runs
-// each once the session is idle, so a prompt submitted next comes after them all.
-// Resolves when every run has settled.
-async function reviveSkills($, list) {
-  const listed = (await $.command.list()).map((c) => c.name)
-  // The name as noted, else the same skill under or without a plugin prefix
-  const find = (cmd) => {
-    const bare = cmd.split(':').pop()
-    return listed.find((n) => n === cmd) || listed.find((n) => (!cmd.includes(':') || !n.includes(':')) && n.split(':').pop() === bare)
-  }
-  const runs = list.map((s) => {
-    const cmd = find(s.command)
-    return cmd ? $.command.run({ command: cmd, args: s.args }).then(() => '', () => s.command) : Promise.resolve(s.command)
-  })
-  return async () => {
-    const results = await Promise.all(runs)
-    const failed = results.filter(Boolean)
-    const ok = list.filter((_, i) => !results[i]).map((s) => s.command)
-    if (ok.length) $.ui.toast('Turned on again: /' + ok.join(', /'), { timeoutMs: 6000 })
-    if (failed.length) $.ui.toast('Could not turn on again: /' + failed.join(', /'), { timeoutMs: 8000 })
-  }
-}
-
 // The handoff. Cache Keeper writes it itself, in six steps shown on a card
 // above the prompt: it reads the conversation, finds the files it used, lists
 // skills, tools and links, has a fork of the conversation write the handoff
@@ -829,7 +764,6 @@ async function clearAndSend($) {
   const body = H.text
   const path = H.path
   const fid = H.fid
-  const again = REVIVE_ORDER.filter((k) => revive.has(k)).map((k) => revive.get(k))
   setPhase($, 'clearing chat')
   try {
     await $.command.run({ command: 'clear', args: '' })
@@ -844,17 +778,10 @@ async function clearAndSend($) {
   P.phase = ''
   const text = [head, await live, body].filter(Boolean).join('\n\n')
   try {
-    if (again.length) setPhase($, `turning on ${again.length} plugin${again.length > 1 ? 's' : ''}`)
-    const revived = again.length ? await reviveSkills($, again).catch(() => null) : null
-    // Runs the plugin starts itself skip the command.run hook: note them here,
-    // or the next "clear and continue" would turn nothing on again
-    for (const s of again) noteSkill(s.command, s.args)
-    await saveRevive($)
     setPhase($, 'sending handoff')
     await $.prompt.submit({ text, asUser: true })
     // Only a delivered handoff is used up: a failed send stays available
     await dropLatestHandoff($, fid)
-    if (revived) revived().catch(() => {})
   } catch {
     // Not sent: leave it in the prompt box for one Enter
     let filled = false
@@ -1258,23 +1185,8 @@ function cacheMenuRow($, { Box, Text, Button }) {
   return Box({ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 3, children: items })
 }
 
-// What a tag turns on in the fresh chat when this one never ran it; a tag
-// turned off keeps its last run here for when it is turned on again
-const REVIVE_DEFAULT = { caveman: { command: 'caveman', args: 'ultra' }, jev: { command: 'jev:on', args: '' }, lsp: { command: 'navigating-code-with-lsp', args: '' } }
-const parked = new Map()
-
-async function toggleRevive($, k) {
-  if (revive.has(k)) {
-    parked.set(k, revive.get(k))
-    revive.delete(k)
-  } else revive.set(k, parked.get(k) || REVIVE_DEFAULT[k])
-  await saveRevive($)
-  $.ui.invalidate('ui.render')
-}
-
-// Whether a handoff the card asks about clears on its own, drawn like the
-// revive tags: a dot and a label, a click flips it. It sits by the handoff
-// button, whose ending it decides.
+// Whether a handoff the card asks about clears on its own: a dot and a label,
+// a click flips it. It sits by the handoff button, whose ending it decides.
 const AUTO_CLEAR_LABEL = 'auto clear'
 function autoClearTag(els, $, label = AUTO_CLEAR_LABEL) {
   return dotTag(els, 'autoclear', label, settings.autoClear, () => setAutoClear($, !settings.autoClear))
@@ -1484,24 +1396,17 @@ function deskCards($, els, { st, ttl, big }, level, squeeze) {
     limitCells = Math.max(limitCells, widths[widths.length - 1])
   }
 
-  // Each tag says whether the fresh chat turns it on again; a click flips that
-  const names = REVIVE_ORDER.map((k) => {
-    const level = k === 'caveman' && revive.has(k) && revive.get(k).args
-    return k !== 'caveman' ? k : narrow ? 'cave' : `caveman${level ? ' ' + level : ''}`
-  })
-  const tags = REVIVE_ORDER.map((k, i) => dotTag(els, k, names[i], revive.has(k), () => toggleRevive($, k)))
   // The handoff is the main action once the context is large or a send would
   // rewrite it; a plain Button would draw the same either way
   const urgent = !handoffInFlight() && (S.ctx >= CTX_URGENT || coldBig)
   const contLabel = H.continuing ? 'clearing' : compact ? 'continue' : 'clear and continue'
   const cont = continueButton($, Button, { label: contLabel })
   const autoLabel = compact ? 'auto' : AUTO_CLEAR_LABEL
-  card('card-next', narrow ? 'Next chat' : 'Next chat · turn on after clear', [
-    Box({ key: 'tags', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: tags }),
+  card('card-next', 'Next chat', [
     cont,
     autoClearTag(els, $, autoLabel),
     Button({ key: 'handoff', label: handoffLabel(), ...(urgent ? { variant: 'primary' } : { plain: true }), dimColor: handoffInFlight(), onPress: () => offHook($, () => runPipeline($, 'ask')) }),
-  ], [rowCells(names.map(tagCells), 1), cont ? contLabel.length + BUTTON_CHROME : 0, tagCells(autoLabel), handoffLabel().length + BUTTON_CHROME])
+  ], [cont ? contLabel.length + BUTTON_CHROME : 0, tagCells(autoLabel), handoffLabel().length + BUTTON_CHROME])
 
   const figure = tokens(S.ctx)
   const ctxCaption = narrow ? 'Context' : `Context · of ${CTX_MAX / 1e6}M`
@@ -2002,7 +1907,6 @@ export function register(on, options) {
     // A handoff saved before a restart shows up on the band and in /handoff continue
     await loadLatestHandoff($)
     await loadSettings($)
-    await loadRevive($)
     await loadHeld($)
     await readRecording($)
     names.cache = (await registerCommand($, 'cache', 'Cache Keeper status and settings', '[ttl 5|60|auto] [guard on|off] [big 150k] [alerts on|off] [handoff 300k|off|auto on|off] [autoclear on|off]')) || names.cache
@@ -2030,19 +1934,14 @@ export function register(on, options) {
     if (P.phase !== 'working') P.phase = ''
     // "Keep chat" was about the old chat
     H.kept = false
-    // A new chat: only what runs in it counts. Clear and continue notes its own
-    // revived skills, so it keeps them.
+    // A new chat: what was due for the old one goes, unless clear and continue
+    // made it
     if (!H.continuing) {
       // Cleared another way: nothing is due, and what was held goes to this chat
       P.pending = ''
       H.clearDue = false
       H.refreshed = false
       if (held.length) $.clock.after(300, () => settleHold($))
-      parked.clear()
-      if (revive.size) {
-        revive.clear()
-        await saveRevive($)
-      }
     }
     try {
       S.id = (await $.session.id()) || S.id
@@ -2060,9 +1959,6 @@ export function register(on, options) {
 
   // The first prompt names the session on the board
   on('prompt.submit', async ($, e, next) => {
-    // Typed in the terminal, the Desktop app or over Remote Control alike; a
-    // held prompt comes back as the plugin's, so this looks before the hold
-    if (e.origin && e.origin.kind !== 'plugin' && /^\s*(stop caveman|normal mode)\b/i.test(String(e.text || ''))) await noteAndSave($, 'caveman', 'off')
     const fromUser = e.origin && (e.origin.kind === 'composer' || e.origin.kind === 'bridge')
     // Typed, not picked: the band's menu shuts so its digits stay out of the way
     if (cacheMenu && fromUser) setCacheMenu($, false)
@@ -2258,7 +2154,6 @@ export function register(on, options) {
       // with no result). The chat then clears and continues unless the args say
       // "keep"; one queued already keeps its own choice.
       if (HANDOFF_SKILL.test(String(e.skill || '')) && !isContinueArg(args)) await queueSkillHandoff($, args)
-      await noteAndSave($, e.skill, args)
     }
     if (e.tool === 'AskUserQuestion') {
       now = await $.clock.now()
@@ -2285,7 +2180,6 @@ export function register(on, options) {
       if (!S.working) return handoffRequest($, afterFromArgs(e.args))
       if (!e.agent_id && !e.agentId) await queueSkillHandoff($, e.args) // typed, but it reached a running turn
     }
-    await noteAndSave($, e.command, e.args)
     return next(e)
   })
 

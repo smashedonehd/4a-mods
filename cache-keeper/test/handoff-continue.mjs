@@ -1692,22 +1692,24 @@ await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle,
   await s.run('cache', 'handoff 300k')
 })
 
-// ======================= the band, revive, live git, pruning =======================
+// ======================= the band, live git, pruning =======================
 
-await check('clear and continue turns the marked plugins on again before the handoff', async () => {
+await check('clear and continue sends the handoff and runs no skill used before the clear again', async () => {
   const s = await boot('/w/rev', 'rev00001-0', { select: true })
   await s.run('caveman:caveman', 'ultra')
   await s.run('handoff')
-  assert.ok(s.log.indexOf('run:caveman:caveman') > s.log.indexOf('run:clear'))
+  assert.ok(s.log.includes('run:clear'), s.log.join(' | '))
+  assert.ok(!s.log.some((l) => l.startsWith('run:') && l !== 'run:clear'), s.log.join(' | '))
   assert.ok(s.log.indexOf('submit') > s.log.indexOf('run:clear'))
 })
 
-await check('the desktop band keeps its tags and keep-warm Select', async () => {
+await check('the desktop band keeps its auto clear tag and keep-warm Select, and no skill tags', async () => {
   const s = await boot('/w/tags', 'tags0001-0', { select: true })
   await s.step()
   const band = await s.render('desktop')
   assert.ok(s.selects.has('keep-warm'))
-  for (const k of ['tag-caveman', 'tag-jev', 'tag-lsp', 'handoff']) assert.ok(s.buttons.has(k), k)
+  for (const k of ['tag-autoclear', 'handoff']) assert.ok(s.buttons.has(k), k)
+  for (const k of ['tag-caveman', 'tag-jev', 'tag-lsp']) assert.ok(!s.buttons.has(k), k)
   assert.ok(keys(band).has('card-next'))
   await s.buttons.get('handoff').onPress()
   await settle()
