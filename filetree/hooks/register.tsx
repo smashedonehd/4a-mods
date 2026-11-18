@@ -219,6 +219,12 @@ let noDock = false
 let waitingPane: { title: string; focus: boolean } | null = null
 
 async function openPane($: EngineInterface, title: string, focus = false): Promise<void> {
+  // With no surface yet the open is not tried at all: the host shows every
+  // refused open to the person, even one the mod catches
+  if (await $.session.surfaces().then(s => s.length === 0, () => false)) {
+    waitingPane = { title, focus }
+    return
+  }
   try {
     await $.ui.open(focus ? { id: PANE, title, focus: true } : { id: PANE, title })
     waitingPane = null

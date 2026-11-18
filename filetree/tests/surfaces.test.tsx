@@ -15,6 +15,7 @@ import { age, ancestorsOf, badPattern, stamp, formatSize, replaceChildren, toNod
 type World = {
   os: 'darwin' | 'linux' | 'win32'
   refuseOpen?: () => boolean
+  surfaces?: () => string[]
   env: Record<string, string>
   cwd: string
   top: string
@@ -82,6 +83,7 @@ function world(on: On, w: World, ran: Ran) {
     opens.push(e)
     return { value: { isPlaced: true } }
   })
+  if (w.surfaces) on('session.surfaces', () => ({ value: w.surfaces!() as never }))
   on('ui.toast', (_$, e) => {
     ran.push(['toast', e.text])
     return { value: undefined }
@@ -405,6 +407,30 @@ test('desktop app: a pane refused with no-surface at start opens once the app at
   expect(JSON.stringify(opens[opens.length - 1])).toContain('"id":"filetree"')
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:second' })
   await clock.settle()
+  expect(opens.length).toBe(before + 1)
+})
+
+test('desktop app: with no surface at start the pane is not tried until the app attaches', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  let attached = false
+  let refused = 0
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root,
+    dirs: { [root]: [['README.md', 'file']] }, status: '## main ', numstat: '',
+    refuseOpen: () => !attached && ++refused > 0,
+    surfaces: () => (attached ? ['desktop'] : []),
+  }, ran)
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
+  const before = opens.length
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  expect(refused).toBe(0)
+  expect(opens.length).toBe(before)
+  attached = true
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  expect(refused).toBe(0)
   expect(opens.length).toBe(before + 1)
 })
 
