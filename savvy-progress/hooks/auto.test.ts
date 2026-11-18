@@ -453,3 +453,108 @@ test('steps: a failed run keeps the steps it reached and its note', async ($, on
   await finish($, 'a', 'error')
   expect(await panelTexts($)).toContain('1/4 reading · ')
 })
+
+// ---- a plan across a /clear ----
+
+// A /clear (a handoff's auto clear too) ends the session; the engine keeps
+// nothing of its state, so the plan's title and counters went with it and the
+// next call without a title began a nameless flow ("savvy-flow").
+// The old session's end, then the new one's start; `reason` another end than a clear
+const ended = ($: Engine, reason: string) =>
+  ($.session.end as (e: unknown) => Promise<unknown>)({ reason, sessionId: 's', resume: { id: 's' } })
+
+async function clear($: Engine, reason = 'clear') {
+  await ended($, reason)
+  await cleared($)
+}
+
+// A session the test can clear
+function clearable(on: On) {
+  on('session.end', () => ({ sessionId: 's' }) as never)
+  on('classic.SessionStart', () => ({}) as never)
+  return session(on)
+}
+
+const cinderella = { tool: PROGRESS, title: 'Cinderella vnitrek12', total: 2, phase: 'delegate', tasks: [{ title: 'Spike and rebuild vnitrek12', tier: 'fable' }, { title: 'Sweep unopened sources', tier: 'fable' }] }
+
+test('clear: a call without a title after two clears goes on with the plan', async ($, on) => {
+  clearable(on)
+  await $.tool.call(cinderella as never)
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  await clear($)
+  // The band goes with the conversation, as the engine's own clear does
+  expect(await alt($)).toBeNull()
+  await clear($)
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('Cinderella vnitrek12: Done, 100%')
+})
+
+test('clear: a call with the plan’s own title goes on with it too', async ($, on) => {
+  clearable(on)
+  await $.tool.call(cinderella as never)
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  await clear($)
+  await $.tool.call({ tool: PROGRESS, title: 'Cinderella vnitrek12', phase: 'review' } as never)
+  expect(await alt($)).toBe('Cinderella vnitrek12: Review 1/2, 50%')
+})
+
+test('clear: a new title starts from zero and lets the old plan go', async ($, on) => {
+  clearable(on)
+  await $.tool.call(cinderella as never)
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  await clear($)
+  await $.tool.call({ tool: PROGRESS, title: 'Other', total: 3, phase: 'delegate' } as never)
+  expect(await alt($)).toBe('Other: Tasks 0/3, 0%')
+  await dismiss(await drawn($))
+  await $.tool.call({ tool: PROGRESS, done: 1, phase: 'delegate' } as never)
+  expect(String(await alt($))).toMatch(/^savvy-flow: /)
+})
+
+test('clear: a dismissed or finished plan is not carried over', async ($, on) => {
+  clearable(on)
+  await $.tool.call(cinderella as never)
+  await dismiss(await drawn($))
+  await clear($)
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('savvy-flow: Done, 100%')
+  await $.tool.call(cinderella as never)
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  await clear($)
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  expect(String(await alt($))).toMatch(/^savvy-flow: /)
+})
+
+test('clear: dismissing the band after a clear lets the kept plan go', async ($, on) => {
+  const clock = clearable(on)
+  await $.tool.call(cinderella as never)
+  await clear($)
+  clock.now += 1000
+  for (const id of ['a', 'b']) await spawn($, id)
+  await dismiss(await drawn($))
+  for (const id of ['a', 'b']) await finish($, id)
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('savvy-flow: Done, 100%')
+})
+
+test('clear: a savvy worker started after a clear works for the kept plan', async ($, on) => {
+  clearable(on)
+  on('tool.call', { tool: 'Agent' }, () => ({ result: 'ok' }) as never)
+  await $.tool.call(cinderella as never)
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  await clear($)
+  await $.tool.call({ tool: 'Agent', subagent_type: 'savvy-fable', description: 'Sweep unopened sources', prompt: 'p' } as never)
+  expect(await alt($)).toBe('Cinderella vnitrek12: Tasks 1/2, 50%')
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('Cinderella vnitrek12: Done, 100%')
+})
+
+test('clear: only a clear keeps the plan, not another end', async ($, on) => {
+  clearable(on)
+  await $.tool.call(cinderella as never)
+  // The kit keeps state over an end: dismissed, the plan is only where the hook put it
+  await ended($, 'resume')
+  await dismiss(await drawn($))
+  await cleared($)
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('savvy-flow: Done, 100%')
+})

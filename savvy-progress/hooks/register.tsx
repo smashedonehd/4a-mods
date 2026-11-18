@@ -16,6 +16,14 @@ const mainPose = atom({ plugin: 'savvy-progress', key: 'pose' } as const, 'wait'
 // The wave whose band was dismissed, by the id of the run that was its first: the
 // band without a reported plan stays away from every wave that run is in
 const dismissed = atom({ plugin: 'savvy-progress', key: 'dismissed' } as const, '')
+// An open plan from before a /clear, for the next call that goes on with it
+const kept = atom({ plugin: 'savvy-progress', key: 'kept' } as const, null)
+
+// The plan a call goes on with: the flow, else the one kept aside at a /clear
+const planOf = async ($: EngineInterface): Promise<Flow | null> => (await read($, flow)) ?? (await read($, kept))
+
+// The band's plan gone, the one kept aside with it
+const dropPlan = ($: EngineInterface) => Promise.all([update($, flow, () => null), update($, kept, () => null)])
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -1333,12 +1341,14 @@ export const register: Register = (on, options) => {
     // and changes nothing, or any subagent could rename, finish or reset the flow.
     if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
     const input = e as unknown as ProgressInput
-    const prev = await read($, flow)
-    if (isNewFlow(prev, input) && input.title !== undefined) {
+    // With no flow, a plan kept aside at a /clear is the one this call goes on
+    // with, unless it names another or the plan had finished (`merge` starts anew)
+    const from = await planOf($)
+    if (isNewFlow(from, input) && input.title !== undefined) {
       // A new flow starts with a clean list; agents still running stay.
       await update($, agents, list => list.filter(a => a.status === 'running'))
     }
-    const next = await update($, flow, p => merge(p, input))
+    const next = await update($, flow, p => merge(p ?? from, input))
     if (next && input.tasks?.length) await autoOpen($, next.title)
     return { result: `ok: ${label(next ?? blank())}` }
   })
@@ -1379,8 +1389,11 @@ export const register: Register = (on, options) => {
     const type = String(e.subagent_type ?? '')
     if (!type.startsWith('savvy-')) return next(e)
 
+    // With no flow, the plan kept aside at a /clear is the one this worker works for
+    const plan = await planOf($)
     await update($, flow, prev => {
-      const base = prev && !prev.isFinished ? { ...blank(), ...prev } : blank()
+      const p = prev ?? plan
+      const base = p && !p.isFinished ? { ...blank(), ...p } : blank()
       return { ...base, running: base.running + 1, phase: base.phase === 'plan' ? 'delegate' : base.phase }
     })
     try {
@@ -1390,10 +1403,32 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // A /clear (a handoff's auto clear too) leaves none of the session's state, but
+  // the orchestrator often goes on with its plan and reports without a title. The
+  // open plan waits here from the old session's end to the new one's start, then
+  // in `kept`, which a reload of this code does not lose.
+  let carried: Flow | null = null
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      try {
+        // A finished plan comes too: like any finished flow, nothing goes on with it
+        carried = await planOf($)
+        // The band goes with the conversation, as the engine's own clear takes it
+        await dropPlan($)
+      } catch {
+        // The end's short bound ran out: the plan is not kept
+      }
+    }
+    return next(e)
+  })
+
   // /clear starts a new session in the same process: the runs are gone, the agents
   // are not, and no `session.start` fires. The ones still at work get a run at
   // once, not at their next model request. Their model shows with that request.
   on('classic.SessionStart', { source: ['clear'] }, async ($, e, next) => {
+    const c = carried
+    carried = null
+    if (c) await update($, kept, () => c)
     // A teammate in a pane of its own runs no loop here, and a dead pane leaves it
     // "running": it waits for an event of its own.
     for (const info of await listedAgents($)) {
@@ -1720,7 +1755,7 @@ export const register: Register = (on, options) => {
         plain
         role="dismiss"
         onPress={async () => {
-          await update($, flow, () => null)
+          await dropPlan($)
           // Read at the press: a wave may have begun since this row was drawn
           const runs = await read($, agents)
           await update($, dismissed, () => waveOf(runs)[0]?.id ?? '')
