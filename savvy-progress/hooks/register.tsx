@@ -557,19 +557,27 @@ const waveOf = (list: AgentRun[]): AgentRun[] => {
   return list.slice(from)
 }
 
-// The band when nobody reported a plan: the current wave as a flow, finished runs
-// out of all of them. null below AUTO_MIN runs, or for a wave the run `hidden` is in.
-const autoFlow = (list: AgentRun[], hidden: string): Flow | null => {
+// The band when no open plan was reported: the current wave as a flow, finished
+// runs out of all of them. null below `min` runs (1 over a finished plan), or for
+// a wave the run `hidden` is in.
+const autoFlow = (list: AgentRun[], hidden: string, min: number): Flow | null => {
   const crew = waveOf(list)
-  if (crew.length < AUTO_MIN || crew.some(a => a.id === hidden)) return null
+  if (crew.length < min || crew.some(a => a.id === hidden)) return null
   const running = crew.filter(a => a.status === 'running').length
   return { ...blank(), title: tr().auto, total: crew.length, done: crew.length - running, running, phase: 'delegate', isFinished: running === 0 }
 }
 
 // What the band draws: the reported plan or the wave, whichever is still open
-// (the plan first), else whichever finished (the plan first)
-const bandFlow = (reported: Flow | null, auto: Flow | null): Flow | null =>
-  [reported, auto].find(f => f && !f.isFinished) ?? reported ?? auto
+// (the plan first), else whichever finished (the plan first). A finished plan
+// lets a wave of one run show over it.
+const bandFlow = (list: AgentRun[], reported: Flow | null, hidden: string): Flow | null => {
+  if (reported && !reported.isFinished) return reported
+  const auto = autoFlow(list, hidden, reported ? 1 : AUTO_MIN)
+  if (auto && !auto.isFinished) return auto
+  // Never Done while a run works. A running run is always in the wave, so this
+  // only holds back a finished plan whose wave was dismissed, until it ends.
+  return list.some(a => a.status === 'running') ? null : (reported ?? auto)
+}
 
 const totals = (list: AgentRun[], at: number) => {
   const cost = list.reduce((s, a) => s + a.costUsd, 0)
@@ -1689,7 +1697,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const [list, reported, hidden] = await Promise.all([read($, agents), read($, flow), read($, dismissed)])
-    const f = bandFlow(reported, autoFlow(list, hidden))
+    const f = bandFlow(list, reported, hidden)
     if (f === null || e.props.hasSurvey) return next(e)
     // Draw this row with the other mods' bands beneath it. Claude Code's own placeholder ({ type: 'engine' }) is
     // never nested: the desktop drops a band that nests it. Same rule in cache-keeper, plan-keeper,
