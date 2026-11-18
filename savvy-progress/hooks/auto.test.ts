@@ -185,6 +185,65 @@ test('auto band: a running wave shows over a plan that is finished', async ($, o
   expect(await shown($)).toMatchObject({ title: false, label: 'Done' })
 })
 
+// The desktop band's alt: title, label and percent
+async function alt($: Engine) {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: band })
+  const svg = await ui.findAll({ type: 'Svg' })
+  await ui.unmount()
+  return svg.length ? String(svg[0]?.props.alt) : null
+}
+
+// The orchestrator closed its flow, then launched one more agent: the band said
+// "Done 100%" while that agent worked, since one run is below the wave's minimum
+test('auto band: one run after a finished plan shows, not the plan’s Done', async ($, on) => {
+  const clock = session(on)
+  for (const id of ['a', 'b']) await spawn($, id)
+  for (const id of ['a', 'b']) await finish($, id)
+  // No title: the band's own name
+  await $.tool.call({ tool: PROGRESS, done: 2, finished: true } as never)
+  expect(await alt($)).toBe('savvy-flow: Done, 100%')
+  clock.now += 1000
+  await spawn($, 'c')
+  expect(await shown($)).toMatchObject({ title: true, label: 'Tasks 0/1' })
+  expect(await alt($)).toBe('Subagents: Tasks 0/1, 0%')
+  await finish($, 'c')
+  expect(await alt($)).toBe('savvy-flow: Done, 100%')
+})
+
+test('auto band: a plan finished while its only run still works waits for that run', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 1, done: 1, finished: true } as never)
+  expect(await shown($)).toMatchObject({ title: true, label: 'Tasks 0/1' })
+  await finish($, 'a')
+  expect(await shown($)).toMatchObject({ title: false, label: 'Done' })
+})
+
+test('auto band: a follow-up after a finished plan shows while it works', async ($, on) => {
+  const clock = session(on)
+  // A new title clears the finished runs: the plan comes first, as an orchestrator's does
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 1, phase: 'delegate' } as never)
+  await spawn($, 'a')
+  await finish($, 'a')
+  await $.tool.call({ tool: PROGRESS, done: 1, finished: true } as never)
+  clock.now += 1000
+  await step($, 'a')
+  expect(await shown($)).toMatchObject({ title: true, label: 'Tasks 0/1' })
+  await finish($, 'a')
+  expect(await shown($)).toMatchObject({ title: false, label: 'Done' })
+})
+
+// A dismissed wave keeps its band away; the plan's Done must not stand in for it
+test('auto band: a finished plan stays away while a dismissed wave still works', async ($, on) => {
+  session(on)
+  for (const id of ['a', 'b']) await spawn($, id)
+  await dismiss(await drawn($))
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 2, done: 2, finished: true } as never)
+  expect(await shown($)).toBeNull()
+  for (const id of ['a', 'b']) await finish($, id)
+  expect(await shown($)).toMatchObject({ title: false, label: 'Done' })
+})
+
 test('auto band: the desktop draws it as one Svg with the count in its alt', async ($, on) => {
   session(on)
   await spawn($, 'a')
