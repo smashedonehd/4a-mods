@@ -497,7 +497,7 @@ export function generatedText(steps, { cwd, session, replaces }) {
 // when no plan with items is active, added to the plan written for the last
 // one, or a new one for a new task. True when it set or changed the plan.
 // observe ticked the old plan with the old list before this list replaced it.
-async function maybeGenerate($, e, prev = []) {
+async function maybeGenerate($, e, prev) {
   if (!Array.isArray(e.items) || ui.off) return false
   const gen = !!plan && isGenerated(plan.path)
   if (plan && !gen) {
@@ -566,11 +566,11 @@ async function appendItems($, steps, prev) {
   if (read === null) return false
   const keep = new Set(steps.map((x) => norm(x.text)))
   // A step the old list completed was done: its item stays, unticked by hand or not
-  const gone = new Set(prev.filter((x) => x.status !== 'completed').map((x) => norm(x.text)).filter((n) => n && !keep.has(n)))
+  const gone = new Set(uniqueSteps(prev).filter((x) => x.status !== 'completed').map((x) => norm(x.text)).filter((n) => !keep.has(n)))
   const { lines, items } = parsePlan(read)
   const drop = new Set(items.filter((it) => !it.done && gone.has(norm(it.text))).map((it) => it.i))
   const text = lines.filter((_, i) => !drop.has(i)).join('\n')
-  const have = new Set(parsePlan(text).items.map((it) => norm(it.text)))
+  const have = new Set(items.filter((it) => !drop.has(it.i)).map((it) => norm(it.text)))
   const add = []
   for (const x of steps) {
     const n = norm(x.text)
@@ -597,8 +597,8 @@ const merges = (cmd) => {
 // What a call that answered tells: a plan written, a task list changed, a turn
 // wrapped up or a PR merged
 async function observe($, e, result) {
-  let prev = [] // the task list a whole new one replaces
   await ready($)
+  const prev = tasks // the list a whole new one replaces: applyPlanUpdate assigns a new array
   const t = e.tool
   if (t === 'Bash' && merges(String(e.command || ''))) return tick($)
   if (e.agentId) return // a subagent's plan and task list are its own
@@ -623,7 +623,6 @@ async function observe($, e, result) {
   } else if (t === PLAN_TOOL) {
     // A whole new list replaces the old one: what the old one completed ticks first
     if (Array.isArray(e.items)) await tick($)
-    prev = tasks
     applyPlanUpdate(e)
   }
   else if (t === WRAP_TOOL) {
