@@ -1303,6 +1303,16 @@ test('a continuation deletes the open steps the list it replaces left out; done 
   assert.match(disk.text(path), /- \[ \] Check it\n- \[ \] Report\n- \[ \] Wrap\n$/)
 })
 
+test('a continuation keeps an item ticked by hand though its open step is left out', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const path = genPath(disk)
+  await disk.fs.write(path, disk.text(path).replace('- [ ] Beta', '- [x] Beta'))
+  await s.call(UP, { items: items('Alpha', 'Delta'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[ \] Alpha\n- \[x\] Beta\n- \[ \] Delta\n$/)
+})
+
 test('a continuation keeps the line endings of a CRLF plan when it deletes an item', async () => {
   const disk = makeFs({})
   const s = await boot(disk, { sid: 's1' })
