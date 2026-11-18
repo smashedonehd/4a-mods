@@ -1576,14 +1576,14 @@ test('computer-use is on only while enabledMcpServers lists it', async ($, on) =
   await ui.unmount()
 })
 
-test("a mod's tools and an app-supplied computer-use get no switch and write nothing", async ($, on) => {
+test("a mod's tools get no switch and write nothing; an app-supplied computer-use says so", async ($, on) => {
   const files = mcpSetup(on, ['computer-use', 'savvy-progress'])
   const before = files[GLOBAL]
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-mcp' })
-  for (const m of ['on', 'off']) expect(await ui.find({ type: 'Button', key: `mcp:computer-use:${m}` })).toBeFalsy()
-  expect(await ui.find({ type: 'Text', text: /^On here because the app running this chat supplies it/ })).toBeTruthy()
+  expect(await at(ui, 'mcp:computer-use', ['on', 'off'])).toEqual(['off'])
+  expect(await ui.find({ type: 'Text', text: /^On in this chat because the app running it supplies it/ })).toBeTruthy()
   for (const m of ['on', 'off']) expect(await ui.find({ type: 'Button', key: `mcp:savvy-progress:${m}` })).toBeFalsy()
   await ui.press({ key: 'mcp:savvy-progress:goto' })
   expect(await ui.find({ type: 'Text', text: /^Savvy Progress$/ })).toBeTruthy()
@@ -1644,5 +1644,16 @@ test('enableAllProjectMcpServers approves every .mcp.json server', async ($, on)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-mcp' })
   expect(await ui.findAll({ type: 'Text', text: /^(Waiting for approval|Rejected for this project)/ })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test("the Plugins tab measures a plugin's servers by its manifest name", async ($, on) => {
+  mcpSetup(on, ['plugin_jevwire_judge'], {}, {
+    'C:/p/jev/.claude-plugin/plugin.json': JSON.stringify({ name: 'jevwire', mcpServers: { judge: { command: 'node' } } }),
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-plugins' })
+  expect(await ui.find({ type: 'Text', text: /^40$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^300$/ })).toBeFalsy()
   await ui.unmount()
 })

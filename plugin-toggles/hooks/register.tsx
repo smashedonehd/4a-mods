@@ -163,6 +163,10 @@ const draft = atom({ plugin: 'plugin-toggles', key: 'name' } as const, '', {
 const parse = (text: string) => JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, any>
 const isObject = (v: unknown): v is Record<string, any> =>
   v !== null && typeof v === 'object' && !Array.isArray(v)
+// The servers a config names under mcpServers; with `bare`, a file that is
+// nothing but servers, as a plugin's may be.
+const serversOf = (json: unknown, bare = false): Record<string, any> =>
+  isObject(json) && isObject(json.mcpServers) ? json.mcpServers : bare && isObject(json) ? json : {}
 
 // A JSON file's object, {} for an empty file; undefined when it does not read
 // or parse, or holds no object.
@@ -313,8 +317,7 @@ type Info = {
   skills: Item[]
   commands: Item[]
   agents: Item[]
-  mcp: string[]
-  // Each server's config, by its key in the plugin.
+  // Each MCP server's config, by its key in the plugin.
   servers: Record<string, any>
   hooks: string[]
 }
@@ -363,14 +366,12 @@ async function pluginInfo($: any, id: string): Promise<Info | null> {
   ])
   // A plugin names its servers in .mcp.json, in its manifest's mcpServers,
   // or in the files that names, the jev plugin in its manifest.
-  const servers: Record<string, any> = { ...(mcpJson.mcpServers ?? mcpJson) }
-  for (const ref of [manifest.mcpServers].flat()) {
-    if (isObject(ref)) Object.assign(servers, ref.mcpServers ?? ref)
-    else if (typeof ref === 'string' && ref.endsWith('.json')) {
-      const json = await readJson($, `${root}/${norm(ref).replace(/^\.\//, '')}`)
-      Object.assign(servers, json.mcpServers ?? json)
-    }
-  }
+  const refs = await Promise.all(
+    [manifest.mcpServers].flat().map(ref =>
+      typeof ref === 'string' && ref.endsWith('.json') ? readJson($, `${root}/${norm(ref).replace(/^\.\//, '')}`) : ref,
+    ),
+  )
+  const servers = Object.assign({}, ...[mcpJson, ...refs].map(json => serversOf(json, true)))
   let desc = String(manifest.description ?? '')
   if (desc === '') {
     const readme = await readSafe($, `${root}/README.md`)
@@ -388,7 +389,6 @@ async function pluginInfo($: any, id: string): Promise<Info | null> {
     skills,
     commands,
     agents,
-    mcp: Object.keys(servers),
     servers,
     hooks: Object.keys(hooksJson.hooks ?? {}),
   }
@@ -457,8 +457,9 @@ type Row = {
   skills?: string[]
   // An MCP server's source: the section of the MCP tab it is listed in.
   source?: Source
-  // Set where another tab switches it: the row offers a way there instead of a switch.
-  goto?: { tab: string; label: string }
+  // Set where another tab switches it: the row offers a way there instead of
+  // a switch, the filter narrowing that tab to it.
+  goto?: { tab: string; label: string; filter?: string }
 }
 
 const heavy = (a: Row, b: Row) => b.weight - a.weight || a.label.localeCompare(b.label)
@@ -466,9 +467,11 @@ const heavy = (a: Row, b: Row) => b.weight - a.weight || a.label.localeCompare(b
 // plugin's jev server, `nexus-brain` as configured.
 const wire = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '_')
 
-function measuredFor(now: Loaded, label: string) {
+// What a plugin's skills, agents and servers count now: its servers named,
+// as Claude Code names them, by the manifest's name.
+function measuredFor(now: Loaded, label: string, named = label) {
   let n = now.byPlugin.get(label)
-  const prefix = `plugin_${wire(label)}_`
+  const prefix = `plugin_${wire(named)}_`
   for (const [server, tokens] of now.servers) if (server.startsWith(prefix)) n = (n ?? 0) + tokens
   return n
 }
@@ -477,14 +480,15 @@ async function pluginRow($: any, id: string, isOn: boolean, now: Loaded | null):
   const at = id.indexOf('@')
   const label = at > 0 ? id.slice(0, at) : id
   const inf = await pluginInfo($, id)
-  const measured = now ? measuredFor(now, label) : undefined
+  const measured = now ? measuredFor(now, label, inf?.name) : undefined
+  const mcp = Object.keys(inf?.servers ?? {})
   const listed = inf ? [...inf.skills, ...inf.commands, ...inf.agents] : []
   const counts = inf
     ? [
         inf.skills.length && `${inf.skills.length} skills`,
         inf.commands.length && `${inf.commands.length} commands`,
         inf.agents.length && `${inf.agents.length} agents`,
-        inf.mcp.length && `${inf.mcp.length} MCP`,
+        mcp.length && `${mcp.length} MCP`,
         inf.hooks.length && 'hooks',
       ].filter(Boolean)
     : []
@@ -507,7 +511,7 @@ async function pluginRow($: any, id: string, isOn: boolean, now: Loaded | null):
           names('Skills', inf.skills.map(i => i.name)),
           names('Commands', inf.commands.map(i => i.name)),
           names('Agents', inf.agents.map(i => i.name)),
-          names('MCP', inf.mcp),
+          names('MCP', mcp),
         ]
           .filter(Boolean)
           .join(' · ')
@@ -719,6 +723,10 @@ function row($: any, e: any, kind: string, r: Row, scope: string, colour: string
   const { Box, Button, Text } = $.ui.resolve(e)
   const lit = inContext(r.mode)
   const cost = r.tokens > 0 ? tag(r.tokens, r.exact) : ''
+  // A plugin's skill leads to its plugin.
+  const way =
+    r.goto ??
+    (r.plugin !== undefined ? { tab: 'plugins', label: r.plugin || 'Plugins', filter: r.plugin } : undefined)
   return (
     <Box key={`${kind}-row:${r.name}`} hover={{ scope }} alignItems="center" gap={1}>
       <Box alignItems="center" gap={1} flexGrow={1} flexShrink={1} minWidth={0}>
@@ -728,21 +736,13 @@ function row($: any, e: any, kind: string, r: Row, scope: string, colour: string
         </Text>
         {cost !== '' && <Text dimColor>{cost}</Text>}
       </Box>
-      {r.goto ? (
+      {way ? (
         <Button
-          key={`${kind}:${r.name}:goto`}
-          label={`${r.goto.label} ›`}
+          key={`${kind}:${r.name}:${r.goto ? 'goto' : 'plugin'}`}
+          label={`${way.label} ›`}
           {...(e.surface === 'terminal' ? { variant: 'secondary' } : { plain: true })}
           dimColor
-          onPress={() => goTo($, r.goto?.tab ?? 'plugins', '')}
-        />
-      ) : r.plugin !== undefined ? (
-        <Button
-          key={`${kind}:${r.name}:plugin`}
-          label={`${r.plugin || 'Plugins'} ›`}
-          {...(e.surface === 'terminal' ? { variant: 'secondary' } : { plain: true })}
-          dimColor
-          onPress={() => goTo($, 'plugins', r.plugin ?? '')}
+          onPress={() => goTo($, way.tab, way.filter ?? '')}
         />
       ) : r.modes.length === 0 ? (
         <Text dimColor>no switch</Text>
@@ -869,13 +869,17 @@ const SOURCE_TITLE: Record<Source, string> = {
 // Claude Code's own servers, which /mcp switches by these names: always
 // listed, as a chat has them only while they are on.
 const BUILTIN = ['claude-in-chrome', 'claude-artifacts', 'computer-use']
-// The one Claude Code keeps off until the project's enabledMcpServers lists it.
+// The one Claude Code keeps off until the project's enabledMcpServers lists
+// it; every other server is on until disabledMcpServers does.
 const OPT_IN = 'computer-use'
+const listFor = (name: string) => (name === OPT_IN ? 'enabledMcpServers' : 'disabledMcpServers')
+const isOnIn = (project: Record<string, any>, name: string) =>
+  strings(project[listFor(name)]).includes(name) === (name === OPT_IN)
 // How /mcp names a connector of the claude.ai account.
 const CONNECTOR = 'claude.ai '
 const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 
-type Found = { source: Source; meta: string; cfg?: any; desc?: string; more?: string; goto?: Row['goto']; fixed?: boolean }
+type Found = { source: Source; meta: string; cfg?: any; desc?: string; more?: string; goto?: Row['goto'] }
 
 // Every MCP server this project's switch reaches, by source. The engine
 // gives a mod no list of servers with their source: they are read from the
@@ -884,23 +888,19 @@ type Found = { source: Source; meta: string; cfg?: any; desc?: string; more?: st
 // with a way to the Mods tab. Servers the desktop app supplies to its chats
 // (its connectors, its own tools) are left out: the app switches those.
 async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
-  const { global, dir } = await paths($)
-  const key = await projectKey($)
-  const [user, mcpJson, needsAuth, switches, settings] = await Promise.all([
+  const [{ global, dir, settings: settingsPath }, key] = await Promise.all([paths($), projectKey($)])
+  const [user, mcpJson, needsAuth, own, above] = await Promise.all([
     readJson($, global),
     readJson($, `${key}/.mcp.json`),
     readJson($, `${dir}/mcp-needs-auth-cache.json`),
-    switchesNow($),
-    Promise.all(
-      (['user', ...ABOVE] as const).map(async source => ((await $.settings.read({ source })) ?? {}) as Record<string, any>),
-    ),
+    readJson($, settingsPath),
+    aboveNow($),
   ])
   const project = isObject(user.projects?.[key]) ? user.projects[key] : {}
   const off = new Set(strings(project.disabledMcpServers))
-  const optedIn = new Set(strings(project.enabledMcpServers))
   // A .mcp.json server runs once approved: /mcp writes the answer to
   // settings, an older Claude Code to the project's entry.
-  const approvals = [project, ...settings]
+  const approvals = [project, own, ...above]
   const rejected = new Set(approvals.flatMap(a => strings(a.disabledMcpjsonServers)))
   const approved = new Set(approvals.flatMap(a => strings(a.enabledMcpjsonServers)))
   const approveAll = approvals.some(a => a.enableAllProjectMcpServers === true)
@@ -909,10 +909,9 @@ async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
   const add = (name: string, f: Found) => {
     if (!found.has(name)) found.set(name, f)
   }
-  const servers = (json: any) => (isObject(json?.mcpServers) ? json.mcpServers : {}) as Record<string, any>
-  for (const [n, cfg] of Object.entries(servers(project)))
+  for (const [n, cfg] of Object.entries(serversOf(project)))
     add(n, { source: 'project', meta: 'local server, this project only', cfg })
-  for (const [n, cfg] of Object.entries(servers(mcpJson)))
+  for (const [n, cfg] of Object.entries(serversOf(mcpJson)))
     add(n, {
       source: 'project',
       meta: "project server, the project's .mcp.json",
@@ -923,12 +922,13 @@ async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
           ? ''
           : 'Waiting for approval: approve it in /mcp.',
     })
-  for (const [n, cfg] of Object.entries(servers(user))) add(n, { source: 'user', meta: 'user server, every project', cfg })
-  const plugins = Object.keys(switches.enabledPlugins).filter(id => switches.enabledPlugins[id] === true)
+  for (const [n, cfg] of Object.entries(serversOf(user))) add(n, { source: 'user', meta: 'user server, every project', cfg })
+  const enabled = Object.assign({}, own.enabledPlugins, ...above.map(a => a.enabledPlugins)) as Record<string, unknown>
+  const plugins = Object.keys(enabled).filter(id => enabled[id] === true)
   for (const [id, inf] of await Promise.all(plugins.map(async id => [id, await pluginInfo($, id)] as const))) {
     const label = inf?.name ?? id.split('@')[0] ?? id
-    for (const s of inf?.mcp ?? [])
-      add(`plugin:${label}:${s}`, { source: 'plugin', meta: `from the ${label} plugin`, cfg: inf?.servers[s] })
+    for (const [s, cfg] of Object.entries(inf?.servers ?? {}))
+      add(`plugin:${label}:${s}`, { source: 'plugin', meta: `from the ${label} plugin`, cfg })
   }
   const connectors = [
     ...strings(user.claudeAiMcpEverConnected),
@@ -942,19 +942,17 @@ async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
       meta: 'claude.ai connector',
       desc: n in needsAuth ? 'Needs you to sign in: run /mcp.' : 'A connector of your claude.ai account.',
     })
-  for (const n of BUILTIN) {
-    const loaded = live.has(wire(n))
-    // On with no opt-in: the app running this chat supplies it, and a switch
-    // here would not move it.
-    const fixed = n === OPT_IN && loaded && !optedIn.has(n)
+  for (const n of BUILTIN)
     add(n, {
       source: 'builtin',
       meta: 'built into Claude Code',
       desc: n === OPT_IN ? 'Off until you switch it on for this project.' : 'On unless you switch it off for this project.',
-      more: fixed ? 'On here because the app running this chat supplies it: switch it in the app.' : '',
-      fixed,
+      // Loaded though switched off: the app running this chat supplies it.
+      more:
+        live.has(wire(n)) && !isOnIn(project, n)
+          ? 'On in this chat because the app running it supplies it: switch it in the app.'
+          : '',
     })
-  }
   // Names switched off whose server is configured nowhere here now.
   for (const n of off)
     add(n, {
@@ -978,14 +976,12 @@ async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
   for (const [s, n] of now?.servers ?? []) tokens.set(wire(s), (tokens.get(wire(s)) ?? 0) + n)
   return [...found].map(([name, f]): Row => {
     const measured = tokens.get(wire(name))
-    const switchless = f.goto !== undefined || f.fixed === true
-    const on = switchless || (name === OPT_IN ? optedIn.has(name) : !off.has(name))
     const cfg = f.cfg
     return {
       name,
       label: name,
-      mode: on ? 'on' : 'off',
-      modes: switchless ? [] : TWO,
+      mode: f.goto || isOnIn(project, name) ? 'on' : 'off',
+      modes: f.goto ? [] : TWO,
       tokens: measured ?? 0,
       exact: measured !== undefined,
       weight: measured ?? 0,
@@ -1008,10 +1004,7 @@ async function toggleMcp($: any, name: string, isOn: boolean) {
   await rewrite($, (await paths($)).global, json => {
     const projects = json.projects ?? {}
     const project = projects[key] ?? {}
-    // computer-use is the one server Claude Code keeps off until
-    // enabledMcpServers lists it; every other one is on until
-    // disabledMcpServers does.
-    const list = name === OPT_IN ? 'enabledMcpServers' : 'disabledMcpServers'
+    const list = listFor(name)
     const named = new Set<string>(strings(project[list]))
     if (isOn === (name === OPT_IN)) named.add(name)
     else named.delete(name)
