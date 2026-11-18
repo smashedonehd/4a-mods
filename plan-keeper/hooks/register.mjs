@@ -497,7 +497,7 @@ export function generatedText(steps, { cwd, session, replaces }) {
 // when no plan with items is active, added to the plan written for the last
 // one, or a new one for a new task. True when it set or changed the plan.
 // observe ticked the old plan with the old list before this list replaced it.
-async function maybeGenerate($, e) {
+async function maybeGenerate($, e, prev) {
   if (!Array.isArray(e.items) || ui.off) return false
   const gen = !!plan && isGenerated(plan.path)
   if (plan && !gen) {
@@ -514,7 +514,7 @@ async function maybeGenerate($, e) {
   // says it goes on with it.
   const carried = plan && (plan.why === 'generated' || plan.why === 'handoff')
   const grows = e.scope === 'continuation' || (carried && e.scope !== 'new_task')
-  if (gen && grows) return appendItems($, steps)
+  if (gen && grows) return appendItems($, steps, prev)
   // Another task from here on: its list's completed steps were not done for
   // the plan that goes, so they tick nothing in it (ticked)
   if (steps.length < GEN_MIN) {
@@ -558,11 +558,19 @@ async function writeOrToast($, path, text) {
   }
 }
 
-// The steps the generated plan does not hold yet, added at its end
-async function appendItems($, steps) {
-  const text = await readOr($, plan.path)
-  if (text === null) return false
-  const have = new Set(parsePlan(text).items.map((it) => norm(it.text)))
+// The steps the generated plan does not hold yet, added at its end. An open
+// item of the list this one replaces that the new list left out (dropped or
+// reworded) is deleted: the band waits on it no more.
+async function appendItems($, steps, prev) {
+  const read = await readOr($, plan.path)
+  if (read === null) return false
+  const keep = new Set(steps.map((x) => norm(x.text)))
+  // A step the old list completed was done: its item stays, unticked by hand or not
+  const gone = new Set(uniqueSteps(prev).filter((x) => x.status !== 'completed').map((x) => norm(x.text)).filter((n) => !keep.has(n)))
+  const { lines, items } = parsePlan(read)
+  const drop = new Set(items.filter((it) => !it.done && gone.has(norm(it.text))).map((it) => it.i))
+  const text = lines.filter((_, i) => !drop.has(i)).join('\n')
+  const have = new Set(items.filter((it) => !drop.has(it.i)).map((it) => norm(it.text)))
   const add = []
   for (const x of steps) {
     const n = norm(x.text)
@@ -570,8 +578,8 @@ async function appendItems($, steps) {
     have.add(n)
     add.push(`- [ ] ${oneLine(x.text)}`)
   }
-  if (!add.length) return false
-  const out = text.replace(/\s*$/, '\n') + add.join('\n') + '\n'
+  if (!add.length && !drop.size) return false
+  const out = !add.length ? text : text.replace(/\s*$/, '\n') + add.join('\n') + '\n'
   if (!(await writeOrToast($, plan.path, out))) return false
   await refresh($, out)
   return true
@@ -590,6 +598,7 @@ const merges = (cmd) => {
 // wrapped up or a PR merged
 async function observe($, e, result) {
   await ready($)
+  const prev = tasks // the list a whole new one replaces: applyPlanUpdate assigns a new array
   const t = e.tool
   if (t === 'Bash' && merges(String(e.command || ''))) return tick($)
   if (e.agentId) return // a subagent's plan and task list are its own
@@ -622,7 +631,7 @@ async function observe($, e, result) {
   } else return
   await saveTasks($)
   if (t === WRAP_TOOL) await tick($)
-  else if (!(t === PLAN_TOOL && (await maybeGenerate($, e)))) await refresh($)
+  else if (!(t === PLAN_TOOL && (await maybeGenerate($, e, prev)))) await refresh($)
 }
 
 // Ticks the items the newly completed steps name; writes only when one changes

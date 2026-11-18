@@ -1278,6 +1278,51 @@ test('a fresh chat\'s first task does not grow a plan picked from an earlier cha
   assert.match(disk.text(old), /- \[ \] Old C\n- \[ \] Old D\n- \[ \] Old E\n$/)
 })
 
+test('a continuation deletes the open steps the list it replaces left out; done ones stay', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Build it with a proxy', 'Ship')] })
+  const path = genPath(disk)
+  // Reworded and dropped: the old open items leave the plan
+  await s.call(UP, { items: [{ content: 'Look around', status: 'completed' }, ...items('Build it with a script', 'Check it')], scope: 'continuation' })
+  assert.match(disk.text(path), /\n\n- \[x\] Look around\n- \[ \] Build it with a script\n- \[ \] Check it\n$/)
+  assert.match(flat(await s.band()), /1\/3/)
+  // Done in the old list: stays ticked though the new list leaves it out
+  await s.call(UP, { advance: true })
+  await s.call(UP, { items: items('Check it', 'Report'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[x\] Look around\n- \[x\] Build it with a script\n- \[ \] Check it\n- \[ \] Report\n$/)
+  // The same list again drops and adds nothing: no write
+  const before = disk.writes.length
+  await s.call(UP, { items: items('Check it', 'Report'), scope: 'continuation' })
+  assert.equal(disk.writes.length, before)
+  // Completed in the old list but unticked by hand: the item stays, unticked
+  await s.call(UP, { done: [1] })
+  await s.call(UP, { items: [{ content: 'Check it', status: 'completed' }, ...items('Report')], scope: 'continuation' })
+  await disk.fs.write(path, disk.text(path).replace('- [x] Check it', '- [ ] Check it'))
+  await s.call(UP, { items: items('Report', 'Wrap'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[ \] Check it\n- \[ \] Report\n- \[ \] Wrap\n$/)
+})
+
+test('a continuation keeps an item ticked by hand though its open step is left out', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const path = genPath(disk)
+  await disk.fs.write(path, disk.text(path).replace('- [ ] Beta', '- [x] Beta'))
+  await s.call(UP, { items: items('Alpha', 'Delta'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[ \] Alpha\n- \[x\] Beta\n- \[ \] Delta\n$/)
+})
+
+test('a continuation keeps the line endings of a CRLF plan when it deletes an item', async () => {
+  const disk = makeFs({})
+  const s = await boot(disk, { sid: 's1' })
+  await s.call(UP, { items: items('Alpha', 'Beta', 'Gamma') })
+  const path = genPath(disk)
+  await disk.fs.write(path, disk.text(path).replace(/\n/g, '\r\n'))
+  await s.call(UP, { items: items('Alpha', 'Gamma'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[ \] Alpha\r\n- \[ \] Gamma\r\n$/)
+})
+
 test('a step listed twice is written once; a name taken in the same minute gets a number; a failed write toasts', async () => {
   const disk = makeFs({})
   const s = await boot(disk, { sid: 's1' })
