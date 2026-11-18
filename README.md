@@ -108,7 +108,7 @@ By [johnnyvizz](https://github.com/johnnyvizz), MIT, copied from [johnnyvizz/cla
 
 ## Filetree
 
-By [Kurt Buhler](https://github.com/data-goblin), MIT, copied from [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) (version 0.8.2) with one local fix (0.8.3). Details in [filetree/README.md](filetree/README.md).
+By [Kurt Buhler](https://github.com/data-goblin), MIT, copied from [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) (version 0.8.2) with one local fix (0.8.3, 0.8.4). Details in [filetree/README.md](filetree/README.md).
 
 - **Tree pane** (`/filetree`): the chat's folder with git status, the branch, and a column of date, size or line count. The files Claude reads, writes and commits shimmer.
 - **Search, diff and preview**: by name or inside files, a diff of a changed file or folder against `HEAD`, and previews of code, Markdown, images and PDF.

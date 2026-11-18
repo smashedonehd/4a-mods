@@ -215,13 +215,15 @@ let noDock = false
 // its surface after session.start, and an open before that is refused with
 // no-surface. session.attach opens it again. An engine workaround: the engine
 // types say such an open resolves { isPlaced: false } and the pane waits by
-// itself; drop this once the runtime does that instead of rejecting.
+// itself; drop this once the runtime does that instead of rejecting. Since
+// 0.8.4 the open at start is skipped while surfaces() is empty; the catch stays.
 let waitingPane: { title: string; focus: boolean } | null = null
 
-async function openPane($: EngineInterface, title: string, focus = false): Promise<void> {
+async function openPane($: EngineInterface, title: string, focus = false, attached = false): Promise<void> {
   // With no surface yet the open is not tried at all: the host shows every
-  // refused open to the person, even one the mod catches
-  if (await $.session.surfaces().then(s => s.length === 0, () => false)) {
+  // refused open to the person, even one the mod catches. After an attach a
+  // surface exists, so that open goes ahead (a refusal is still caught below)
+  if (!attached && (await $.session.surfaces().then(s => s.length === 0, () => false))) {
     waitingPane = { title, focus }
     return
   }
@@ -3546,7 +3548,7 @@ export const register: Register = (on, options) => {
   on('session.attach', async ($, e, next) => {
     const result = await next(e)
     // noDock is checked again: /filetree off may have run before the app attached
-    if (waitingPane && (waitingPane.focus || !noDock)) void openPane($, waitingPane.title, waitingPane.focus).catch(() => undefined)
+    if (waitingPane && (waitingPane.focus || !noDock)) void openPane($, waitingPane.title, waitingPane.focus, true).catch(() => undefined)
     return result
   })
 

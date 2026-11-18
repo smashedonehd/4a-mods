@@ -419,7 +419,8 @@ test('desktop app: with no surface at start the pane is not tried until the app 
     os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root,
     dirs: { [root]: [['README.md', 'file']] }, status: '## main ', numstat: '',
     refuseOpen: () => !attached && ++refused > 0,
-    surfaces: () => (attached ? ['desktop'] : []),
+    // Still empty at the attach: an attach alone lets the open go ahead
+    surfaces: () => [],
   }, ran)
   on('session.attach', (_$, e) => ({ clientId: e.clientId }))
   const before = opens.length
