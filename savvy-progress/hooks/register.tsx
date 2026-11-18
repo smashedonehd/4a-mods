@@ -339,7 +339,11 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   const rows = Math.floor(BAR_H / CELL)
   const dense = new Map<string, string[]>()
   const faint = new Map<string, string[]>()
-  const dot = (to: Map<string, string[]>, fill: string, rect: string) => to.set(fill, [...(to.get(fill) ?? []), rect])
+  const dot = (to: Map<string, string[]>, fill: string, rect: string) => {
+    const rects = to.get(fill)
+    if (rects) rects.push(rect)
+    else to.set(fill, [rect])
+  }
   const denseDots = (fill: string, from: number, to: number) => {
     const n = Math.floor((to - from) / CELL)
     for (let i = 0; i < n; i++) {
@@ -361,7 +365,8 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   if (spans) {
     for (const p of spans) {
       denseDots(p.color, p.start, p.fill)
-      faintDots(p.color, p.fill, p.end)
+      // A slot with no run yet has nothing handed out: bare track
+      if (p.isRunning) faintDots(p.color, p.fill, p.end)
     }
   } else {
     denseDots(color, 0, fillW)
@@ -381,8 +386,11 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 
   const text = label(f)
   const pillW = Math.round(18 + text.length * 6.6)
-  // The pill rides the head of the fill: with parts, of the last part that has any.
-  const head = spans ? spans.reduce((h, p) => (p.done ? p.fill : h), 0) : fillW
+  // The pill rides the head of the fill: with parts, of the last part that has any,
+  // in that part's colour, so a short fill under it still reads as that part's.
+  const headPart = spans?.findLast(p => p.done)
+  const head = spans ? (headPart?.fill ?? 0) : fillW
+  const pillColor = headPart?.color ?? color
   const pillX = bx(Math.max(0, Math.min(BAR_W - pillW, head - pillW)), pillW)
   const percent = `${Math.round(ratio(f) * 100)}%`
   // `direction="rtl"` puts Hebrew words and numbers in reading order; `start` is then the right edge.
@@ -411,7 +419,7 @@ ${groups(faint, ' opacity="0.45"')}
 <g class="tk">${ticks.join('')}</g>
 ${gaps.join('')}
 </g>
-<rect x="${pillX}" width="${pillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
+<rect x="${pillX}" width="${pillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${pillColor}"/>
 <text x="${pillX + pillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle"${rtl ? ' direction="rtl"' : ''} font-family="${FONT}" font-size="11" font-weight="600" fill="#ffffff">${xml(text)}</text>
 </g>
 <text class="m" ${percentAt} font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
@@ -634,10 +642,11 @@ const autoFlow = (list: AgentRun[], hidden: string, min: number): Flow | null =>
 // One subagent's part of the bar: its reported steps; 0/1 while it works without
 // a report and 1/1 once it ended without one. An ended run (failed too) is full,
 // as the wave counts it finished. A changed total is read as it stands now.
-const partOf = (a: AgentRun | undefined, isAccepted = false): { done: number; total: number } => {
+const partOf = (a: AgentRun | undefined, isAccepted = false): Omit<BarPart, 'color'> => {
   const total = Math.min(MAX_TASKS, a?.stepTotal || 1)
-  if (!a) return { done: isAccepted ? 1 : 0, total: 1 }
-  return { done: a.status === 'running' ? Math.min(total, a.stepTotal ? (a.stepDone ?? 0) : 0) : total, total }
+  if (!a) return { done: isAccepted ? 1 : 0, total: 1, isRunning: false }
+  const isRunning = a.status === 'running'
+  return { done: isRunning ? Math.min(total, a.stepTotal ? (a.stepDone ?? 0) : 0) : total, total, isRunning }
 }
 
 // The flow counted in steps: the parts' sums, each part with its colour. A slot
@@ -655,15 +664,19 @@ const withSteps = (f: Flow, runs: (AgentRun | undefined)[], accepted = 0): Flow 
 }
 
 // An open plan of at most STEP_MAX tasks, counted in steps: each task is the
-// latest run that carries its title, else a run of the wave no task names.
-// Slots with no run fill from the plan's accepted count. A bigger plan counts tasks.
+// latest run of the wave that carries its title and no earlier task took, else a
+// run of the wave no task names. Only the wave: an ended run of an earlier round
+// with the same title is not this task's. Slots with no run fill from the plan's
+// accepted count. A bigger plan counts tasks.
 const planSteps = (f: Flow, list: AgentRun[]): Flow => {
   if (f.total < 1 || f.total > STEP_MAX) return f
-  const runs = Array.from({ length: f.total }, (_, i) => {
-    const title = norm(f.tasks[i]?.title ?? '')
-    return title ? list.findLast(a => norm(a.description) === title) : undefined
-  })
-  const free = waveOf(list).filter(a => !runs.includes(a))
+  const wave = waveOf(list)
+  const runs: (AgentRun | undefined)[] = []
+  for (let i = 0; i < f.total; i++) {
+    const title = norm(f.tasks?.[i]?.title ?? '')
+    runs.push(title ? wave.findLast(a => norm(a.description) === title && !runs.includes(a)) : undefined)
+  }
+  const free = wave.filter(a => !runs.includes(a))
   const slots = runs.map(a => a ?? free.shift())
   const ended = slots.filter(a => a && a.status !== 'running').length
   return withSteps(f, slots, f.done - ended)
@@ -1885,11 +1898,14 @@ export const register: Register = (on, options) => {
             <Text color={f.isFinished ? DONE : ACCENT}>● </Text>
             <Text wrap="truncate-end">{f.title}</Text>
           </Box>
-          {barText(f, width).map((p, i) => (
-            <Text key={`bar-${i}`} color={p.color}>
-              {p.text}
-            </Text>
-          ))}
+          {/* The parts sit flush: the row's gap would widen the bar by two columns a part */}
+          <Box key="bar" flexDirection="row" flexShrink={0}>
+            {barText(f, width).map((p, i) => (
+              <Text key={`bar-${i}`} color={p.color}>
+                {p.text}
+              </Text>
+            ))}
+          </Box>
           <Text bold>{label(f)}</Text>
           <Text dimColor>{percent}</Text>
           <Text color={CLAY}>▣</Text>

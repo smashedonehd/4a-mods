@@ -24,6 +24,8 @@ export type BarPart = {
   done: number
   total: number
   color: string
+  /** Its run still works: the part's undone rest is drawn faint, as handed out. */
+  isRunning: boolean
 }
 
 export type AgentStatus = 'running' | 'done' | 'failed'

@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 // With few subagents (STEP_MAX, 3) the band counts their own reported steps, one
@@ -24,8 +24,8 @@ function session(on: On) {
   return clock
 }
 
-const spawn = ($: Engine, id: string) =>
-  $.agent.spawn({ tool_use_id: id, prompt: 'p', description: `Task ${id}`, subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false } as never)
+const spawn = ($: Engine, id: string, description = `Task ${id}`) =>
+  $.agent.spawn({ tool_use_id: id, prompt: 'p', description, subagentType: 'general-purpose', provider: 'engine', parentModel: 'claude-opus-5-5', background: false, fork: false } as never)
 
 const finish = ($: Engine, id: string, reason = 'answer') =>
   ($.turn.complete as (e: unknown) => Promise<unknown>)({ agentId: id, reason, answer: 'ok' })
@@ -55,7 +55,10 @@ async function terminal($: Engine) {
 
 // The fill colours the desktop bar's dense dots use, in drawing order
 const dotColors = (source: string) => [...source.matchAll(/<g fill="(#[0-9a-f]{6})">/g)].map(m => m[1])
-const gaps = (source: string) => (source.match(/<rect class="k" x="[\d.-]+" width="2"/g) ?? []).length
+const gapXs = (source: string) => [...source.matchAll(/<rect class="k" x="([\d.-]+)" width="2"/g)].map(m => Number(m[1]))
+const gaps = (source: string) => gapXs(source).length
+const barW = (source: string) => Number(/<rect class="k" width="(\d+)"/.exec(source)?.[1])
+const pillColor = (source: string) => /rx="8" fill="(#[0-9a-f]{6})"\/>/.exec(source)?.[1]
 
 test('steps: one agent at 5/8 shows 5/8, not 0/1', async ($, on) => {
   session(on)
@@ -80,7 +83,9 @@ test('steps: two agents at 5/8 and 2/5 show 7/13 in two colours', async ($, on) 
   const d = await desktop($)
   expect(d?.alt).toBe('Subagents: Steps 7/13, 54%')
   expect(dotColors(d?.source ?? '')).toEqual([VIOLET, TEAL])
-  expect(gaps(d?.source ?? '')).toBe(1)
+  expect(gapXs(d?.source ?? '')).toEqual([Math.round((barW(d?.source ?? '') * 8) / 13) - 1])
+  // The pill sits on the teal part's fill: teal, so that fill still reads as the teal part's
+  expect(pillColor(d?.source ?? '')).toBe(TEAL)
   const t = await terminal($)
   expect(t.label).toBe('Steps 7/13')
   expect(t.bar.map(p => p.color)).toEqual([VIOLET, TEAL])
@@ -180,6 +185,85 @@ test('steps: a plan task with no run of the wave counts as the plan accepted it'
   await spawn($, 'b')
   await report($, 'b', 1, 4)
   expect((await desktop($))?.alt).toBe('Ship it: Steps 2/5, 40%')
+  // b, the wave's run, takes the first slot: violet and 4 of 5 wide
+  const t = await terminal($)
+  expect(t.bar.map(p => p.color)).toEqual([VIOLET, TEAL])
+  const width = t.bar.reduce((w, p) => w + p.width, 0)
+  expect(t.bar[0]?.width).toBe(Math.round((width * 4) / 5))
+})
+
+test('steps: a run of the wave that ended is not counted again by the plan’s accepted count', async ($, on) => {
+  session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 3, phase: 'delegate' } as never)
+  await spawn($, 'a')
+  await finish($, 'a')
+  await $.tool.call({ tool: PROGRESS, done: 1 } as never)
+  // In the same millisecond: b joins a's wave, and a's own slot is the accepted one
+  await spawn($, 'b')
+  expect((await desktop($))?.alt).toBe('Ship it: Tasks 1/3, 33%')
+})
+
+test('steps: a task title matches only runs of the wave, not an ended earlier one', async ($, on) => {
+  const clock = session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', phase: 'delegate', tasks: [{ title: 'Task r' }, { title: 'Task s' }] } as never)
+  await spawn($, 'r')
+  await finish($, 'r')
+  clock.now += 60_000
+  await spawn($, 's')
+  await report($, 's', 1, 4)
+  // r ended in an earlier wave and the plan accepted nothing: its slot is 0/1
+  expect((await desktop($))?.alt).toBe('Ship it: Steps 1/5, 20%')
+})
+
+test('steps: two tasks with one title take two runs, the latest first', async ($, on) => {
+  session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', phase: 'delegate', tasks: [{ title: 'Task x' }, { title: 'Task x' }] } as never)
+  await spawn($, 'x1', 'Task x')
+  await spawn($, 'x2', 'Task x')
+  await report($, 'x1', 1, 4)
+  await report($, 'x2', 2, 4)
+  expect((await desktop($))?.alt).toBe('Ship it: Steps 3/8, 38%')
+  const t = await terminal($)
+  expect(t.bar[0]?.filled).toBe(Math.round((t.bar[0]?.width ?? 0) / 2))
+  expect(t.bar[1]?.filled).toBe(Math.round((t.bar[1]?.width ?? 0) / 4))
+})
+
+test('steps: a total past the cap counts as the cap', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await report($, 'a', 5, 1000)
+  expect((await desktop($))?.alt).toBe('Subagents: Steps 5/201, 2%')
+})
+
+test('steps: the terminal parts sit flush, and a finished wave is one green bar', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await report($, 'a', 1, 2)
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band })
+  const box = await ui.find({ key: 'bar' })
+  await ui.unmount()
+  expect(box).toBeTruthy()
+  expect(box?.props.gap ?? 0).toBe(0)
+  await finish($, 'a')
+  await finish($, 'b')
+  expect((await terminal($)).bar.map(p => p.color)).toEqual(['#5fbf8f'])
+})
+
+test('steps: right to left, the gap between parts is mirrored', async ($, on) => {
+  session(on)
+  mock.env(on, { LANG: 'he_IL.UTF-8' })
+  on('settings.read', async () => ({ value: {} }) as never)
+  on('session.start', async () => ({ cwd: '/repo' }) as never)
+  await $.session.start({ source: 'startup', cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await report($, 'a', 5, 8)
+  await report($, 'b', 2, 5)
+  const source = (await desktop($))?.source ?? ''
+  const w = barW(source)
+  expect(gapXs(source)).toEqual([w - Math.round((w * 8) / 13) - 1])
 })
 
 test('steps: plan tasks take the runs that carry their titles, in the plan’s order', async ($, on) => {
