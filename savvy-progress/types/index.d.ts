@@ -50,6 +50,7 @@ declare module 'claude-code' {
   interface PluginState {
     'savvy-progress': {
       flow: Flow | null
+      kept: Flow | null
       agents: AgentRun[]
       panel: Panel
       now: number
