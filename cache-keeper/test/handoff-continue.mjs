@@ -1731,26 +1731,47 @@ const COND = 'Dokonči žluťoučký úkol "A" bez vypnutí testů'
 const SET = goalRow({ met: false, sentinel: true, condition: COND })
 const USER_ROW = JSON.stringify({ type: 'user', message: { role: 'user', content: 'go on' } })
 
-await check('goalInTranscript: the last goal_status row decides; met, cleared, quoted and sidechain rows give no goal', () => {
-  assert.equal(goalInTranscript(''), undefined)
-  assert.equal(goalInTranscript(USER_ROW + '\n'), undefined)
-  assert.equal(goalInTranscript([USER_ROW, SET, USER_ROW].join('\n') + '\n'), COND)
-  assert.equal(goalInTranscript([USER_ROW, SET, USER_ROW].join('\r\n') + '\r\n'), COND)
+// The condition goalInTranscript settles on: '' for none active, undefined for no goal row
+const goalOf = (jsonl) => {
+  const g = goalInTranscript(jsonl)
+  return g && g.condition
+}
+// A day's goal rows with their times: set at 01:04, met at 18:52
+const AT_SET = '2026-08-29T01:04:38.000Z'
+const AT_MET = '2026-08-29T18:52:41.000Z'
+const SET_EARLY = goalRow({ met: false, sentinel: true, condition: COND }, { timestamp: AT_SET })
+const MET_LATE = goalRow({ met: true, sentinel: true, condition: COND }, { timestamp: AT_MET })
+
+await check('goalInTranscript: rows a compaction repeats further down do not bring a met goal back; the newest time decides', () => {
+  // The file after a compaction: the old "set" row again, below the "met" that ended it
+  assert.deepEqual(goalInTranscript([SET_EARLY, MET_LATE, USER_ROW, SET_EARLY].join('\n')), { at: AT_MET, condition: '' })
+  // And a goal still active stays so when its rows repeat
+  const check2 = goalRow({ met: false, condition: COND, reason: 'Not yet.' }, { timestamp: AT_MET })
+  assert.deepEqual(goalInTranscript([SET_EARLY, check2, SET_EARLY].join('\n')), { at: AT_MET, condition: COND })
+  // Set again at the very time the one before was cleared: the later row of that time counts
+  assert.equal(goalOf([SET_EARLY, MET_LATE, goalRow({ met: false, sentinel: true, condition: 'next' }, { timestamp: AT_MET })].join('\n')), 'next')
+})
+
+await check('goalInTranscript: of rows without a time the last decides; met, cleared, quoted and sidechain rows give no goal', () => {
+  assert.equal(goalOf(''), undefined)
+  assert.equal(goalOf(USER_ROW + '\n'), undefined)
+  assert.equal(goalOf([USER_ROW, SET, USER_ROW].join('\n') + '\n'), COND)
+  assert.equal(goalOf([USER_ROW, SET, USER_ROW].join('\r\n') + '\r\n'), COND)
   // Checked at a turn's end and not met yet: still active
-  assert.equal(goalInTranscript([SET, goalRow({ met: false, condition: COND, reason: 'Not yet.' })].join('\n')), COND)
+  assert.equal(goalOf([SET, goalRow({ met: false, condition: COND, reason: 'Not yet.' })].join('\n')), COND)
   // Met, and taken off with /goal clear
-  assert.equal(goalInTranscript([SET, goalRow({ met: true, condition: COND, reason: 'Done.' })].join('\n')), '')
-  assert.equal(goalInTranscript([SET, goalRow({ met: true, sentinel: true, condition: COND })].join('\n')), '')
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND, reason: 'Done.' })].join('\n')), '')
+  assert.equal(goalOf([SET, goalRow({ met: true, sentinel: true, condition: COND })].join('\n')), '')
   // A later goal replaces the one before
-  assert.equal(goalInTranscript([SET, goalRow({ met: true, condition: COND }), goalRow({ met: false, sentinel: true, condition: 'second goal' })].join('\n')), 'second goal')
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND }), goalRow({ met: false, sentinel: true, condition: 'second goal' })].join('\n')), 'second goal')
   // A row quoted in a tool result, a subagent's row and a broken line are no goal rows
   const quoted = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: SET }] } })
-  assert.equal(goalInTranscript([quoted, goalRow({ met: false, condition: 'agent goal' }, { isSidechain: true }), SET.slice(0, -5)].join('\n')), undefined)
-  assert.equal(goalInTranscript([SET, goalRow({ met: true, condition: COND }), quoted].join('\n')), '')
+  assert.equal(goalOf([quoted, goalRow({ met: false, condition: 'agent goal' }, { isSidechain: true }), SET.slice(0, -5)].join('\n')), undefined)
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND }), quoted].join('\n')), '')
   // Only an attachment row counts, whatever else carries the same field
-  assert.equal(goalInTranscript(SET.replace('"type":"attachment","uuid"', '"type":"system","uuid"')), undefined)
+  assert.equal(goalOf(SET.replace('"type":"attachment","uuid"', '"type":"system","uuid"')), undefined)
   // A row without a usable condition is no goal
-  assert.equal(goalInTranscript(goalRow({ met: false })), '')
+  assert.equal(goalOf(goalRow({ met: false })), '')
 })
 
 // The chat's first line and the clear, with this transcript file; opts go to boot
@@ -1808,10 +1829,16 @@ await check('a goal far back in a transcript larger than one read is found, a pa
   const parts = s.reads.filter((r) => r.path === '/t/goal0007-0.jsonl')
   assert.ok(parts.length >= 3, String(parts.length))
   assert.ok(parts.every((r) => r.length <= 4 * 1024 * 1024))
-  // Met near the end: the early row does not count, and one read settles it
+  // Met near the end: the early row does not count
   const m = await clearWithGoal('goal0008-0', SET + '\n' + tail + goalRow({ met: true, condition: COND, reason: 'Done.' }) + '\n' + filler + '\n')
   assert.equal(m.commands.filter((c) => c.command === 'goal').length, 0)
-  assert.equal(m.reads.filter((r) => r.path === '/t/goal0008-0.jsonl').length, 1)
+  // Met in the first part, its old "set" row repeated in the last: the parts are settled by time
+  const r = await clearWithGoal('goal0013-0', SET_EARLY + '\n' + MET_LATE + '\n' + tail + SET_EARLY + '\n')
+  assert.equal(r.commands.filter((c) => c.command === 'goal').length, 0)
+  assert.equal(goalLine(r), undefined)
+  // Active, its newest check in the first part and an older row in the last
+  const a = await clearWithGoal('goal0014-0', goalRow({ met: false, condition: COND, reason: 'Not yet.' }, { timestamp: AT_MET }) + '\n' + tail + goalRow({ met: true, condition: 'an older goal' }, { timestamp: AT_SET }) + '\n')
+  assert.deepEqual(a.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
 })
 
 await check('a /goal that never settles holds nothing up: the handoff is in and the chat is free', async () => {
@@ -1838,8 +1865,11 @@ await check('a handoff that could not be sent: no /goal into the empty chat, and
   assert.ok(s.log.includes('run:clear'))
   assert.ok(!s.log.includes('run:goal'), s.log.join(' | '))
   assert.ok(s.log.some((l) => l.startsWith('toast:The goal of the cleared chat is not set again')), s.log.join(' | '))
-  // The text left for the prompt box names the goal
-  assert.ok(s.fills[0].text.includes(': ' + COND))
+  // The text left for the prompt box names the goal, and promises no setting it
+  const line = s.fills[0].text.split('\n').find((l) => l.startsWith('Goal ('))
+  assert.ok(line.endsWith(': ' + COND), line)
+  assert.match(line, /not set in this chat yet/)
+  assert.ok(!/Cache Keeper sets it again/.test(s.fills[0].text))
 })
 
 await check('the desktop band keeps its auto clear tag and keep-warm Select, and no skill tags', async () => {

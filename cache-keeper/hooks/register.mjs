@@ -657,21 +657,23 @@ async function liveState($) {
 // With a goal (/goal) active in the cleared chat, a line of its own carries its
 // condition: the fresh chat's first turn reads it there, and setGoalAgain sets
 // it once that turn is under way.
-function continuationHead(plan, goal = '') {
+// isArmed false: the text for a handoff that was not sent, where nothing sets it.
+function continuationHead(plan, goal = '', isArmed = true) {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
   const head = `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
-  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; Cache Keeper sets it again right after this message, so work toward it and do not set it yourself): ${goal}`].filter(Boolean).join('\n')
+  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; ${isArmed ? 'Cache Keeper sets it again right after this message, so work toward it and do not set it yourself' : 'not set in this chat yet, I set it again with /goal'}): ${goal}`].filter(Boolean).join('\n')
 }
 
 // The goal (/goal) active in this chat, or '': /clear takes it off, so clear and
 // continue reads it first and sets it again in the fresh chat. Claude Code gives
-// a mod no call for it; the transcript file records it (goalInTranscript). Read
-// from the file's end backwards, a read at a time, up to the first row that
-// names a goal: reads overlap, so a row cut at one read's edge is whole in the
-// next. Anything unreadable gives '': a goal is never guessed.
+// a mod no call for it; the transcript file records it (goalInTranscript). The
+// whole file is read, a part at a time, since its newest goal row may lie
+// anywhere in it: parts overlap, so a row cut at one part's edge is whole in
+// the next. Anything unreadable, or a file past GOAL_SCAN, gives '': a goal is
+// never guessed.
 const GOAL_READ = 4 * 1024 * 1024 // the most $.fs.read gives at once
 const GOAL_OVERLAP = 256 * 1024
-const GOAL_SCAN = 256 * 1024 * 1024
+const GOAL_SCAN = 512 * 1024 * 1024
 async function activeGoal($) {
   try {
     let file = ''
@@ -682,21 +684,23 @@ async function activeGoal($) {
     }
     if (!file) file = transcriptPath(home, S.cwd, S.id)
     const { size } = await $.fs.stat(file)
-    for (let end = size; end > 0 && size - end < GOAL_SCAN; ) {
-      const start = Math.max(0, end - (GOAL_READ - GOAL_OVERLAP))
+    if (!(size <= GOAL_SCAN)) return ''
+    let last
+    for (let start = 0; start < size; start += GOAL_READ - GOAL_OVERLAP) {
       const length = Math.min(size - start, GOAL_READ)
       let text = String(await $.fs.read(file, { offset: start, length }))
       // The first and the last line may be cut: both are whole in a neighbour
       if (start > 0) text = text.slice(text.indexOf('\n') + 1 || text.length)
       if (start + length < size) text = text.slice(0, text.lastIndexOf('\n') + 1)
-      const goal = goalInTranscript(text)
-      if (goal !== undefined) return goal
-      end = start
+      const found = goalInTranscript(text)
+      if (found && !(last && found.at < last.at)) last = found
+      if (start + length >= size) break
     }
+    return last ? last.condition : ''
   } catch {
     // no transcript file, or it cannot be read
+    return ''
   }
-  return ''
 }
 
 // Sets the cleared chat's goal again, as /goal typed in the fresh one. Not
@@ -819,7 +823,9 @@ async function clearAndSend($) {
   const live = liveState($).catch(() => '')
   // Read before /clear takes the goal off and the chat gets a new transcript
   const goal = await activeGoal($)
-  const head = continuationHead(await activePlan($), goal)
+  const plan = await activePlan($)
+  const head = continuationHead(plan, goal)
+  const headUnsent = goal ? continuationHead(plan, goal, false) : head
   const body = H.text
   const path = H.path
   const fid = H.fid
@@ -835,7 +841,9 @@ async function clearAndSend($) {
   H.fid = ''
   H.fromDisk = false
   P.phase = ''
-  const text = [head, await live, body].filter(Boolean).join('\n\n')
+  const rest = [await live, body]
+  const under = (first) => [first, ...rest].filter(Boolean).join('\n\n')
+  const text = under(head)
   try {
     setPhase($, 'sending handoff')
     await $.prompt.submit({ text, asUser: true })
@@ -847,7 +855,7 @@ async function clearAndSend($) {
     // Not sent: leave it in the prompt box for one Enter
     let filled = false
     try {
-      filled = !!(await $.prompt.fill({ text })).isFilled
+      filled = !!(await $.prompt.fill({ text: under(headUnsent) })).isFilled
     } catch {
       filled = false
     }
