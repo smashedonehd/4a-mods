@@ -1444,6 +1444,7 @@ const mcpSetup = (
   project: Record<string, unknown> = {},
   extra: Record<string, string> = {},
   user: Record<string, unknown> = {},
+  local: Record<string, unknown> = { disabledMcpjsonServers: ['rejected'], enabledMcpjsonServers: ['shared'] },
 ) => {
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
@@ -1486,7 +1487,7 @@ const mcpSetup = (
       e?.source === 'user'
         ? JSON.parse(files[SETTINGS] ?? '{}')
         : e?.source === 'local'
-          ? { disabledMcpjsonServers: ['rejected'], enabledMcpjsonServers: ['shared'] }
+          ? local
           : {},
   }))
   listing(on, files)
@@ -1528,7 +1529,8 @@ test('the MCP tab lists every server it can switch, by source', async ($, on) =>
   // A plugin switched off brings no server.
   expect(await ui.find({ type: 'Button', key: 'mcp:plugin:gone:x:off' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^Rejected for this project: approve it in \/mcp\.$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Waiting for approval: approve it in \/mcp\.$/ })).toBeTruthy()
+  // waiting alone: shared is approved.
+  expect(await ui.findAll({ type: 'Text', text: /^Waiting for approval/ })).toHaveLength(1)
   // Sections run user, project and local, plugins, connectors, built in, mods.
   const heads = ((await ui.findAll({ type: 'Text', text: / · \d+$/ })) as any[]).map(t => String(t.text).split(' · ')[0])
   expect(heads).toEqual(['USER', 'PROJECT AND LOCAL', 'FROM PLUGINS', 'CLAUDE.AI CONNECTORS', 'BUILT IN', 'FROM MODS'])
@@ -1634,5 +1636,13 @@ test('a name switched off whose server is gone keeps its row, to switch it back'
   expect(await ui.find({ type: 'Text', text: /^Not configured here, only listed as disabled\.$/ })).toBeTruthy()
   await ui.press({ key: 'mcp:ghost:on' })
   expect(projectIn(files).disabledMcpServers).toEqual([])
+  await ui.unmount()
+})
+
+test('enableAllProjectMcpServers approves every .mcp.json server', async ($, on) => {
+  mcpSetup(on, [], {}, {}, {}, { enableAllProjectMcpServers: true })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await ui.findAll({ type: 'Text', text: /^(Waiting for approval|Rejected for this project)/ })).toHaveLength(0)
   await ui.unmount()
 })
