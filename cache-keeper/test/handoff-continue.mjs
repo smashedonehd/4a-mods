@@ -130,7 +130,7 @@ async function boot(cwd, id, opts = {}) {
     agent: { list: () => (opts.agentList ? opts.agentList() : Promise.resolve(opts.agents || [])) },
     command: {
       register: async () => {},
-      list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }, { name: 'caveman:caveman' }, { name: 'jev:on' }, { name: 'navigating-code-with-lsp' }],
+      list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }],
       run: async (c) => void log.push('run:' + c.command),
     },
     turn: { abort: async (x) => void log.push('abort:' + x.turnId) },
@@ -1697,6 +1697,8 @@ await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle,
 await check('clear and continue sends the handoff and runs no skill used before the clear again', async () => {
   const s = await boot('/w/rev', 'rev00001-0', { select: true })
   await s.run('caveman:caveman', 'ultra')
+  // Nothing about the skill is kept for the fresh chat
+  assert.deepEqual([...states.keys()].filter((k) => k.startsWith('rev00001-0:')), [])
   await s.run('handoff')
   assert.ok(s.log.includes('run:clear'), s.log.join(' | '))
   assert.ok(!s.log.some((l) => l.startsWith('run:') && l !== 'run:clear'), s.log.join(' | '))
