@@ -565,7 +565,8 @@ async function appendItems($, steps, prev) {
   const read = await readOr($, plan.path)
   if (read === null) return false
   const keep = new Set(steps.map((x) => norm(x.text)))
-  const gone = new Set(prev.map((x) => norm(x.text)).filter((n) => n && !keep.has(n)))
+  // A step the old list completed was done: its item stays, unticked by hand or not
+  const gone = new Set(prev.filter((x) => x.status !== 'completed').map((x) => norm(x.text)).filter((n) => n && !keep.has(n)))
   const { lines, items } = parsePlan(read)
   const drop = new Set(items.filter((it) => !it.done && gone.has(norm(it.text))).map((it) => it.i))
   const text = lines.filter((_, i) => !drop.has(i)).join('\n')

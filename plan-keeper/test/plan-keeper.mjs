@@ -1295,6 +1295,12 @@ test('a continuation deletes the open steps the list it replaces left out; done 
   const before = disk.writes.length
   await s.call(UP, { items: items('Check it', 'Report'), scope: 'continuation' })
   assert.equal(disk.writes.length, before)
+  // Completed in the old list but unticked by hand: the item stays, unticked
+  await s.call(UP, { done: [1] })
+  await s.call(UP, { items: [{ content: 'Check it', status: 'completed' }, ...items('Report')], scope: 'continuation' })
+  await disk.fs.write(path, disk.text(path).replace('- [x] Check it', '- [ ] Check it'))
+  await s.call(UP, { items: items('Report', 'Wrap'), scope: 'continuation' })
+  assert.match(disk.text(path), /- \[ \] Check it\n- \[ \] Report\n- \[ \] Wrap\n$/)
 })
 
 test('a continuation keeps the line endings of a CRLF plan when it deletes an item', async () => {
