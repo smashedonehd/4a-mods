@@ -279,3 +279,40 @@ test('steps: plan tasks take the runs that carry their titles, in the plan’s o
   expect(t.bar[0]?.filled).toBe(0)
   expect(t.bar[1]?.filled).toBeGreaterThan(0)
 })
+
+test('steps: the pill rides the head of the last part with any fill', async ($, on) => {
+  session(on)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await report($, 'a', 5, 8)
+  await report($, 'b', 2, 5)
+  const source = (await desktop($))?.source ?? ''
+  const w = barW(source)
+  const start = Math.round((w * 8) / 13)
+  const head = start + Math.round(((w - start) * 2) / 5)
+  const pillW = Math.round(18 + 'Steps 7/13'.length * 6.6)
+  const x = Number(/<rect x="([\d.-]+)" width="\d+" height="16" rx="8" fill=/.exec(source)?.[1])
+  expect(x).toBe(Math.max(0, Math.min(w - pillW, head - pillW)))
+})
+
+test('steps: no tick inside a filled part', async ($, on) => {
+  session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 1, phase: 'delegate' } as never)
+  await spawn($, 'a')
+  await report($, 'a', 2, 8)
+  const source = (await desktop($))?.source ?? ''
+  const fill = Math.round((barW(source) * 2) / 8)
+  const ticks = [.../<g class="tk">(.*?)<\/g>/.exec(source)?.[1]?.matchAll(/<rect x="([\d.-]+)"/g) ?? []].map(m => Number(m[1]))
+  expect(ticks.length).toBe(5)
+  expect(ticks.every(x => x >= fill + 4)).toBe(true)
+})
+
+test('steps: a plan slot with no run draws no dots of its own', async ($, on) => {
+  session(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Ship it', total: 2, phase: 'delegate' } as never)
+  await spawn($, 'a')
+  await report($, 'a', 1, 4)
+  const source = (await desktop($))?.source ?? ''
+  expect(source).toContain(`<g fill="${VIOLET}" opacity="0.45">`)
+  expect(source).not.toContain(`<g fill="${TEAL}"`)
+})
