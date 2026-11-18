@@ -9,7 +9,7 @@ Cache Keeper writes the handoff, not you. Calling this skill queues it: when you
 
 What follows depends on the args you pass:
 
-- no args: once the handoff is saved, the chat clears and the handoff is sent as the fresh chat's first prompt, with live git state in front of it.
+- no args: once the handoff is saved, the chat clears and the handoff is sent as the fresh chat's first prompt, with live git state in front of it. A `/goal` still active in the cleared chat is set again there with the same text: do not set it yourself.
 - `keep`: the handoff is saved and the chat stays as it is. Pass `keep` whenever the user wants the summary without clearing. The card then offers "Clear and continue" and "Keep chat".
 - `continue` (or `go`): no new handoff; the chat clears and continues with the last saved one.
 

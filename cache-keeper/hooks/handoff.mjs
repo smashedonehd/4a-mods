@@ -495,6 +495,33 @@ export function parseTranscript(jsonl) {
   return out
 }
 
+// ---- the session's goal (/goal) -----------------------------------------------
+
+// The goal a transcript JSONL leaves active: its condition, '' when its last
+// word on a goal is that none is active, undefined when it names none at all.
+// Claude Code writes a goal as attachment rows of the main conversation,
+// { type: 'attachment', attachment: { type: 'goal_status', met, condition } }:
+// one when /goal sets it and one for each check at a turn's end (met: false),
+// one when it is met or /goal clear takes it off (met: true). The last row
+// decides. A row quoted inside another row's text (a tool result that read a
+// transcript) is not one.
+export function goalInTranscript(jsonl) {
+  const lines = String(jsonl || '').split(/\r?\n/)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('goal_status')) continue
+    let row
+    try {
+      row = JSON.parse(lines[i])
+    } catch {
+      continue
+    }
+    const a = row && row.type === 'attachment' && !row.isSidechain && row.attachment
+    if (!a || a.type !== 'goal_status') continue
+    return a.met === false && typeof a.condition === 'string' ? a.condition.trim() : ''
+  }
+  return undefined
+}
+
 // ---- pruning ----------------------------------------------------------------
 
 export const PRUNE_DAYS = 30

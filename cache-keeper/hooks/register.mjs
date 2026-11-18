@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, goalInTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -654,10 +654,67 @@ async function liveState($) {
 // read its open items. Said by the user, so "my" is the user's; it holds for
 // a handoff written by an older skill too, whose items carry no labels. With a
 // plan active, a line of its own names it: Plan Keeper reattaches it from that.
-function continuationHead(plan) {
+// With a goal (/goal) active in the cleared chat, a line of its own carries its
+// condition: the fresh chat's first turn reads it there, and setGoalAgain sets
+// it once that turn is under way.
+function continuationHead(plan, goal = '') {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
   const head = `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
-  return plan && plan.path ? `${head}\nPlan: ${plan.path}` : head
+  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; Cache Keeper sets it again right after this message, so work toward it and do not set it yourself): ${goal}`].filter(Boolean).join('\n')
+}
+
+// The goal (/goal) active in this chat, or '': /clear takes it off, so clear and
+// continue reads it first and sets it again in the fresh chat. Claude Code gives
+// a mod no call for it; the transcript file records it (goalInTranscript). Read
+// from the file's end backwards, a read at a time, up to the first row that
+// names a goal: reads overlap, so a row cut at one read's edge is whole in the
+// next. Anything unreadable gives '': a goal is never guessed.
+const GOAL_READ = 4 * 1024 * 1024 // the most $.fs.read gives at once
+const GOAL_OVERLAP = 256 * 1024
+const GOAL_SCAN = 256 * 1024 * 1024
+async function activeGoal($) {
+  try {
+    let file = ''
+    try {
+      file = String((await $.session.info()).transcriptPath || '')
+    } catch {
+      // no such API on this host: the path Claude Code names its transcripts by
+    }
+    if (!file) file = transcriptPath(home, S.cwd, S.id)
+    const { size } = await $.fs.stat(file)
+    for (let end = size; end > 0 && size - end < GOAL_SCAN; ) {
+      const start = Math.max(0, end - (GOAL_READ - GOAL_OVERLAP))
+      const length = Math.min(size - start, GOAL_READ)
+      let text = String(await $.fs.read(file, { offset: start, length }))
+      // The first and the last line may be cut: both are whole in a neighbour
+      if (start > 0) text = text.slice(text.indexOf('\n') + 1 || text.length)
+      if (start + length < size) text = text.slice(0, text.lastIndexOf('\n') + 1)
+      const goal = goalInTranscript(text)
+      if (goal !== undefined) return goal
+      end = start
+    }
+  } catch {
+    // no transcript file, or it cannot be read
+  }
+  return ''
+}
+
+// Sets the cleared chat's goal again, as /goal typed in the fresh one. Not
+// awaited: the command is queued behind the handoff's turn and may settle only
+// when that turn ends, while clear and continue must finish and let held
+// prompts go. Refused, the goal's text goes to an empty prompt box.
+function setGoalAgain($, goal) {
+  Promise.resolve()
+    .then(() => $.command.run({ command: 'goal', args: goal }))
+    .catch(async (err) => {
+      let filled = false
+      try {
+        if (!(await $.prompt.read()).text) filled = !!(await $.prompt.fill({ text: '/goal ' + goal })).isFilled
+      } catch {
+        filled = false
+      }
+      $.ui.toast(`The goal could not be set again: ${errText(err)}. ${filled ? 'It is in the prompt box: press Enter to set it.' : 'Type /goal and its text, quoted at the top of this chat.'}`, { timeoutMs: 15000 })
+    })
 }
 
 // Plan Keeper's active plan: its path, its checkbox counts and up to 8 open
@@ -760,7 +817,9 @@ async function clearAndSend($) {
   if (!(await handoffReady($))) return
   // Taken before /clear empties H; git reads while the chat clears
   const live = liveState($).catch(() => '')
-  const head = continuationHead(await activePlan($))
+  // Read before /clear takes the goal off and the chat gets a new transcript
+  const goal = await activeGoal($)
+  const head = continuationHead(await activePlan($), goal)
   const body = H.text
   const path = H.path
   const fid = H.fid
@@ -782,6 +841,8 @@ async function clearAndSend($) {
     await $.prompt.submit({ text, asUser: true })
     // Only a delivered handoff is used up: a failed send stays available
     await dropLatestHandoff($, fid)
+    // After the handoff: /goal starts Claude working, which needs the handoff read
+    if (goal) setGoalAgain($, goal)
   } catch {
     // Not sent: leave it in the prompt box for one Enter
     let filled = false
@@ -791,6 +852,8 @@ async function clearAndSend($) {
       filled = false
     }
     $.ui.toast(filled ? 'Cleared. The handoff is in the prompt box: press Enter to send it.' : `Cleared, but the handoff could not be sent.${path ? ` It's saved at ${path}.` : ''}`, { timeoutMs: 10000 })
+    // No /goal into a chat that has not read the handoff: the text names it
+    if (goal) $.ui.toast('The goal of the cleared chat is not set again: once the handoff is sent, type /goal with the text on its "Goal" line.', { timeoutMs: 15000 })
   }
 }
 
