@@ -28,7 +28,7 @@
     {
       "name": "savvy-progress",
       "source": "./savvy-progress",
-      "description": "A live panel of every subagent (/agents-info): model, effort, progress, context, estimated cost and time, plus a progress bar for savvy-flow. By johnnyvizz, MIT, copied from johnnyvizz/claude-kit"
+      "description": "A live panel of every subagent (/agents-info): model, effort, progress, context, estimated cost and time, plus a progress bar for savvy-flow that counts the steps of up to three subagents. By johnnyvizz, MIT, copied from johnnyvizz/claude-kit"
     },
     {
       "name": "filetree",

@@ -14,6 +14,18 @@ export type Flow = {
   phase: Phase
   isFinished: boolean
   tasks: PlannedTask[]
+  /** Worked out at the drawing, never stored: the subagents' own parts of the bar when it counts their steps. */
+  parts?: BarPart[]
+  /** Some part has steps a worker reported: the label says Steps, not Tasks. */
+  isSteps?: boolean
+}
+
+export type BarPart = {
+  done: number
+  total: number
+  color: string
+  /** Its run still works: the part's undone rest is drawn faint, as handed out. */
+  isRunning: boolean
 }
 
 export type AgentStatus = 'running' | 'done' | 'failed'
