@@ -58,9 +58,9 @@ const DISK = ['D:/proj/src/parse.mjs', 'D:/proj/test dir/t.mjs']
 // opts: working (a turn runs), fork (prompt -> result or promise), messages
 // (array, or a function that throws), select (desktop surface), proc
 // ($.process), timers (collects $.clock.after), options (userConfig),
-// configDeny, home, skill (the session has /session-handoff)
+// configDeny, home
 async function boot(cwd, id, opts = {}) {
-  const { working = false, select = false, timers, proc, options, configDeny = false, home = '/home', skill = true } = opts
+  const { working = false, select = false, timers, proc, options, configDeny = false, home = '/home' } = opts
   const { register } = await import(`../hooks/register.mjs?boot=${++instance}`)
   const hs = []
   register((name, a, b) => hs.push({ name, filter: b ? a : null, fn: b || a }), options || {})
@@ -130,7 +130,6 @@ async function boot(cwd, id, opts = {}) {
     agent: { list: () => (opts.agentList ? opts.agentList() : Promise.resolve(opts.agents || [])) },
     command: {
       register: async () => {},
-      list: async () => [...(skill ? [{ name: 'cache-keeper:session-handoff' }] : []), { name: 'handoff' }],
       run: async (c) => void log.push('run:' + c.command),
     },
     turn: { abort: async (x) => void log.push('abort:' + x.turnId) },
@@ -1695,7 +1694,7 @@ await check('auto handoff: /cache handoff auto on|off, the offer card\'s toggle,
 // ======================= the band, live git, pruning =======================
 
 await check('clear and continue sends the handoff and runs no skill used before the clear again', async () => {
-  const s = await boot('/w/rev', 'rev00001-0', { select: true })
+  const s = await boot('/w/rev', 'rev00001-0')
   await s.run('caveman:caveman', 'ultra')
   // Nothing about the skill is kept for the fresh chat
   assert.deepEqual([...states.keys()].filter((k) => k.startsWith('rev00001-0:')), [])

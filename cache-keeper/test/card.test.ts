@@ -27,7 +27,6 @@ async function session($: Engine, on: On, ctx = 320000) {
   on('state.get', () => ({ value: { value: undefined } }) as never)
   on('state.set', () => ({ value: undefined }) as never)
   on('command.register', (_$, e: never) => ({ value: { command: (e as { name: string }).name } }) as never)
-  on('command.list', () => ({ value: [] }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   on('session.start', async () => ({ cwd: '/repo' }) as never)
   on('turn.step', async function* () {

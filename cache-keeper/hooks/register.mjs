@@ -1286,9 +1286,9 @@ function ctxFloor(figure, limit, gauge, gap) {
 
 // How the desktop band gives way when its row would not fit, in order: the
 // context gauge narrows down to a limit card's width; then the captions take
-// their short form (also below NARROW_COLUMNS); then the
-// compact form: half-width limit gauges, short values and control labels,
-// one cell between the parts of a card. A window too narrow even for that
+// their short form (also below NARROW_COLUMNS); then the compact form:
+// half-width limit gauges, short values and control labels, one cell between
+// the parts of a card. A window too narrow even for that
 // wraps the row onto more lines; a card wider than the window itself may then
 // shrink, so its own row wraps instead of being cut off.
 const BAND_FULL = 0
