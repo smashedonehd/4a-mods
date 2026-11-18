@@ -305,6 +305,8 @@ async function readSafe($: any, path: string) {
 
 type Item = { name: string; desc: string }
 type Info = {
+  // Its manifest's name, which Claude Code names its servers by.
+  name: string
   desc: string
   version: string
   author: string
@@ -379,6 +381,7 @@ async function pluginInfo($: any, id: string): Promise<Info | null> {
         .find(s => s !== '' && !s.startsWith('#')) ?? ''
   }
   const info: Info = {
+    name: String(manifest.name || id.split('@')[0] || id),
     desc,
     version: String(manifest.version ?? entry.version ?? ''),
     author: String(manifest.author?.name ?? manifest.author ?? ''),
@@ -762,7 +765,7 @@ function section(
   const { Box, Text } = $.ui.resolve(e)
   if (list.length === 0) return null
   return (
-    <Box flexDirection="column" gap={0}>
+    <Box key={`section:${title}`} flexDirection="column" gap={0}>
       <Text bold dimColor>
         {`${title} · ${list.length}`}
       </Text>
@@ -883,16 +886,24 @@ type Found = { source: Source; meta: string; cfg?: any; desc?: string; more?: st
 async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
   const { global, dir } = await paths($)
   const key = await projectKey($)
-  const [user, mcpJson, needsAuth, switches] = await Promise.all([
+  const [user, mcpJson, needsAuth, switches, settings] = await Promise.all([
     readJson($, global),
     readJson($, `${key}/.mcp.json`),
     readJson($, `${dir}/mcp-needs-auth-cache.json`),
     switchesNow($),
+    Promise.all(
+      (['user', ...ABOVE] as const).map(async source => ((await $.settings.read({ source })) ?? {}) as Record<string, any>),
+    ),
   ])
   const project = isObject(user.projects?.[key]) ? user.projects[key] : {}
   const off = new Set(strings(project.disabledMcpServers))
   const optedIn = new Set(strings(project.enabledMcpServers))
-  const rejected = new Set(strings(project.disabledMcpjsonServers))
+  // A .mcp.json server runs once approved: /mcp writes the answer to
+  // settings, an older Claude Code to the project's entry.
+  const approvals = [project, ...settings]
+  const rejected = new Set(approvals.flatMap(a => strings(a.disabledMcpjsonServers)))
+  const approved = new Set(approvals.flatMap(a => strings(a.enabledMcpjsonServers)))
+  const approveAll = approvals.some(a => a.enableAllProjectMcpServers === true)
   const live = new Set([...(now?.live ?? [])].map(wire))
   const found = new Map<string, Found>()
   const add = (name: string, f: Found) => {
@@ -906,12 +917,16 @@ async function mcpRows($: any, now: Loaded | null): Promise<Row[]> {
       source: 'project',
       meta: "project server, the project's .mcp.json",
       cfg,
-      more: rejected.has(n) ? 'Not approved for this project: approve it in /mcp.' : '',
+      more: rejected.has(n)
+        ? 'Rejected for this project: approve it in /mcp.'
+        : approveAll || approved.has(n)
+          ? ''
+          : 'Waiting for approval: approve it in /mcp.',
     })
   for (const [n, cfg] of Object.entries(servers(user))) add(n, { source: 'user', meta: 'user server, every project', cfg })
   const plugins = Object.keys(switches.enabledPlugins).filter(id => switches.enabledPlugins[id] === true)
   for (const [id, inf] of await Promise.all(plugins.map(async id => [id, await pluginInfo($, id)] as const))) {
-    const label = id.split('@')[0] ?? id
+    const label = inf?.name ?? id.split('@')[0] ?? id
     for (const s of inf?.mcp ?? [])
       add(`plugin:${label}:${s}`, { source: 'plugin', meta: `from the ${label} plugin`, cfg: inf?.servers[s] })
   }

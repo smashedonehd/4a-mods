@@ -1438,7 +1438,13 @@ test('some 45 skills of yours leave room for the plugins, counted by skill', asy
 // A project's servers from every place Claude Code reads them, and a chat
 // whose tools add a connector, built-in servers, a mod's tools and servers
 // the desktop app supplies under names of its own.
-const mcpSetup = (on: any, live: string[] = [], project: Record<string, unknown> = {}) => {
+const mcpSetup = (
+  on: any,
+  live: string[] = [],
+  project: Record<string, unknown> = {},
+  extra: Record<string, string> = {},
+  user: Record<string, unknown> = {},
+) => {
   on('command.list', () => ({ value: [] }) as any)
   on('env.get', env({ USERPROFILE: 'C:/Users/x' }))
   on('session.root', () => ({ value: 'C:\\proj' }) as any)
@@ -1447,16 +1453,18 @@ const mcpSetup = (on: any, live: string[] = [], project: Record<string, unknown>
     [GLOBAL]: JSON.stringify({
       mcpServers: { brain: { url: 'http://127.0.0.1:1/mcp' } },
       claudeAiMcpEverConnected: ['claude.ai Google Calendar'],
+      ...user,
       projects: {
         'C:/proj': {
           mcpServers: { local: { command: 'srv', args: ['--x'] } },
           disabledMcpServers: ['claude.ai Gmail', 'claude-in-chrome'],
-          disabledMcpjsonServers: ['rejected'],
           ...project,
         },
       },
     }),
-    'C:/proj/.mcp.json': JSON.stringify({ mcpServers: { shared: { command: 'npx' }, rejected: { command: 'r' } } }),
+    'C:/proj/.mcp.json': JSON.stringify({
+      mcpServers: { shared: { command: 'npx' }, rejected: { command: 'r' }, waiting: { command: 'w' } },
+    }),
     'C:/Users/x/.claude/mcp-needs-auth-cache.json': JSON.stringify({ 'claude.ai Notion': { timestamp: 1 } }),
     [SETTINGS]: JSON.stringify({ enabledPlugins: { 'jev@m': true, 'gone@m': false } }),
     [INSTALLED]: JSON.stringify({
@@ -1470,9 +1478,16 @@ const mcpSetup = (on: any, live: string[] = [], project: Record<string, unknown>
     'C:/p/gone/.claude-plugin/plugin.json': JSON.stringify({ name: 'gone' }),
     'C:/p/gone/.mcp.json': JSON.stringify({ mcpServers: { x: { command: 'x' } } }),
     ...modAt('C:/p/savvy', 'savvy-progress', "$.tool.register({ name: 'progress' })"),
+    ...extra,
   })
+  // /mcp keeps its answers on the project's .mcp.json in settings.local.json.
   on('settings.read', (_: unknown, e: any): any => ({
-    value: e?.source === 'user' ? JSON.parse(files[SETTINGS] ?? '{}') : {},
+    value:
+      e?.source === 'user'
+        ? JSON.parse(files[SETTINGS] ?? '{}')
+        : e?.source === 'local'
+          ? { disabledMcpjsonServers: ['rejected'], enabledMcpjsonServers: ['shared'] }
+          : {},
   }))
   listing(on, files)
   on(
@@ -1497,7 +1512,7 @@ test('the MCP tab lists every server it can switch, by source', async ($, on) =>
   await ui.press({ key: 'tab-mcp' })
   for (const [title, n] of [
     ['USER', 1],
-    ['PROJECT AND LOCAL', 3],
+    ['PROJECT AND LOCAL', 4],
     ['FROM PLUGINS', 1],
     ['CLAUDE\\.AI CONNECTORS', 3],
     ['BUILT IN', 3],
@@ -1512,7 +1527,11 @@ test('the MCP tab lists every server it can switch, by source', async ($, on) =>
   expect(await ui.find({ type: 'Text', text: /^300$/ })).toBeTruthy()
   // A plugin switched off brings no server.
   expect(await ui.find({ type: 'Button', key: 'mcp:plugin:gone:x:off' })).toBeFalsy()
-  expect(await ui.find({ type: 'Text', text: /^Not approved for this project: approve it in \/mcp\.$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Rejected for this project: approve it in \/mcp\.$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Waiting for approval: approve it in \/mcp\.$/ })).toBeTruthy()
+  // Sections run user, project and local, plugins, connectors, built in, mods.
+  const heads = ((await ui.findAll({ type: 'Text', text: / · \d+$/ })) as any[]).map(t => String(t.text).split(' · ')[0])
+  expect(heads).toEqual(['USER', 'PROJECT AND LOCAL', 'FROM PLUGINS', 'CLAUDE.AI CONNECTORS', 'BUILT IN', 'FROM MODS'])
   expect(await ui.find({ type: 'Text', text: /^Needs you to sign in: run \/mcp\.$/ })).toBeTruthy()
   // Servers the desktop app supplies get no row.
   for (const name of ['015fd430-bbfa', 'ccd_session']) expect(await ui.find({ type: 'Button', key: `mcp:${name}:off` })).toBeFalsy()
@@ -1575,5 +1594,45 @@ test('the Plugins tab counts a server a plugin names in its manifest', async ($,
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-plugins' })
   expect(await ui.find({ type: 'Text', text: /1 MCP/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a plugin names servers in a file its manifest points to, under its manifest name', async ($, on) => {
+  mcpSetup(on, [], {}, {
+    'C:/p/jev/.claude-plugin/plugin.json': JSON.stringify({ name: 'jevwire', mcpServers: './servers.json' }),
+    'C:/p/jev/servers.json': JSON.stringify({ mcpServers: { judge: { command: 'node' } } }),
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await at(ui, 'mcp:plugin:jevwire:judge', ['on', 'off'])).toEqual(['on'])
+  expect(await ui.find({ type: 'Button', key: 'mcp:plugin:jev:judge:off' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("a connector this chat loaded is listed though no file names it", async ($, on) => {
+  mcpSetup(on, ['claude.ai Linear'])
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await at(ui, 'mcp:claude.ai Linear', ['on', 'off'])).toEqual(['on'])
+  await ui.unmount()
+})
+
+test("a project's own server wins over a user server of the same name", async ($, on) => {
+  mcpSetup(on, [], { mcpServers: { brain: { command: 'mine' } } })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await ui.find({ type: 'Text', text: /^USER · \d+$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^mine$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a name switched off whose server is gone keeps its row, to switch it back', async ($, on) => {
+  const files = mcpSetup(on, [], { disabledMcpServers: ['ghost'] })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-mcp' })
+  expect(await at(ui, 'mcp:ghost', ['on', 'off'])).toEqual(['off'])
+  expect(await ui.find({ type: 'Text', text: /^Not configured here, only listed as disabled\.$/ })).toBeTruthy()
+  await ui.press({ key: 'mcp:ghost:on' })
+  expect(projectIn(files).disabledMcpServers).toEqual([])
   await ui.unmount()
 })
