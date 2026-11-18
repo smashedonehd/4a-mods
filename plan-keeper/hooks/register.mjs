@@ -560,23 +560,15 @@ async function writeOrToast($, path, text) {
 
 // The steps the generated plan does not hold yet, added at its end. An open
 // item of the list this one replaces that the new list left out (dropped or
-// reworded) is struck through, its checkbox gone: the band counts it no more.
+// reworded) is deleted: the band waits on it no more.
 async function appendItems($, steps, prev) {
   const read = await readOr($, plan.path)
   if (read === null) return false
   const keep = new Set(steps.map((x) => norm(x.text)))
   const gone = new Set(prev.map((x) => norm(x.text)).filter((n) => n && !keep.has(n)))
   const { lines, items } = parsePlan(read)
-  let struck = 0
-  for (const it of items) {
-    if (it.done || !gone.has(norm(it.text))) continue
-    // "- [ ] Step" becomes "- ~~Step~~", a line ending "\r" kept
-    const cr = lines[it.i].endsWith('\r') ? '\r' : ''
-    const c = lines[it.i].replace(/\r$/, '').match(CHECKBOX)
-    lines[it.i] = `${c[1].slice(0, -1)}~~${c[4]}~~${cr}`
-    struck++
-  }
-  const text = lines.join('\n')
+  const drop = new Set(items.filter((it) => !it.done && gone.has(norm(it.text))).map((it) => it.i))
+  const text = lines.filter((_, i) => !drop.has(i)).join('\n')
   const have = new Set(parsePlan(text).items.map((it) => norm(it.text)))
   const add = []
   for (const x of steps) {
@@ -585,7 +577,7 @@ async function appendItems($, steps, prev) {
     have.add(n)
     add.push(`- [ ] ${oneLine(x.text)}`)
   }
-  if (!add.length && !struck) return false
+  if (!add.length && !drop.size) return false
   const out = !add.length ? text : text.replace(/\s*$/, '\n') + add.join('\n') + '\n'
   if (!(await writeOrToast($, plan.path, out))) return false
   await refresh($, out)
