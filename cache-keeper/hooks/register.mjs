@@ -658,10 +658,13 @@ async function liveState($) {
 // condition: the fresh chat's first turn reads it there, and setGoalAgain sets
 // it once that turn is under way.
 // isArmed false: the text for a handoff that was not sent, where nothing sets it.
+// A condition of several lines has the lines after its first indented: none
+// starts a line of the head, so none reads as the head's own (a "Plan: x.md"
+// inside a goal is not Plan Keeper's line) and an empty one does not end it.
 function continuationHead(plan, goal = '', isArmed = true) {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
   const head = `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
-  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; ${isArmed ? 'Cache Keeper sets it again right after this message, so work toward it and do not set it yourself' : 'not set in this chat yet, I set it again with /goal'}): ${goal}`].filter(Boolean).join('\n')
+  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; ${isArmed ? 'Cache Keeper sets it again right after this message, so work toward it and do not set it yourself' : 'not set in this chat yet, I set it again with /goal'}): ${goal.split(/\r?\n/).join('\n  ')}`].filter(Boolean).join('\n')
 }
 
 // The goal (/goal) active in this chat, or '': /clear takes it off, so clear and
@@ -669,8 +672,9 @@ function continuationHead(plan, goal = '', isArmed = true) {
 // a mod no call for it; the transcript file records it (goalInTranscript). The
 // whole file is read, a part at a time, since its newest goal row may lie
 // anywhere in it: parts overlap, so a row cut at one part's edge is whole in
-// the next. Anything unreadable, or a file past GOAL_SCAN, gives '': a goal is
-// never guessed.
+// the next. No transcript file gives '', and so does one that cannot be read
+// or is past GOAL_SCAN, with a toast: a goal is never guessed, and a goal that
+// may have been dropped is said.
 const GOAL_READ = 4 * 1024 * 1024 // the most $.fs.read gives at once
 const GOAL_OVERLAP = 256 * 1024
 const GOAL_SCAN = 512 * 1024 * 1024
@@ -683,8 +687,14 @@ async function activeGoal($) {
       // no such API on this host: the path Claude Code names its transcripts by
     }
     if (!file) file = transcriptPath(home, S.cwd, S.id)
-    const { size } = await $.fs.stat(file)
-    if (!(size <= GOAL_SCAN)) return ''
+    let size
+    try {
+      size = (await $.fs.stat(file)).size
+    } catch {
+      // no transcript file: a chat with nothing in it, or a host that keeps none
+      return ''
+    }
+    if (!(size <= GOAL_SCAN)) throw new Error(`the transcript is over ${GOAL_SCAN / (1024 * 1024)} MiB`)
     let last
     for (let start = 0; start < size; start += GOAL_READ - GOAL_OVERLAP) {
       const length = Math.min(size - start, GOAL_READ)
@@ -697,8 +707,8 @@ async function activeGoal($) {
       if (start + length >= size) break
     }
     return last ? last.condition : ''
-  } catch {
-    // no transcript file, or it cannot be read
+  } catch (err) {
+    $.ui.toast(`Could not check this chat for an active /goal: ${errText(err)}. If one was set, set it again with /goal in the fresh chat.`, { timeoutMs: 15000 })
     return ''
   }
 }
@@ -706,10 +716,17 @@ async function activeGoal($) {
 // Sets the cleared chat's goal again, as /goal typed in the fresh one. Not
 // awaited: the command is queued behind the handoff's turn and may settle only
 // when that turn ends, while clear and continue must finish and let held
-// prompts go. Refused, the goal's text goes to an empty prompt box.
+// prompts go. /goal answers "Goal set: <condition>" when it took: a run that
+// rejects, or answers anything else (a refusal as text, nothing), leaves the
+// goal's text in an empty prompt box and says so.
+const GOAL_SET = /^Goal set\b/i
 function setGoalAgain($, goal) {
   Promise.resolve()
     .then(() => $.command.run({ command: 'goal', args: goal }))
+    .then((r) => {
+      const said = r && typeof r.text === 'string' ? r.text.trim() : ''
+      if (!GOAL_SET.test(said)) throw new Error(said ? `/goal answered "${clip(said, 80)}"` : '/goal gave no answer')
+    })
     .catch(async (err) => {
       let filled = false
       try {
@@ -717,7 +734,7 @@ function setGoalAgain($, goal) {
       } catch {
         filled = false
       }
-      $.ui.toast(`The goal could not be set again: ${errText(err)}. ${filled ? 'It is in the prompt box: press Enter to set it.' : 'Type /goal and its text, quoted at the top of this chat.'}`, { timeoutMs: 15000 })
+      $.ui.toast(`The goal may not be set again: ${errText(err)}. ${filled ? 'It is in the prompt box: press Enter to set it.' : 'Type /goal and its text, quoted at the top of this chat.'}`, { timeoutMs: 15000 })
     })
 }
 

@@ -502,7 +502,8 @@ export function parseTranscript(jsonl) {
 // at all. Claude Code writes a goal as attachment rows of the main conversation,
 // { type: 'attachment', timestamp, attachment: { type: 'goal_status', met, condition } }:
 // one when /goal sets it and one for each check at a turn's end (met: false),
-// one when it is met or /goal clear takes it off (met: true). The row with the
+// one when it is met or /goal clear takes it off (met: true), one when the
+// engine gives it up (met: false, failed: true). The row with the
 // latest timestamp decides, not the last in the file: after a compaction the
 // file repeats earlier rows further down, an old "set" after the "met" that
 // ended it. Of two rows of one time the later in the file counts. `at` is that
@@ -523,7 +524,7 @@ export function goalInTranscript(jsonl) {
     if (!a || a.type !== 'goal_status') continue
     const at = typeof row.timestamp === 'string' ? row.timestamp : ''
     if (last && at < last.at) continue
-    last = { at, condition: a.met === false && typeof a.condition === 'string' ? a.condition.trim() : '' }
+    last = { at, condition: a.met === false && !a.failed && typeof a.condition === 'string' ? a.condition.trim() : '' }
   }
   return last
 }
