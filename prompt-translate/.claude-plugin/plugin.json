@@ -1,0 +1,10 @@
+{
+  "name": "prompt-translate",
+  "version": "0.1.1",
+  "description": "An EN button above the prompt that translates your draft into English in place, without sending it",
+  "author": {
+    "name": "4AM"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

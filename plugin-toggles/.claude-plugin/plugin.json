@@ -1,0 +1,10 @@
+{
+  "name": "plugin-toggles",
+  "version": "0.6.0",
+  "description": "Toggles pane: switch skills On, Name, User or Off, plugins, MCP servers and mods On or Off, and see what each costs in context",
+  "author": {
+    "name": "4AM"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
