@@ -495,6 +495,40 @@ export function parseTranscript(jsonl) {
   return out
 }
 
+// ---- the session's goal (/goal) -----------------------------------------------
+
+// What a transcript JSONL last says about the session's goal: { at, condition },
+// the condition '' when no goal is active then, or undefined when it names none
+// at all. Claude Code writes a goal as attachment rows of the main conversation,
+// { type: 'attachment', timestamp, attachment: { type: 'goal_status', met, condition } }:
+// one when /goal sets it and one for each check at a turn's end (met: false),
+// one when it is met or /goal clear takes it off (met: true), one when the
+// engine gives it up (met: false, failed: true). The row with the
+// latest timestamp decides, not the last in the file: after a compaction the
+// file repeats earlier rows further down, an old "set" after the "met" that
+// ended it. Of two rows of one time the later in the file counts. `at` is that
+// timestamp, so a file read in parts is settled by the newest of its parts.
+// A row quoted inside another row's text (a tool result that read a
+// transcript) is not one.
+export function goalInTranscript(jsonl) {
+  let last
+  for (const line of String(jsonl || '').split(/\r?\n/)) {
+    if (!line.includes('goal_status')) continue
+    let row
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const a = row && row.type === 'attachment' && !row.isSidechain && row.attachment
+    if (!a || a.type !== 'goal_status') continue
+    const at = typeof row.timestamp === 'string' ? row.timestamp : ''
+    if (last && at < last.at) continue
+    last = { at, condition: a.met === false && !a.failed && typeof a.condition === 'string' ? a.condition.trim() : '' }
+  }
+  return last
+}
+
 // ---- pruning ----------------------------------------------------------------
 
 export const PRUNE_DAYS = 30

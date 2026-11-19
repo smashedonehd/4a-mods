@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import {
   normalizePath, commandPaths, rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, cleanReply,
-  missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
+  missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, goalInTranscript, transcriptText, pruneNames, offerTokens, HEADINGS, PRUNE_DAYS,
 } from '../hooks/handoff.mjs'
 import { planFacts } from '../hooks/register.mjs'
 
@@ -24,6 +24,7 @@ const HOUR = 3600e3
 const DAY = 24 * HOUR
 const files = new Map() // path -> text, shared by every boot
 const mtimes = new Map() // path -> mtimeMs
+const sizes = new Map() // path -> the size $.fs.stat reports, when not the text's own
 const store = new Map() // $.store, shared by every boot
 // Saved settings with both auto settings off, marked as written since they default to on
 const OFF = { autoClear: false, autoHandoff: false, autoV: 1 }
@@ -56,7 +57,10 @@ const MESSAGES = [
 const DISK = ['D:/proj/src/parse.mjs', 'D:/proj/test dir/t.mjs']
 
 // opts: working (a turn runs), fork (prompt -> result or promise), messages
-// (array, or a function that throws), select (desktop surface), proc
+// (array, or a function that throws), transcript ($.session.info's path),
+// goalRun (what /goal does), submitFail (prompts are refused), readFail
+// (reading a part of a file fails), box (the prompt box: true for an empty one that
+// takes a fill, or its draft), select (desktop surface), proc
 // ($.process), timers (collects $.clock.after), options (userConfig),
 // configDeny, home
 async function boot(cwd, id, opts = {}) {
@@ -70,6 +74,9 @@ async function boot(cwd, id, opts = {}) {
   const completes = [] // $.model.complete requests
   const configSets = []
   const ran = [] // $.process.run argv
+  const commands = [] // $.command.run inputs
+  const fills = [] // $.prompt.fill inputs
+  const reads = [] // $.fs.read calls that named a part
   const buttons = new Map()
   const selects = new Map()
   const forkFn = opts.fork || (async () => ({ isAnswered: true, text: GOOD, usage: {} }))
@@ -82,9 +89,13 @@ async function boot(cwd, id, opts = {}) {
     },
     fs: {
       exists: async (p) => files.has(p) || [...files.keys()].some((k) => k.startsWith(p + '/')),
-      read: async (p) => {
+      // o: { offset, length } in bytes, as $.fs.read takes them
+      read: async (p, o) => {
         if (!files.has(p)) throw new Error('ENOENT ' + p)
-        return files.get(p)
+        if (!o) return files.get(p)
+        reads.push({ path: p, ...o })
+        if (opts.readFail) throw new Error('EIO ' + p)
+        return Buffer.from(files.get(p)).subarray(o.offset || 0, (o.offset || 0) + (o.length ?? Infinity)).toString()
       },
       write: async (p, t) => {
         files.delete(p)
@@ -92,7 +103,7 @@ async function boot(cwd, id, opts = {}) {
         mtimes.set(p, T)
       },
       stat: async (p) => {
-        if (files.has(p) || DISK.includes(p)) return { kind: 'file', size: 1, mtimeMs: mtimes.get(p) || T, isLink: false }
+        if (files.has(p) || DISK.includes(p)) return { kind: 'file', size: sizes.get(p) ?? (files.has(p) ? Buffer.byteLength(files.get(p)) : 1), mtimeMs: mtimes.get(p) || T, isLink: false }
         throw new Error('ENOENT ' + p)
       },
       list: async (dir) => [...files.keys()].filter((k) => k.startsWith(dir + '/') && !k.slice(dir.length + 1).includes('/')).map((k) => ({ name: k.slice(dir.length + 1), kind: 'file', size: 1, mtimeMs: mtimes.get(k) || T, isLink: false })),
@@ -105,6 +116,8 @@ async function boot(cwd, id, opts = {}) {
       usage: async () => ({}),
       messages: async () => (typeof msgs === 'function' ? msgs() : msgs),
       surface: async () => 'terminal',
+      // opts.transcript: the path $.session.info names; without it the host has no such call
+      ...(opts.transcript && { info: async () => ({ transcriptPath: opts.transcript }) }),
     },
     model: { fork: async (r) => (prompts.push(r.prompt), forkFn(r.prompt)), ...(opts.complete ? { complete: async (r) => (completes.push(r), opts.complete(r)) } : {}) },
     state: {
@@ -130,10 +143,19 @@ async function boot(cwd, id, opts = {}) {
     agent: { list: () => (opts.agentList ? opts.agentList() : Promise.resolve(opts.agents || [])) },
     command: {
       register: async () => {},
-      run: async (c) => void log.push('run:' + c.command),
+      // opts.goalRun: what running /goal does (rejects, or never settles)
+      run: async (c) => {
+        log.push('run:' + c.command)
+        commands.push(c)
+        if (c.command === 'goal') return opts.goalRun ? opts.goalRun(c) : { text: 'Goal set: ' + c.args }
+      },
     },
     turn: { abort: async (x) => void log.push('abort:' + x.turnId) },
-    prompt: { submit: async (p) => void (log.push('submit'), sent.push(p)), fill: async () => ({}) },
+    prompt: { submit: async (p) => {
+      if (opts.submitFail) throw new Error('not sent')
+      log.push('submit')
+      sent.push(p)
+    }, fill: async (f) => (fills.push(f), { isFilled: !!opts.box }), read: async () => ({ text: opts.box === true ? '' : opts.box || '', cursor: 0 }) },
     process: proc ? { run: async (argv, init) => (ran.push(argv), proc(argv, init)) } : { run: async (argv) => (ran.push(argv), { exitCode: 1, stdout: '', stderr: 'not a git repository' }) },
     ui: {
       toast: (t) => void log.push('toast:' + t),
@@ -189,7 +211,7 @@ async function boot(cwd, id, opts = {}) {
     await fire('turn.complete', { reason: 'answer', ...e })
     await settle()
   }
-  return { fire, run, step, render, press, end, log, sent, prompts, configSets, ran, buttons, selects }
+  return { fire, run, step, render, press, end, log, sent, prompts, configSets, ran, buttons, selects, commands, fills, reads }
 }
 
 // Every string a drawn tree shows, joined
@@ -1702,6 +1724,226 @@ await check('clear and continue sends the handoff and runs no skill used before 
   assert.ok(s.log.includes('run:clear'), s.log.join(' | '))
   assert.ok(!s.log.some((l) => l.startsWith('run:') && l !== 'run:clear'), s.log.join(' | '))
   assert.ok(s.log.indexOf('submit') > s.log.indexOf('run:clear'))
+})
+
+// ======================= the goal (/goal) across the clear =======================
+
+// A goal_status row as Claude Code writes it to the transcript file
+const goalRow = (a, extra = {}) => JSON.stringify({ parentUuid: 'p', isSidechain: false, type: 'attachment', uuid: 'u', attachment: { type: 'goal_status', ...a }, ...extra })
+const COND = 'Dokonči žluťoučký úkol "A" bez vypnutí testů'
+const SET = goalRow({ met: false, sentinel: true, condition: COND })
+const USER_ROW = JSON.stringify({ type: 'user', message: { role: 'user', content: 'go on' } })
+
+// The condition goalInTranscript settles on: '' for none active, undefined for no goal row
+const goalOf = (jsonl) => {
+  const g = goalInTranscript(jsonl)
+  return g && g.condition
+}
+// A day's goal rows with their times: set at 01:04, met at 18:52
+const AT_SET = '2026-08-29T01:04:38.000Z'
+const AT_MET = '2026-08-29T18:52:41.000Z'
+const SET_EARLY = goalRow({ met: false, sentinel: true, condition: COND }, { timestamp: AT_SET })
+const MET_LATE = goalRow({ met: true, sentinel: true, condition: COND }, { timestamp: AT_MET })
+
+await check('goalInTranscript: rows a compaction repeats further down do not bring a met goal back; the newest time decides', () => {
+  // The file after a compaction: the old "set" row again, below the "met" that ended it
+  assert.deepEqual(goalInTranscript([SET_EARLY, MET_LATE, USER_ROW, SET_EARLY].join('\n')), { at: AT_MET, condition: '' })
+  // And a goal still active stays so when its rows repeat
+  const check2 = goalRow({ met: false, condition: COND, reason: 'Not yet.' }, { timestamp: AT_MET })
+  assert.deepEqual(goalInTranscript([SET_EARLY, check2, SET_EARLY].join('\n')), { at: AT_MET, condition: COND })
+  // Set again at the very time the one before was cleared: the later row of that time counts
+  assert.equal(goalOf([SET_EARLY, MET_LATE, goalRow({ met: false, sentinel: true, condition: 'next' }, { timestamp: AT_MET })].join('\n')), 'next')
+})
+
+await check('goalInTranscript: of rows without a time the last decides; met, cleared, quoted and sidechain rows give no goal', () => {
+  assert.equal(goalOf(''), undefined)
+  assert.equal(goalOf(USER_ROW + '\n'), undefined)
+  assert.equal(goalOf([USER_ROW, SET, USER_ROW].join('\n') + '\n'), COND)
+  assert.equal(goalOf([USER_ROW, SET, USER_ROW].join('\r\n') + '\r\n'), COND)
+  // Checked at a turn's end and not met yet: still active
+  assert.equal(goalOf([SET, goalRow({ met: false, condition: COND, reason: 'Not yet.' })].join('\n')), COND)
+  // Met, and taken off with /goal clear
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND, reason: 'Done.' })].join('\n')), '')
+  assert.equal(goalOf([SET, goalRow({ met: true, sentinel: true, condition: COND })].join('\n')), '')
+  // A later goal replaces the one before
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND }), goalRow({ met: false, sentinel: true, condition: 'second goal' })].join('\n')), 'second goal')
+  // A row quoted in a tool result, a subagent's row and a broken line are no goal rows
+  const quoted = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: SET }] } })
+  assert.equal(goalOf([quoted, goalRow({ met: false, condition: 'agent goal' }, { isSidechain: true }), SET.slice(0, -5)].join('\n')), undefined)
+  assert.equal(goalOf([SET, goalRow({ met: true, condition: COND }), quoted].join('\n')), '')
+  // Only an attachment row counts, whatever else carries the same field
+  assert.equal(goalOf(SET.replace('"type":"attachment","uuid"', '"type":"system","uuid"')), undefined)
+  // Given up by the engine (its last row: met false, failed true): not active
+  const failed = goalRow({ met: false, failed: true, condition: COND, reason: 'Incomplete.', iterations: 12, durationMs: 9, tokens: 5 })
+  assert.equal(goalOf([SET, failed].join('\n')), '')
+  assert.deepEqual(goalInTranscript([SET_EARLY, goalRow({ met: false, failed: true, condition: COND }, { timestamp: AT_MET }), SET_EARLY].join('\n')), { at: AT_MET, condition: '' })
+  // The condition goes without the blank space around it, its own lines kept
+  assert.equal(goalOf(goalRow({ met: false, sentinel: true, condition: '  first\nsecond \n' })), 'first\nsecond')
+  // A row without a usable condition is no goal
+  assert.equal(goalOf(goalRow({ met: false })), '')
+  // Only met: false says a goal is active: a row that does not say is no goal
+  assert.equal(goalOf(goalRow({ condition: COND })), '')
+  assert.equal(goalOf(goalRow({ met: null, condition: COND })), '')
+})
+
+// The chat's first line and the clear, with this transcript file; opts go to boot
+const clearWithGoal = async (id, jsonl, opts = {}) => {
+  const file = `/t/${id}.jsonl`
+  if (jsonl !== null) files.set(file, jsonl)
+  const s = await boot('/w/goal', id, { transcript: file, ...opts })
+  await s.run('handoff', 'keep')
+  await s.press('ck-ho-clear')
+  files.delete(file)
+  return s
+}
+const goalLine = (s) => (s.sent[0] ? s.sent[0].text.split('\n\n')[0].split('\n').find((l) => l.startsWith('Goal (')) : undefined)
+
+await check('clear and continue sets an active goal again: /goal with the same text, after the handoff, named on its first lines', async () => {
+  const s = await clearWithGoal('goal0001-0', [USER_ROW, SET, USER_ROW, goalRow({ met: false, condition: COND, reason: 'Not yet.' }), USER_ROW].join('\n') + '\n')
+  assert.deepEqual(s.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit', 'run:goal'])
+  assert.deepEqual(s.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
+  assert.ok(goalLine(s).endsWith(': ' + COND), s.sent[0].text.slice(0, 600))
+  assert.match(goalLine(s), /Cache Keeper sets it again/)
+  assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
+  assert.ok(!s.log.some((l) => l.includes('may not be set')))
+})
+
+await check('no goal, a met goal, a cleared goal or no transcript: /goal is not run and the handoff names none', async () => {
+  const cases = [
+    ['goal0002-0', USER_ROW + '\n'],
+    ['goal0003-0', [SET, goalRow({ met: true, condition: COND, reason: 'Done.' })].join('\n') + '\n'],
+    ['goal0004-0', [SET, goalRow({ met: true, sentinel: true, condition: COND })].join('\n') + '\n'],
+    ['goal0005-0', null],
+    ['goal0015-0', [SET, goalRow({ met: false, failed: true, condition: COND, reason: 'Incomplete.' })].join('\n') + '\n'],
+  ]
+  for (const [id, jsonl] of cases) {
+    const s = await clearWithGoal(id, jsonl)
+    assert.deepEqual(s.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit'], id)
+    assert.equal(goalLine(s), undefined, id)
+    // Nothing went wrong: nothing is said
+    assert.ok(!s.log.some((l) => l.includes('Could not check this chat')), id)
+  }
+})
+
+await check('a goal row lying across the edge of a 4 MiB read is found: the parts overlap', async () => {
+  const EDGE = 4 * 1024 * 1024
+  const line = 'x'.repeat(1023) + '\n'
+  // The row starts 100 bytes before the edge and ends after it
+  const before = line.repeat(4095) + 'x'.repeat(1024 - 100 - 1) + '\n'
+  assert.equal(Buffer.byteLength(before), EDGE - 100)
+  assert.ok(Buffer.byteLength(SET) > 100)
+  const s = await clearWithGoal('goal0016-0', before + SET + '\n' + line.repeat(1024))
+  assert.deepEqual(s.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
+  assert.equal(s.reads.filter((r) => r.path === '/t/goal0016-0.jsonl').length, 2)
+})
+
+await check('a transcript over the scan cap or one that cannot be read: no goal, and a toast says it was not checked', async () => {
+  const CAP = 512 * 1024 * 1024
+  // A byte over the cap: not read at all
+  sizes.set('/t/goal0017-0.jsonl', CAP + 1)
+  const s = await clearWithGoal('goal0017-0', SET + '\n')
+  sizes.delete('/t/goal0017-0.jsonl')
+  assert.deepEqual(s.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit'])
+  assert.equal(s.reads.filter((r) => r.path === '/t/goal0017-0.jsonl').length, 0)
+  assert.equal(goalLine(s), undefined)
+  assert.equal(s.log.filter((l) => /^toast:Could not check this chat for an active \/goal: the transcript is over 512 MiB\./.test(l)).length, 1, s.log.join(' | '))
+  // At the cap it is still read
+  sizes.set('/t/goal0025-0.jsonl', CAP)
+  const c = await clearWithGoal('goal0025-0', SET + '\n')
+  sizes.delete('/t/goal0025-0.jsonl')
+  assert.deepEqual(c.commands.filter((x) => x.command === 'goal'), [{ command: 'goal', args: COND }])
+  const r = await clearWithGoal('goal0018-0', SET + '\n', { readFail: true })
+  assert.deepEqual(r.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit'])
+  assert.equal(r.log.filter((l) => /^toast:Could not check this chat for an active \/goal: EIO /.test(l)).length, 1, r.log.join(' | '))
+})
+
+await check('a goal of several lines: /goal gets it as it was, the handoff carries its later lines indented, none read as a Plan line', async () => {
+  const many = 'Finish phase 5\nPlan: /tmp/other.md\n\nand write it down'
+  const s = await clearWithGoal('goal0019-0', goalRow({ met: false, sentinel: true, condition: '  ' + many + '\n' }) + '\n')
+  assert.deepEqual(s.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: many }])
+  const head = s.sent[0].text.split('\n\n')[0]
+  assert.ok(head.endsWith('): Finish phase 5\n  Plan: /tmp/other.md\n  \n  and write it down'), head)
+  // Plan Keeper's own pattern for the handoff's Plan line finds none
+  assert.equal(/^Plan: (.+\.md)\s*$/m.test(s.sent[0].text), false)
+  // The handoff follows the head whole
+  assert.ok(s.sent[0].text.endsWith(GOOD.trim()))
+})
+
+await check('a host without $.session.info: the goal is read from the transcript under ~/.claude/projects', async () => {
+  const file = transcriptPath('/home', '/w/goal', 'goal0006-0')
+  files.set(file, SET + '\n')
+  const s = await boot('/w/goal', 'goal0006-0')
+  await s.run('handoff', 'keep')
+  await s.press('ck-ho-clear')
+  files.delete(file)
+  assert.deepEqual(s.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
+})
+
+await check('a goal far back in a transcript larger than one read is found, a part at a time; the last row still decides', async () => {
+  // About 9 MB of rows after the goal, in two-byte characters so parts cut inside them
+  const filler = JSON.stringify({ type: 'user', message: { role: 'user', content: 'ž'.repeat(700) } })
+  const tail = (filler + '\n').repeat(6500)
+  const s = await clearWithGoal('goal0007-0', SET + '\n' + tail)
+  assert.deepEqual(s.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
+  const parts = s.reads.filter((r) => r.path === '/t/goal0007-0.jsonl')
+  assert.ok(parts.length >= 3, String(parts.length))
+  assert.ok(parts.every((r) => r.length <= 4 * 1024 * 1024))
+  // Met near the end: the early row does not count
+  const m = await clearWithGoal('goal0008-0', SET + '\n' + tail + goalRow({ met: true, condition: COND, reason: 'Done.' }) + '\n' + filler + '\n')
+  assert.equal(m.commands.filter((c) => c.command === 'goal').length, 0)
+  // Met in the first part, its old "set" row repeated in the last: the parts are settled by time
+  const r = await clearWithGoal('goal0013-0', SET_EARLY + '\n' + MET_LATE + '\n' + tail + SET_EARLY + '\n')
+  assert.equal(r.commands.filter((c) => c.command === 'goal').length, 0)
+  assert.equal(goalLine(r), undefined)
+  // Active, its newest check in the first part and an older row in the last
+  const a = await clearWithGoal('goal0014-0', goalRow({ met: false, condition: COND, reason: 'Not yet.' }, { timestamp: AT_MET }) + '\n' + tail + goalRow({ met: true, condition: 'an older goal' }, { timestamp: AT_SET }) + '\n')
+  assert.deepEqual(a.commands.filter((c) => c.command === 'goal'), [{ command: 'goal', args: COND }])
+})
+
+await check('a /goal that never settles holds nothing up: the handoff is in and the chat is free', async () => {
+  const s = await clearWithGoal('goal0009-0', SET + '\n', { goalRun: () => new Promise(() => {}) })
+  assert.deepEqual(s.log.filter((l) => !l.startsWith('toast')), ['run:clear', 'submit', 'run:goal'])
+  assert.equal(texts(await s.render()).includes('Handoff ready'), false)
+  // Not "Already clearing this chat.": clear and continue is over
+  const again = await s.run('handoff', 'continue')
+  assert.ok(!/Already clearing/.test(again.text || ''), again.text)
+})
+
+await check('a refused /goal says so and leaves the command in an empty prompt box, never over a draft', async () => {
+  const refuse = () => Promise.reject(new Error('unknown command'))
+  const s = await clearWithGoal('goal0010-0', SET + '\n', { goalRun: refuse, box: true })
+  assert.deepEqual(s.fills, [{ text: '/goal ' + COND }])
+  assert.ok(s.log.some((l) => /^toast:The goal may not be set again: unknown command\. It is in the prompt box/.test(l)), s.log.join(' | '))
+  const d = await clearWithGoal('goal0011-0', SET + '\n', { goalRun: refuse, box: 'half a thought' })
+  assert.deepEqual(d.fills, [])
+  assert.ok(d.log.some((l) => /^toast:The goal may not be set again: unknown command\. Type \/goal/.test(l)), d.log.join(' | '))
+})
+
+await check('a /goal that resolves with anything but "Goal set" counts as refused: a refusal as text, no text, nothing', async () => {
+  const t = await clearWithGoal('goal0020-0', SET + '\n', { goalRun: async () => ({ text: 'Goals are turned off by your organization.' }), box: true })
+  assert.deepEqual(t.fills, [{ text: '/goal ' + COND }])
+  assert.ok(t.log.some((l) => l.startsWith('toast:The goal may not be set again: /goal answered "Goals are turned off by your organization."')), t.log.join(' | '))
+  for (const [id, answer] of [['goal0021-0', {}], ['goal0022-0', undefined], ['goal0023-0', { text: 'Goal cleared: x' }]]) {
+    const n = await clearWithGoal(id, SET + '\n', { goalRun: async () => answer, box: true })
+    assert.deepEqual(n.fills, [{ text: '/goal ' + COND }], id)
+    assert.ok(n.log.some((l) => l.startsWith('toast:The goal may not be set again: /goal ')), id)
+  }
+  // "Goal set: ..." is the answer of a goal that took: nothing is said or filled
+  const ok = await clearWithGoal('goal0024-0', SET + '\n', { goalRun: async (c) => ({ text: 'Goal set: ' + c.args }), box: true })
+  assert.deepEqual(ok.fills, [])
+  assert.ok(!ok.log.some((l) => l.includes('may not be set')))
+})
+
+await check('a handoff that could not be sent: no /goal into the empty chat, and a toast says the goal is off', async () => {
+  const s = await clearWithGoal('goal0012-0', SET + '\n', { submitFail: true })
+  assert.ok(s.log.includes('run:clear'))
+  assert.ok(!s.log.includes('run:goal'), s.log.join(' | '))
+  assert.ok(s.log.some((l) => l.startsWith('toast:The goal of the cleared chat is not set again')), s.log.join(' | '))
+  // The text left for the prompt box names the goal, and promises no setting it
+  const line = s.fills[0].text.split('\n').find((l) => l.startsWith('Goal ('))
+  assert.ok(line.endsWith(': ' + COND), line)
+  assert.match(line, /not set in this chat yet/)
+  assert.ok(!/Cache Keeper sets it again/.test(s.fills[0].text))
 })
 
 await check('the desktop band keeps its auto clear tag and keep-warm Select, and no skill tags', async () => {

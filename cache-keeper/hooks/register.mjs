@@ -12,7 +12,7 @@
 import { rewriteCost, requestCost, totalInput, cachedShare, priceFor } from './pricing.mjs'
 import { tokens, minutes, clock, clip, basename, pad } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
+import { rankFiles, gatherFacts, runningAgents, redact, draftText, forkPrompt, completePrompt, cleanReply, missingSections, wordCount, skillsOrTools, transcriptPath, parseTranscript, goalInTranscript, pruneNames, OFFER_CHOICES, OFFER_DEFAULT, offerTokens } from './handoff.mjs'
 
 const MIN = 60000
 const HEARTBEAT_EVERY = 30000
@@ -654,10 +654,88 @@ async function liveState($) {
 // read its open items. Said by the user, so "my" is the user's; it holds for
 // a handoff written by an older skill too, whose items carry no labels. With a
 // plan active, a line of its own names it: Plan Keeper reattaches it from that.
-function continuationHead(plan) {
+// With a goal (/goal) active in the cleared chat, a line of its own carries its
+// condition: the fresh chat's first turn reads it there, and setGoalAgain sets
+// it once that turn is under way.
+// isArmed false: the text for a handoff that was not sent, where nothing sets it.
+// A condition of several lines has the lines after its first indented: none
+// starts a line of the head, so none reads as the head's own (a "Plan: x.md"
+// inside a goal is not Plan Keeper's line) and an empty one does not end it.
+function continuationHead(plan, goal = '', isArmed = true) {
   const meta = [H.path && `saved at ${H.path}`, H.at && `written ${minutes(now - H.at)} ago`].filter(Boolean).join(', ')
   const head = `Handoff from my previous session${meta ? ` (${meta})` : ''}. Open items it marks "My own idea" are the previous agent's proposals, not my requests: confirm them with me before acting on any. Start from "User asked" or "Open".`
-  return plan && plan.path ? `${head}\nPlan: ${plan.path}` : head
+  return [head, plan && plan.path && `Plan: ${plan.path}`, goal && `Goal (my /goal from that session, still active; ${isArmed ? 'Cache Keeper sets it again right after this message, so work toward it and do not set it yourself' : 'not set in this chat yet, I set it again with /goal'}): ${goal.split(/\r?\n/).join('\n  ')}`].filter(Boolean).join('\n')
+}
+
+// The goal (/goal) active in this chat, or '': /clear takes it off, so clear and
+// continue reads it first and sets it again in the fresh chat. Claude Code gives
+// a mod no call for it; the transcript file records it (goalInTranscript). The
+// whole file is read, a part at a time, since its newest goal row may lie
+// anywhere in it: parts overlap, so a row cut at one part's edge is whole in
+// the next. No transcript file gives '', and so does one that cannot be read
+// or is past GOAL_SCAN, with a toast: a goal is never guessed, and a goal that
+// may have been dropped is said.
+const GOAL_READ = 4 * 1024 * 1024 // the most $.fs.read gives at once
+const GOAL_OVERLAP = 256 * 1024
+const GOAL_SCAN = 512 * 1024 * 1024
+async function activeGoal($) {
+  try {
+    let file = ''
+    try {
+      file = String((await $.session.info()).transcriptPath || '')
+    } catch {
+      // no such API on this host: the path Claude Code names its transcripts by
+    }
+    if (!file) file = transcriptPath(home, S.cwd, S.id)
+    let size
+    try {
+      size = (await $.fs.stat(file)).size
+    } catch {
+      // no transcript file: a chat with nothing in it, or a host that keeps none
+      return ''
+    }
+    if (!(size <= GOAL_SCAN)) throw new Error(`the transcript is over ${GOAL_SCAN / (1024 * 1024)} MiB`)
+    let last
+    for (let start = 0; start < size; start += GOAL_READ - GOAL_OVERLAP) {
+      const length = Math.min(size - start, GOAL_READ)
+      let text = String(await $.fs.read(file, { offset: start, length }))
+      // The first and the last line may be cut: both are whole in a neighbour
+      if (start > 0) text = text.slice(text.indexOf('\n') + 1 || text.length)
+      if (start + length < size) text = text.slice(0, text.lastIndexOf('\n') + 1)
+      const found = goalInTranscript(text)
+      if (found && !(last && found.at < last.at)) last = found
+      if (start + length >= size) break
+    }
+    return last ? last.condition : ''
+  } catch (err) {
+    $.ui.toast(`Could not check this chat for an active /goal: ${errText(err)}. If one was set, set it again with /goal in the fresh chat.`, { timeoutMs: 15000 })
+    return ''
+  }
+}
+
+// Sets the cleared chat's goal again, as /goal typed in the fresh one. Not
+// awaited: the command is queued behind the handoff's turn and may settle only
+// when that turn ends, while clear and continue must finish and let held
+// prompts go. /goal answers "Goal set: <condition>" when it took: a run that
+// rejects, or answers anything else (a refusal as text, nothing), leaves the
+// goal's text in an empty prompt box and says so.
+const GOAL_SET = /^Goal set\b/i
+function setGoalAgain($, goal) {
+  Promise.resolve()
+    .then(() => $.command.run({ command: 'goal', args: goal }))
+    .then((r) => {
+      const said = r && typeof r.text === 'string' ? r.text.trim() : ''
+      if (!GOAL_SET.test(said)) throw new Error(said ? `/goal answered "${clip(said, 80)}"` : '/goal gave no answer')
+    })
+    .catch(async (err) => {
+      let filled = false
+      try {
+        if (!(await $.prompt.read()).text) filled = !!(await $.prompt.fill({ text: '/goal ' + goal })).isFilled
+      } catch {
+        filled = false
+      }
+      $.ui.toast(`The goal may not be set again: ${errText(err)}. ${filled ? 'It is in the prompt box: press Enter to set it.' : 'Type /goal and its text, quoted at the top of this chat.'}`, { timeoutMs: 15000 })
+    })
 }
 
 // Plan Keeper's active plan: its path, its checkbox counts and up to 8 open
@@ -760,7 +838,11 @@ async function clearAndSend($) {
   if (!(await handoffReady($))) return
   // Taken before /clear empties H; git reads while the chat clears
   const live = liveState($).catch(() => '')
-  const head = continuationHead(await activePlan($))
+  // Read before /clear takes the goal off and the chat gets a new transcript
+  const goal = await activeGoal($)
+  const plan = await activePlan($)
+  const head = continuationHead(plan, goal)
+  const headUnsent = goal ? continuationHead(plan, goal, false) : head
   const body = H.text
   const path = H.path
   const fid = H.fid
@@ -776,21 +858,27 @@ async function clearAndSend($) {
   H.fid = ''
   H.fromDisk = false
   P.phase = ''
-  const text = [head, await live, body].filter(Boolean).join('\n\n')
+  const rest = [await live, body]
+  const under = (first) => [first, ...rest].filter(Boolean).join('\n\n')
+  const text = under(head)
   try {
     setPhase($, 'sending handoff')
     await $.prompt.submit({ text, asUser: true })
     // Only a delivered handoff is used up: a failed send stays available
     await dropLatestHandoff($, fid)
+    // After the handoff: /goal starts Claude working, which needs the handoff read
+    if (goal) setGoalAgain($, goal)
   } catch {
     // Not sent: leave it in the prompt box for one Enter
     let filled = false
     try {
-      filled = !!(await $.prompt.fill({ text })).isFilled
+      filled = !!(await $.prompt.fill({ text: under(headUnsent) })).isFilled
     } catch {
       filled = false
     }
     $.ui.toast(filled ? 'Cleared. The handoff is in the prompt box: press Enter to send it.' : `Cleared, but the handoff could not be sent.${path ? ` It's saved at ${path}.` : ''}`, { timeoutMs: 10000 })
+    // No /goal into a chat that has not read the handoff: the text names it
+    if (goal) $.ui.toast('The goal of the cleared chat is not set again: once the handoff is sent, type /goal with the text on its "Goal" line.', { timeoutMs: 15000 })
   }
 }
 
